@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.routers import system
+from app.routers import generate, system
 
 _DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
@@ -25,6 +25,7 @@ Backend is running — try <a href="/health">/health</a>.</p>
 def create_app() -> FastAPI:
     app = FastAPI(title="novelai-desktop backend", version=__version__)
     app.include_router(system.router)
+    app.include_router(generate.router)
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon() -> Response:

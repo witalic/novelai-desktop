@@ -20,6 +20,15 @@ class LogSettings(BaseModel):
     level: str = "INFO"
 
 
+class NovelAISettings(BaseModel):
+    base_url: str = "https://image.novelai.net"
+    model: str = "nai-diffusion-4-5-full"
+    timeout_s: float = 120.0
+    # Force the offline mock client (no network, no Anlas). When False and no token is in the
+    # keychain, the client also falls back to mock — see app.novelai.get_client.
+    mock: bool = False
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="NAI_",
@@ -31,6 +40,7 @@ class Settings(BaseSettings):
 
     api: ApiSettings = ApiSettings()
     log: LogSettings = LogSettings()
+    novelai: NovelAISettings = NovelAISettings()
 
 
 @lru_cache
