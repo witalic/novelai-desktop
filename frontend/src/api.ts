@@ -18,6 +18,33 @@ export async function generate(params: GenerateParams): Promise<GenerateResponse
   return resp.json()
 }
 
+export interface VaultConfig {
+  vault_dir: string | null
+  initialized: boolean
+  writable: boolean
+  proposed_default: string
+}
+
+export async function getVaultConfig(): Promise<VaultConfig> {
+  const resp = await fetch('/api/vault/config')
+  if (!resp.ok) throw new Error(`Failed to read vault config (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+export async function setVaultConfig(vaultDir: string): Promise<VaultConfig> {
+  const resp = await fetch('/api/vault/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vault_dir: vaultDir }),
+  })
+  if (!resp.ok) {
+    let detail = `Failed to set vault (HTTP ${resp.status})`
+    try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
+    throw new Error(detail)
+  }
+  return resp.json()
+}
+
 // Save image(s) to the Downloads folder via the backend (no OS save dialog). `images` are raw base64.
 export async function saveDownloads(images: string[]): Promise<{ count: number; dir: string }> {
   const resp = await fetch('/api/download', {

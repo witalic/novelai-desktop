@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>novelai-desktop — structured workspace mockup</title>
+<style>
+  :root{
+    --accent:#0c66e4; --on-accent:#fff; --radius:6px;
+    --font: ui-sans-serif, system-ui, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+    --bg:#0e1013; --surface-1:#1d2125; --surface-2:#22272b; --surface-3:#282e33;
+    --border:#2c333a; --border-strong:#454f59; --text:#c7d1db; --text-dim:#9fadbc; --text-faint:#738496; --nav-active:#1c3049;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;-webkit-font-smoothing:antialiased}
+  .app{display:flex;height:100vh;overflow:hidden}
+
+  .sidebar{width:212px;flex-shrink:0;background:var(--surface-1);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:14px 12px}
+  .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px;font-weight:600}
+  .logo{width:26px;height:26px;border-radius:7px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+  .brand .sub{font-size:11px;color:var(--text-faint);font-weight:500}
+  .navgroup{font-size:11px;font-weight:700;color:var(--text-faint);letter-spacing:.4px;text-transform:uppercase;padding:10px 10px 6px}
+  .navitem{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:var(--radius);color:var(--text-dim);font-weight:500;margin-bottom:2px}
+  .navitem i{width:18px;text-align:center;font-style:normal;font-size:15px}
+  .navitem.active{background:var(--nav-active);color:var(--accent);font-weight:600}
+
+  .workspace{flex:1;display:flex;flex-direction:column;min-width:0}
+  .projbar{display:flex;align-items:center;gap:10px;padding:11px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
+  .projtitle{font-size:15px;font-weight:600}
+  .saved{font-size:12px;color:#3aa675;display:flex;align-items:center;gap:5px}
+  .spacer{flex:1}
+  .pbtn{border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:6px 11px;font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px}
+
+  /* the canvas: zones float on it as content-sized cards, with room around them */
+  .canvas{flex:1;position:relative;overflow:hidden;background-color:var(--bg);
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Ccircle cx='2' cy='2' r='1' fill='%232c333a'/%3E%3C/svg%3E")}
+
+  .zone{position:absolute;background:var(--surface-1);border:1px solid var(--border-strong);border-radius:12px;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.45)}
+  .zhd{display:flex;align-items:center;gap:8px;height:36px;flex-shrink:0;padding:0 12px;border-bottom:1px solid var(--border);background:var(--surface-2);font-weight:600;font-size:13px}
+  .zhd .tag{margin-left:auto;font-size:10px;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:20px}
+  .zbody{flex:1;padding:12px;overflow:auto;min-height:0}
+  .zsub{font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);margin:2px 0 8px}
+
+  /* Library */
+  .search{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px;color:var(--text-dim);font-size:12px;margin-bottom:10px}
+  .cats{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
+  .cat{font-size:11px;font-weight:500;color:var(--text-dim);border:1px solid var(--border);border-radius:20px;padding:3px 9px}
+  .cat.on{border-color:var(--accent);color:var(--accent);background:var(--nav-active)}
+  .blk{display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-left:3px solid var(--cat,#6e5dc6);border-radius:7px;padding:7px 9px;margin-bottom:7px}
+  .blk .dot{width:8px;height:8px;border-radius:50%;background:var(--cat,#6e5dc6)}
+  .blk .n{font-size:12px;font-weight:600}
+  .blk .pin{margin-left:auto;font-size:12px;color:var(--text-faint)}
+  .qa{margin-top:6px;border-top:1px dashed var(--border);padding-top:10px}
+
+  /* Generation */
+  .gbody{flex:1;display:flex;min-height:0}
+  .out{width:120px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column}
+  .out .oh{height:22px;font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-faint);display:flex;align-items:center;padding:0 10px;border-bottom:1px solid var(--border)}
+  .out .ob{flex:1;padding:8px;position:relative}
+  .out img{position:absolute;inset:8px;width:calc(100% - 16px);height:calc(100% - 16px);object-fit:cover;border-radius:6px;border:1px solid var(--border)}
+  .comp{flex:1;display:flex;flex-direction:column;min-width:0}
+  .lane{flex:1;position:relative;padding:8px}
+  .lane.pos{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+  .lane.neg{background:color-mix(in srgb,#e2483d 6%,transparent);border-top:1px dashed var(--border)}
+  .lane .ll{font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-faint)}
+  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-left:3px solid var(--cat,#6e5dc6);border-radius:6px;padding:5px 8px;margin:6px 6px 0 0;font-size:11px;font-weight:600}
+  .chip .d{width:7px;height:7px;border-radius:50%;background:var(--cat,#6e5dc6)}
+  .gfoot{height:38px;flex-shrink:0;border-top:1px solid var(--border);background:var(--surface-2);display:flex;align-items:center;padding:0 10px}
+  .gbtn{margin-left:auto;background:var(--accent);color:#fff;border:0;border-radius:var(--radius);font-weight:600;font-size:12px;padding:6px 15px}
+
+  /* Gallery */
+  .grp{margin-bottom:14px}
+  .grp .gh{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;margin-bottom:8px}
+  .grp .gh .c{font-size:11px;color:var(--text-faint);font-weight:500}
+  .thumbs{display:flex;gap:8px;flex-wrap:wrap}
+  .th{width:60px;height:88px;border-radius:6px;overflow:hidden;border:1px solid var(--border)}
+  .th.sel{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 40%,transparent)}
+  .th img{width:100%;height:100%;object-fit:cover}
+  .meta{margin-top:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:7px;padding:9px}
+  .meta .lbl{font-size:10px;font-weight:700;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
+  .meta .tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+  .meta .t{font-size:11px;color:var(--accent);background:var(--nav-active);border-radius:20px;padding:2px 8px}
+  .meta .desc{font-size:11px;color:var(--text-dim)}
+
+  /* draft (loose, on the canvas, dimmed) */
+  .draftimg{position:absolute;left:250px;top:470px;width:86px;height:126px;border-radius:8px;border:1px dashed var(--border-strong);overflow:hidden;opacity:.5;filter:grayscale(.4);box-shadow:0 6px 20px rgba(0,0,0,.4)}
+  .draftimg img{width:100%;height:100%;object-fit:cover}
+  .draftchip{position:absolute;left:352px;top:512px;background:var(--surface-2);border:1px dashed var(--border-strong);border-radius:7px;border-left:3px solid var(--text-faint);padding:7px 10px;font-size:11px;font-weight:600;color:var(--text-dim);opacity:.55}
+  .draftnote{position:absolute;left:250px;top:612px;display:flex;align-items:center;gap:7px;background:color-mix(in srgb,#b65c02 22%,var(--surface-1));border:1px solid color-mix(in srgb,#b65c02 45%,var(--border));color:#e8913a;font-size:11px;font-weight:500;padding:7px 12px;border-radius:20px}
+
+  /* zoom controls, bottom-left, like the real canvas */
+  .zoom{position:absolute;left:16px;bottom:16px;display:flex;flex-direction:column;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+  .zoom button{width:28px;height:28px;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text-dim);font-size:14px}
+  .zoom button:last-child{border-bottom:0}
+  .rail{position:absolute;top:16px;right:14px;width:30px;height:64px;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius);display:flex;justify-content:center;padding-top:10px;color:var(--text-dim)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">N</span><div>novelai studio<div class="sub">preview build</div></div></div>
+    <div class="navgroup">Workspace</div>
+    <div class="navitem active"><i>✦</i> Generate</div>
+    <div class="navitem"><i>▤</i> Works</div>
+    <div class="navitem"><i>❏</i> Library</div>
+    <div class="navitem"><i>◈</i> Presets</div>
+    <div class="navgroup">Account</div>
+    <div class="navitem"><i>⚙</i> Settings</div>
+  </aside>
+
+  <div class="workspace">
+    <div class="projbar">
+      <span class="projtitle">Park — Guweiz</span>
+      <span class="saved">✓ auto-saved</span>
+      <div class="spacer"></div>
+      <button class="pbtn">⤓ Export → Obsidian</button>
+      <button class="pbtn">⤢ Fit</button>
+    </div>
+
+    <div class="canvas">
+      <!-- LIBRARY -->
+      <section class="zone" style="left:34px;top:44px;width:250px;height:342px">
+        <div class="zhd"><span>✦</span> Library <span class="tag">anchor</span></div>
+        <div class="zbody">
+          <input class="search" value="silver hair" />
+          <div class="cats"><span class="cat on">Character</span><span class="cat">Style</span><span class="cat">Pose</span><span class="cat">Env</span></div>
+          <div class="zsub">Results</div>
+          <div class="blk" style="--cat:#0c66e4"><span class="dot"></span><span class="n">Silver-haired girl</span><span class="pin">＋</span></div>
+          <div class="qa">
+            <div class="zsub">Quick access</div>
+            <div class="blk" style="--cat:#6e5dc6"><span class="dot"></span><span class="n">Cinematic</span><span class="pin">⇢</span></div>
+            <div class="blk" style="--cat:#ae4787"><span class="dot"></span><span class="n">Portrait pose</span><span class="pin">⇢</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- GENERATION -->
+      <section class="zone" style="left:320px;top:70px;width:470px;height:392px">
+        <div class="zhd"><span>◆</span> Generation <span class="tag">anchor</span></div>
+        <div class="gbody">
+          <div class="out">
+            <div class="oh">Output</div>
+            <div class="ob"><img src="./sample.png"></div>
+          </div>
+          <div class="comp">
+            <div class="lane pos"><span class="ll">Positive</span><br>
+              <span class="chip" style="--cat:#6e5dc6"><span class="d"></span>Cinematic</span>
+              <span class="chip" style="--cat:#0c66e4"><span class="d"></span>Silver-haired</span>
+              <span class="chip" style="--cat:#1f845a"><span class="d"></span>Night city</span>
+            </div>
+            <div class="lane neg"><span class="ll">Negative</span><br>
+              <span class="chip" style="--cat:#e2483d"><span class="d"></span>Low quality</span>
+            </div>
+          </div>
+        </div>
+        <div class="gfoot"><span style="font-size:11px;color:var(--text-faint)">≈ 46 tokens · 832×1216 · 28 steps</span><button class="gbtn">Generate</button></div>
+      </section>
+
+      <!-- GALLERY -->
+      <section class="zone" style="left:830px;top:96px;width:300px;height:410px">
+        <div class="zhd"><span>▤</span> Gallery <span class="tag">anchor</span></div>
+        <div class="zbody">
+          <div class="grp">
+            <div class="gh">★ Best <span class="c">· 2</span></div>
+            <div class="thumbs"><div class="th sel"><img src="./sample.png"></div><div class="th"><img src="./sample.png" style="object-position:70% 0"></div></div>
+          </div>
+          <div class="grp">
+            <div class="gh">Variants <span class="c">· 2</span></div>
+            <div class="thumbs"><div class="th"><img src="./sample.png" style="object-position:20% 30%"></div><div class="th"><img src="./sample.png" style="object-position:90% 10%"></div></div>
+          </div>
+          <div class="meta">
+            <div class="lbl">Tags</div>
+            <div class="tags"><span class="t">silver hair</span><span class="t">night</span><span class="t">favorite</span></div>
+            <div class="lbl">Description</div>
+            <div class="desc">Best lighting variant — reuse seed 42 for the series.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- draft: loose items on the canvas (dimmed) + warning -->
+      <div class="draftimg"><img src="./sample.png" style="object-position:40% 60%"></div>
+      <div class="draftchip">⋯ loose block · draft</div>
+      <div class="draftnote">⚠ 2 items outside zones — won't be saved</div>
+
+      <div class="rail">⚙</div>
+      <div class="zoom"><button>+</button><button>−</button><button>⤢</button></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

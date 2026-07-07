@@ -29,6 +29,13 @@ class NovelAISettings(BaseModel):
     mock: bool = False
 
 
+class VaultSettings(BaseModel):
+    # Explicit override (env NAI_VAULT__DIR); otherwise the runtime pointer / not-yet-chosen.
+    dir: str | None = None
+    # Where the runtime "chosen vault" pointer lives (OS config dir by default; tests override).
+    state_dir: str | None = None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="NAI_",
@@ -41,6 +48,7 @@ class Settings(BaseSettings):
     api: ApiSettings = ApiSettings()
     log: LogSettings = LogSettings()
     novelai: NovelAISettings = NovelAISettings()
+    vault: VaultSettings = VaultSettings()
     # Where "Download" writes images (the OS Downloads folder by default).
     download_dir: str = Field(default_factory=lambda: str(Path.home() / "Downloads"))
 

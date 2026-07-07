@@ -18,9 +18,9 @@ frontend/dist/
 dist/
 out/
 
-# User data — never versioned
-vault/
-generated/
+# User data — never versioned (root-anchored so backend/app/vault/ source is NOT ignored)
+/vault/
+/generated/
 
 # Design mockup sample images (generated art, not source)
 design/*.png

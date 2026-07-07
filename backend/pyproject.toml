@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic-settings>=2",
     "keyring>=25",
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]
