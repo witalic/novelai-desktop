@@ -1,0 +1,26 @@
+# Secrets
+.env
+!.env.example
+
+# Personal Claude settings
+.claude/settings.local.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+dist/
+out/
+
+# User data — never versioned
+vault/
+generated/
+
+# OS
+.DS_Store
+Thumbs.db
