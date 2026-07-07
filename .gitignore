@@ -22,6 +22,9 @@ out/
 vault/
 generated/
 
+# Design mockup sample images (generated art, not source)
+design/*.png
+
 # OS
 .DS_Store
 Thumbs.db
