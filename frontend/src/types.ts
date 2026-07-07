@@ -11,11 +11,18 @@ export interface GenerateParams {
   n_samples: number
 }
 
+export type PanelParams = Omit<GenerateParams, 'prompt' | 'negative_prompt'>
+
 export interface GenerateResponse {
   mock: boolean
   count: number
   images: string[] // base64-encoded PNGs
 }
+
+export type StreamEvent =
+  | { type: 'intermediate'; samp: number; step: number; mime: string; image: string }
+  | { type: 'final'; mime: string; image: string }
+  | { type: 'error'; message: string; status: number }
 
 export interface GenResult {
   id: number

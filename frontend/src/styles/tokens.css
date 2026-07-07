@@ -27,12 +27,16 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);
   -webkit-font-smoothing:antialiased;font-size:14px;line-height:1.45}
 button{font:inherit}
 option{background:var(--surface-2);color:var(--text)}
+/* App chrome is not text-selectable (so Shift+drag box-select doesn't grab sidebar/panel text);
+   real inputs stay selectable. */
+#app{user-select:none;-webkit-user-select:none}
+input,textarea,[contenteditable="true"]{user-select:text;-webkit-user-select:text}
 
 /* Shared form primitives */
 .field{display:flex;flex-direction:column;gap:6px}
 .label{font-size:12px;font-weight:600;color:var(--text-dim);display:flex;justify-content:space-between}
 .label .v{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
-select,textarea,input[type=text]{width:100%;font:inherit;color:var(--text);background:var(--surface-2);
+select,textarea,input[type=text],input[type=number]{width:100%;font:inherit;color:var(--text);background:var(--surface-2);
   border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;outline:none}
 select:focus,textarea:focus,input:focus{border-color:var(--accent);
   box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}

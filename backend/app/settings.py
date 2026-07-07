@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     api: ApiSettings = ApiSettings()
     log: LogSettings = LogSettings()
     novelai: NovelAISettings = NovelAISettings()
+    # Where "Download" writes images (the OS Downloads folder by default).
+    download_dir: str = Field(default_factory=lambda: str(Path.home() / "Downloads"))
 
 
 @lru_cache

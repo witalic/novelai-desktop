@@ -1,6 +1,9 @@
 """Offline mock client — same interface as ``NovelAIClient``, no network, no Anlas spend.
 Lets the UI and tests run without a token (``rules/novelai-api.md``)."""
+import asyncio
+import base64
 import logging
+from collections.abc import AsyncIterator
 
 from app.novelai._png import solid_png
 from app.novelai.models import GenerateParams
@@ -18,3 +21,12 @@ class MockNovelAIClient:
             solid_png(params.width, params.height, (44, (44 + i * 40) % 216, 52))
             for i in range(params.n_samples)
         ]
+
+    async def generate_stream(self, params: GenerateParams) -> AsyncIterator[dict]:
+        log.info("MOCK stream %dx%d (no network, no Anlas)", params.width, params.height)
+        for i in range(3):
+            await asyncio.sleep(0.15)
+            png = solid_png(params.width, params.height, (44, (44 + i * 50) % 216, 52))
+            yield {"type": "intermediate", "samp": 0, "step": i, "mime": "image/png", "image": base64.b64encode(png).decode("ascii")}
+        png = solid_png(params.width, params.height, (44, 130, 52))
+        yield {"type": "final", "mime": "image/png", "image": base64.b64encode(png).decode("ascii")}

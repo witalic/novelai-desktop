@@ -17,4 +17,4 @@ class GenerateParams(BaseModel):
     noise_schedule: str = "karras"
     cfg_rescale: float = Field(default=0.0, ge=0, le=1)
     quality_toggle: bool = True
-    uc_preset: int = Field(default=0, ge=0, le=4)
+    uc_preset: int = Field(default=4, ge=0, le=7)  # v4.5: Heavy=4, Light=5, None=3, Human=6, Furry=7
