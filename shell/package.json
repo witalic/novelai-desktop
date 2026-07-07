@@ -1,0 +1,14 @@
+{
+  "name": "novelai-desktop-shell",
+  "version": "0.0.0",
+  "private": true,
+  "description": "novelai-desktop Electron shell — spawns the FastAPI sidecar and hosts the web UI at /app/.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "electron": "^42.4.1"
+  }
+}
