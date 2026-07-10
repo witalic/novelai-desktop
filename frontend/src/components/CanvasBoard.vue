@@ -212,6 +212,7 @@ function swapSrc(id: string) {
   if (!shownSrc.value[id] || want.startsWith('data:')) { shownSrc.value[id] = want; return } // no old to hold
   const pre = new Image()
   pre.onload = () => { const cur = findNode(id); if (cur && imgSrc(id, cur.data) === want) shownSrc.value[id] = want }
+  pre.onerror = () => { /* keep the current (older) src on a failed derivative rather than blanking the card */ }
   pre.src = want
 }
 // When the supersample bucket steps (work grew/shrank past a threshold), re-target every image.

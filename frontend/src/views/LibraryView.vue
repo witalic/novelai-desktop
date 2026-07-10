@@ -192,7 +192,11 @@ function onDocPointer(e: MouseEvent) {
   if (blockCatEl.value && !blockCatEl.value.contains(t)) blockCatOpen.value = false
 }
 onMounted(() => document.addEventListener('mousedown', onDocPointer))
-onUnmounted(() => document.removeEventListener('mousedown', onDocPointer))
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocPointer)
+  if (searchTimer) clearTimeout(searchTimer) // don't let a debounced load fire after teardown
+  if (exTimer) clearTimeout(exTimer)
+})
 
 // The tag dropdown is fixed-positioned (measured off the input) so a resizable/scrolling rail can't clip it.
 const tagDropStyle = ref<Record<string, string>>({})
