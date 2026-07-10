@@ -4,12 +4,15 @@ Serves the API and the built frontend single-origin at ``/app/`` (README: оди
 """
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.routers import generate, settings, system, vault
+from app.settings import get_settings
+
+_LOOPBACK = {"127.0.0.1", "localhost"}
 
 _DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
@@ -24,6 +27,22 @@ Backend is running — try <a href="/health">/health</a>.</p>
 
 def create_app() -> FastAPI:
     app = FastAPI(title="novelai-desktop backend", version=__version__)
+    # Set once from the (env-provisioned) settings; tests may override app.state.auth_token to exercise it.
+    app.state.auth_token = get_settings().api.auth_token
+
+    # Single guard, active ONLY when the shell provisioned a token (prod): reject non-loopback Host headers
+    # (anti DNS-rebinding) and require the shared secret on /api. In dev/tests (no token) it is a pass-through.
+    @app.middleware("http")
+    async def _guard(request: Request, call_next):  # noqa: ANN001, ANN202
+        token = request.app.state.auth_token
+        if token:
+            host = (request.headers.get("host") or "").split(":")[0]
+            if host not in _LOOPBACK:
+                return JSONResponse({"detail": "Bad host."}, status_code=400)
+            if request.url.path.startswith("/api") and request.cookies.get("nai_auth") != token:
+                return JSONResponse({"detail": "Unauthorized."}, status_code=403)
+        return await call_next(request)
+
     app.include_router(system.router)
     app.include_router(generate.router)
     app.include_router(vault.router)

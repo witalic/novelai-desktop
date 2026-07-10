@@ -2,10 +2,13 @@
 // { proc, baseUrl, origin } so main can load /app/ and lock navigation to that exact origin, and the quit
 // handler can tear the sidecar down with the window.
 const { spawn } = require('child_process')
+const crypto = require('crypto')
 const net = require('net')
 const fs = require('fs')
 const path = require('path')
 const cfg = require('./config')
+
+const newToken = () => crypto.randomBytes(32).toString('hex') // per-launch shared secret (cookie-delivered)
 
 // Ask the OS for an ephemeral free port on the loopback host (bind :0, read it back, release it).
 function freePort () {
@@ -36,12 +39,12 @@ function pythonPath () {
   return fs.existsSync(winPy) ? winPy : nixPy
 }
 
-function spawnApi (port) {
+function spawnApi (port, token) {
   const baseUrl = cfg.baseUrl(port)
   const py = pythonPath()
-  const env = { ...process.env, NAI_API__HOST: cfg.host, NAI_API__PORT: String(port) }
+  const env = { ...process.env, NAI_API__HOST: cfg.host, NAI_API__PORT: String(port), NAI_API__AUTH_TOKEN: token }
   const proc = spawn(py, ['-m', 'app'], { cwd: cfg.repoRoot, env, stdio: 'inherit' })
-  return { proc, baseUrl, origin: new URL(baseUrl).origin }
+  return { proc, baseUrl, origin: new URL(baseUrl).origin, token }
 }
 
 async function waitHealthy (started, tries = 40) {
@@ -55,14 +58,15 @@ async function waitHealthy (started, tries = 40) {
 }
 
 async function ensureApi () {
-  // Dev override: an explicit port may already host a `python -m app` — reuse it, else spawn there.
+  // Dev override: an explicit port may already host a `python -m app` — reuse it (unguarded, no token),
+  // else spawn our own there with a fresh secret.
   if (cfg.explicitPort) {
     const baseUrl = cfg.baseUrl(cfg.explicitPort)
-    if (await healthOk(baseUrl)) return { proc: null, baseUrl, origin: new URL(baseUrl).origin }
-    return waitHealthy(spawnApi(cfg.explicitPort))
+    if (await healthOk(baseUrl)) return { proc: null, baseUrl, origin: new URL(baseUrl).origin, token: '' }
+    return waitHealthy(spawnApi(cfg.explicitPort, newToken()))
   }
   if (!cfg.isLocal) throw new Error(`Cannot start a backend on non-loopback host ${cfg.host}.`)
-  return waitHealthy(spawnApi(await freePort()))
+  return waitHealthy(spawnApi(await freePort(), newToken()))
 }
 
 module.exports = { healthOk, ensureApi }

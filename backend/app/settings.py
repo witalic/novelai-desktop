@@ -14,6 +14,11 @@ _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 class ApiSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1, le=65535)
+    # Per-launch shared secret set by the Electron shell (env NAI_API__AUTH_TOKEN). When present, /api calls
+    # must carry it in the `nai_auth` cookie, which the shell sets SameSite=Strict + HttpOnly: the browser
+    # sends it on every same-origin request (fetch AND <img>/subresource loads) but never cross-site, so
+    # CSRF / DNS-rebinding against the loopback API is closed without touching the frontend. Empty in dev.
+    auth_token: str = ""
 
 
 class LogSettings(BaseModel):

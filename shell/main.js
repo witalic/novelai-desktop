@@ -39,11 +39,13 @@ function createWindow (apiOrigin) {
       preload: path.join(__dirname, 'preload.js'),
     },
   })
-  // Lock the window to the sidecar origin: any off-origin navigation is refused and external links open in
-  // the OS browser — the preload bridge (folder picker, openPath, quit hook) must never reach remote content.
-  win.webContents.on('will-navigate', (e, url) => {
-    if (new URL(url).origin !== apiOrigin) e.preventDefault()
-  })
+  // Lock the window to the sidecar origin: any off-origin navigation (top frame, subframes, redirects) is
+  // refused and external links open in the OS browser — the preload bridge (folder picker, openPath, quit
+  // hook) must never reach remote content. `new URL` is wrapped so a malformed url can't throw past the guard.
+  const sameOrigin = (url) => { try { return new URL(url).origin === apiOrigin } catch { return false } }
+  win.webContents.on('will-navigate', (e, url) => { if (!sameOrigin(url)) e.preventDefault() })
+  win.webContents.on('will-redirect', (e, url) => { if (!sameOrigin(url)) e.preventDefault() })
+  win.webContents.on('will-frame-navigate', (e) => { if (!sameOrigin(e.url)) e.preventDefault() })
   win.webContents.setWindowOpenHandler(({ url }) => {
     try { if (/^https?:/.test(url)) shell.openExternal(url) } catch { /* ignore */ }
     return { action: 'deny' }
@@ -77,6 +79,23 @@ app.whenReady().then(async () => {
   console.log(`[shell] api=${api.baseUrl}`)
   // The shell loads its OWN local web UI — never serve a stale cached bundle during dev.
   await session.defaultSession.clearCache()
+  // Cookie-delivered per-launch secret (SameSite=Strict → sent on same-origin fetch AND <img> loads, never
+  // cross-site). The backend /api guard checks it; set it BEFORE loading /app/.
+  if (api.token) {
+    try {
+      await session.defaultSession.cookies.set({
+        url: api.baseUrl, name: 'nai_auth', value: api.token, sameSite: 'strict', httpOnly: true,
+      })
+    } catch (e) { console.error('[shell] cookie set failed', e) }
+  }
+  // CSP on every response: the UI only loads its own bundle + data:/blob: images, so an injected external
+  // script/frame can't escalate a stored string into control of the (loopback) API.
+  session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
+    cb({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [
+      "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+      "font-src 'self' data:; connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:*; object-src 'none'; base-uri 'self'",
+    ] } })
+  })
   createWindow(api.origin)
 })
 
