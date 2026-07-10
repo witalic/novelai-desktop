@@ -16,6 +16,8 @@ prompt-authoring is deferred. The full phased plan is `ROADMAP.md`; current phas
 
 ## Working rules
 - **Language:** converse in Ukrainian; code, comments, UI copy, and docs in English. `README` may be Ukrainian.
+- **Design first:** UI features start as a mockup the owner approves. Mockups live in `design/` as
+  self-contained HTML on the app's `tokens.css` palette (PNGs stay untracked — `.gitignore`).
 - **Gates:** agree the plan before writing code. Commit only logically-complete, **tested** blocks — never a
   partial sub-step or a snapshot with dangling references — and only after the owner confirms. See `rules/git.md`.
 - **Greenfield:** grow rules as real code lands — don't invent conventions for files that don't exist yet.

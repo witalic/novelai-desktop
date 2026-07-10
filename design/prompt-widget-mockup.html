@@ -1,0 +1,624 @@
+<title>Prompt widget — design mockup</title>
+<style>
+  /* ---- app tokens, verbatim from frontend/src/styles/tokens.css ---- */
+  :root{
+    --accent:#0c66e4; --accent-strong:#0055cc; --on-accent:#ffffff;
+    --radius:6px; --radius-lg:8px;
+    --font: ui-sans-serif, system-ui, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+    --bg:#101214; --surface-1:#1d2125; --surface-2:#22272b; --surface-3:#282e33;
+    --border:#2c333a; --border-strong:#454f59;
+    --text:#c7d1db; --text-dim:#9fadbc; --text-faint:#738496; --nav-active:#1c3049;
+    --ok:#3aa675; --warn:#b65c02; --danger:#e2483d;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f7f8f9; --surface-1:#ffffff; --surface-2:#f7f8f9; --surface-3:#f1f2f4;
+      --border:#dfe1e6; --border-strong:#c1c7d0;
+      --text:#172b4d; --text-dim:#44546f; --text-faint:#626f86; --nav-active:#e9f2ff;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#101214; --surface-1:#1d2125; --surface-2:#22272b; --surface-3:#282e33;
+    --border:#2c333a; --border-strong:#454f59;
+    --text:#c7d1db; --text-dim:#9fadbc; --text-faint:#738496; --nav-active:#1c3049;
+  }
+  :root[data-theme="light"]{
+    --bg:#f7f8f9; --surface-1:#ffffff; --surface-2:#f7f8f9; --surface-3:#f1f2f4;
+    --border:#dfe1e6; --border-strong:#c1c7d0;
+    --text:#172b4d; --text-dim:#44546f; --text-faint:#626f86; --nav-active:#e9f2ff;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);
+    font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .page{max-width:1060px;margin:0 auto;padding:40px 28px 80px;display:flex;flex-direction:column;gap:36px}
+
+  /* ---- page typography ---- */
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--text-faint)}
+  h1{font-size:24px;font-weight:700;margin:6px 0 8px;text-wrap:balance}
+  .lede{color:var(--text-dim);max-width:64ch;margin:0}
+  h2{font-size:15px;font-weight:700;margin:0 0 4px}
+  .sec{display:flex;flex-direction:column;gap:14px}
+  .sechd{display:flex;flex-direction:column;gap:2px}
+  .sechd .sub{font-size:12.5px;color:var(--text-faint)}
+
+  /* ---- canvas demo ---- */
+  .canvasdemo{position:relative;height:660px;border:1px solid var(--border);border-radius:var(--radius-lg);
+    overflow:hidden;background:var(--bg);
+    background-image:radial-gradient(var(--border-strong) 1.2px, transparent 1.2px);background-size:18px 18px}
+  .canvasdemo .hintbar{position:absolute;left:14px;bottom:12px;font-size:11px;color:var(--text-faint);
+    background:color-mix(in srgb,var(--surface-1) 85%,transparent);border:1px solid var(--border);
+    border-radius:20px;padding:4px 12px;pointer-events:none}
+
+  .co{position:absolute;z-index:12;width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--on-accent);
+    font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent);pointer-events:none}
+
+  /* ---- the widget ---- */
+  .widget{position:absolute;left:36px;top:28px;width:308px;height:600px;display:flex;flex-direction:column;
+    border:1.5px solid var(--border-strong);border-radius:12px;overflow:hidden;
+    background:color-mix(in srgb,var(--surface-1) 92%,transparent);box-shadow:0 6px 28px rgba(0,0,0,.28)}
+  .whd{display:flex;align-items:center;gap:8px;height:38px;flex-shrink:0;padding:0 12px;
+    border-bottom:1px solid var(--border);background:var(--surface-1);font-weight:600;font-size:13px}
+  .whd .anchor-tag{margin-left:auto;font-size:10px;font-weight:600;color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:20px}
+  .whd .collapse{border:0;background:transparent;color:var(--text-faint);cursor:pointer;font-size:11px;padding:2px}
+
+  .wmode{display:flex;flex-shrink:0;margin:8px 10px 0;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+  .wmode button{flex:1;border:0;border-left:1px solid var(--border);background:var(--surface-1);color:var(--text-dim);
+    font:inherit;font-size:11.5px;font-weight:600;padding:6px 4px;cursor:pointer}
+  .wmode button:first-child{border-left:0}
+  .wmode button.active{background:var(--nav-active);color:var(--accent)}
+  .wmode button .n{color:var(--text-faint);font-weight:500;font-variant-numeric:tabular-nums}
+  .wmode button.active .n{color:var(--accent)}
+
+  .wtools{display:flex;flex-direction:column;gap:8px;padding:10px 10px 8px;border-bottom:1px solid var(--border);flex-shrink:0}
+  .wsearch{position:relative}
+  .wsearch input{width:100%;font:inherit;font-size:12.5px;color:var(--text);background:var(--surface-2);
+    border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px 7px 28px;outline:none}
+  .wsearch input:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+  .wsearch .ic{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text-faint);font-size:12px;pointer-events:none}
+
+  /* category dropdown (browse mode — scales past 20 categories) */
+  .frow{display:flex;gap:6px;align-items:center}
+  .catdd{position:relative;flex:1}
+  .catbtn{width:100%;display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:var(--radius);
+    background:var(--surface-2);color:var(--text);font:inherit;font-size:12px;font-weight:600;padding:6px 9px;cursor:pointer}
+  .catbtn .cdot{width:8px;height:8px;border-radius:50%;background:var(--cat,var(--text-faint));flex-shrink:0}
+  .catbtn .lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .catbtn .car{margin-left:auto;color:var(--text-faint);font-size:10px}
+  .catbtn:hover{border-color:var(--border-strong)}
+  .catpanel{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:10;border:1px solid var(--border-strong);
+    border-radius:var(--radius-lg);background:var(--surface-1);box-shadow:0 8px 24px rgba(0,0,0,.4);
+    padding:6px;display:none;max-height:230px;overflow-y:auto}
+  .catpanel.open{display:block}
+  .catpanel input{width:100%;font:inherit;font-size:12px;color:var(--text);background:var(--surface-2);
+    border:1px solid var(--border);border-radius:var(--radius);padding:5px 8px;outline:none;margin-bottom:5px}
+  .catitem{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;color:var(--text);
+    font:inherit;font-size:12px;padding:6px 8px;border-radius:var(--radius);cursor:pointer;text-align:left}
+  .catitem:hover{background:var(--surface-3)}
+  .catitem.on{background:var(--nav-active);color:var(--accent)}
+  .catitem .cdot{width:8px;height:8px;border-radius:50%;background:var(--cat,var(--text-faint));flex-shrink:0}
+  .catitem .n{margin-left:auto;color:var(--text-faint);font-variant-numeric:tabular-nums;font-size:11px}
+
+  .tagrow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:11px}
+  .tagrow .tglbl{color:var(--text-faint);font-weight:600}
+  .ftag{display:inline-flex;align-items:center;gap:4px;background:var(--surface-3);border:1px solid var(--border);
+    border-radius:20px;padding:2px 8px;color:var(--text-dim);font-weight:500}
+  .ftag button{border:0;background:transparent;color:var(--text-faint);cursor:pointer;font-size:10px;padding:0}
+  .ftag button:hover{color:var(--danger)}
+  .addtag{border:1px dashed var(--border-strong);background:transparent;color:var(--text-faint);
+    border-radius:20px;padding:2px 8px;font-size:11px;cursor:pointer}
+  .addtag:hover{color:var(--text);border-color:var(--text-faint)}
+
+  /* stash toolbar: dynamic category chips (sorted by pinned count) + quick custom block */
+  .stashbar{display:flex;flex-direction:column;gap:8px;padding:10px 10px 8px;border-bottom:1px solid var(--border);flex-shrink:0}
+  .stashbar .row{display:flex;gap:5px;align-items:center}
+  .catrow{display:flex;gap:5px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none;flex:1}
+  .catrow::-webkit-scrollbar{display:none}
+  .catchip{flex-shrink:0;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);
+    background:var(--surface-2);color:var(--text-dim);border-radius:20px;padding:3px 9px;font-size:11px;
+    font-weight:600;cursor:pointer;white-space:nowrap}
+  .catchip .cdot{width:7px;height:7px;border-radius:50%;background:var(--cat,var(--text-faint))}
+  .catchip .n{color:var(--text-faint);font-weight:500;font-variant-numeric:tabular-nums}
+  .catchip:hover{border-color:var(--border-strong);color:var(--text)}
+  .catchip.on{background:var(--nav-active);border-color:color-mix(in srgb,var(--accent) 45%,var(--border));color:var(--accent)}
+  .catchip.on .n{color:var(--accent)}
+  /* list-end "new custom block" row — a quiet full-width action, clearly not a drop target */
+  .newrow{width:100%;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text-dim);
+    font:inherit;font-size:11.5px;font-weight:600;padding:8px;cursor:pointer}
+  .newrow:hover{color:var(--accent);border-color:var(--accent)}
+
+  .wlist{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:6px}
+  .brow{position:relative;border:1px solid var(--border);border-left:3px solid var(--cat,#738496);border-radius:8px;
+    background:var(--surface-2);padding:7px 9px 8px;cursor:grab;transition:border-color .1s}
+  .brow:hover{border-color:var(--border-strong);border-left-color:var(--cat,#738496)}
+  .brow.flash{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 40%,transparent)}
+  .brow .r1{display:flex;align-items:center;gap:6px}
+  .brow .grip{color:var(--text-faint);font-size:10px;cursor:grab;flex-shrink:0}
+  .brow .bname{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brow .pol{margin-left:auto;flex-shrink:0;font-size:11px;font-weight:700;color:var(--text-faint)}
+  .brow .pol.neg{color:var(--danger)}
+  .brow .btext{font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .lbadge{flex-shrink:0;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;
+    border:1px solid var(--border-strong);color:var(--text-faint);border-radius:10px;padding:0 6px}
+  .ubadge{flex-shrink:0;font-size:9px;font-weight:700;border-radius:10px;padding:1px 6px;
+    color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 50%,var(--border));
+    background:color-mix(in srgb,var(--warn) 10%,transparent)}
+  .brow .act{position:absolute;right:6px;bottom:6px;opacity:0;border:1px solid var(--border-strong);
+    background:var(--surface-1);color:var(--text-dim);border-radius:5px;height:22px;min-width:22px;font-size:11px;
+    font-weight:600;line-height:1;cursor:pointer;transition:opacity .1s;padding:0 5px}
+  .brow:hover .act{opacity:1}
+  .brow .act:hover{color:var(--accent);border-color:var(--accent)}
+  .brow .act.done{color:var(--ok);border-color:var(--ok);opacity:1}
+  .brow .unpin{flex-shrink:0;opacity:0;border:0;background:transparent;color:var(--text-faint);
+    cursor:pointer;font-size:11px;line-height:1;padding:0 0 0 2px;transition:opacity .1s}
+  .brow:hover .unpin{opacity:1}
+  .brow .unpin:hover{color:var(--danger)}
+  .brow.pinned{opacity:.6;cursor:pointer}
+  .brow.pinned .pinchip{position:absolute;right:8px;bottom:8px;font-size:10px;font-weight:700;color:var(--ok)}
+  .wempty{padding:26px 14px;text-align:center;font-size:12px;color:var(--text-faint)}
+  .wempty button{border:0;background:transparent;color:var(--accent);cursor:pointer;font-size:12px;padding:0}
+
+  .snapslot{border:1.5px dashed color-mix(in srgb,var(--accent) 55%,var(--border-strong));border-radius:8px;
+    padding:6px;text-align:center;font-size:11px;color:var(--text-faint);
+    background:color-mix(in srgb,var(--accent) 6%,transparent)}
+
+  .wfoot{flex-shrink:0;display:flex;align-items:center;gap:8px;border-top:1px solid var(--border);
+    background:var(--surface-1);padding:7px 12px;font-size:11px;color:var(--text-faint)}
+  .wfoot .lib{margin-left:auto;color:var(--accent);cursor:pointer;font-weight:600;text-decoration:none}
+
+  /* ---- hover details popover ---- */
+  .pop{position:absolute;z-index:9;width:284px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);
+    background:var(--surface-1);box-shadow:0 8px 30px rgba(0,0,0,.4);padding:12px 14px;display:none}
+  .pop.show{display:block}
+  .pop .ph{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+  .pop .cdot{width:8px;height:8px;border-radius:50%;background:var(--cat,#738496);flex-shrink:0}
+  .pop .pname{font-size:12.5px;font-weight:700}
+  .pop .ppol{margin-left:auto;font-size:11px;font-weight:700;color:var(--text-faint)}
+  .pop .ppol.neg{color:var(--danger)}
+  .pop .plbl{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint);margin:0 0 3px}
+  .pop .ptext{font-size:12px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);
+    border-radius:var(--radius);padding:7px 9px;margin:0 0 8px;line-height:1.5;user-select:text}
+  .pop .ptags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+  .pop .ptags span{font-size:10.5px;background:var(--surface-3);border:1px solid var(--border);border-radius:20px;
+    padding:1px 8px;color:var(--text-dim)}
+  .pop .pmeta{font-size:10.5px;color:var(--text-faint);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .pop .pmeta .sep{opacity:.5}
+  .pop .pbtn{margin-top:8px;width:100%;border:1px solid var(--border-strong);border-radius:var(--radius);
+    background:var(--surface-2);color:var(--text);font:inherit;font-size:11.5px;font-weight:600;padding:5px 10px;cursor:pointer}
+  .pop .pbtn:hover{border-color:var(--accent);color:var(--accent)}
+  .pop .pbtn.upd{border-color:color-mix(in srgb,var(--warn) 50%,var(--border));color:var(--warn)}
+
+  /* ---- station hint ---- */
+  .stationhint{position:absolute;right:-150px;top:90px;width:420px;height:400px;border:1.5px solid var(--border-strong);
+    border-radius:12px;overflow:hidden;background:color-mix(in srgb,var(--surface-1) 70%,transparent);opacity:.85;pointer-events:none}
+  .stationhint .shd{height:40px;display:flex;align-items:center;padding:0 12px;font-weight:600;font-size:13px;
+    border-bottom:1px solid var(--border);background:var(--surface-1)}
+  .stationhint .lane{height:150px;position:relative}
+  .stationhint .lane.pos{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+  .stationhint .lane.neg{background:color-mix(in srgb,#e2483d 6%,transparent);border-top:1px solid var(--border)}
+  .stationhint .lanelbl{position:absolute;left:10px;top:8px;font-size:10px;font-weight:700;letter-spacing:.4px;
+    text-transform:uppercase;color:var(--text-faint)}
+  .ghost{position:absolute;width:170px;border:1px dashed var(--accent);border-radius:8px;padding:7px 9px;
+    background:color-mix(in srgb,var(--accent) 8%,transparent);font-size:12px;font-weight:600;color:var(--text-dim)}
+  .droparrow{position:absolute;pointer-events:none;color:var(--text-faint)}
+
+  /* ---- anatomy ---- */
+  .anatomy{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+  .apoint{display:flex;gap:10px;border:1px solid var(--border);border-radius:var(--radius-lg);
+    background:var(--surface-1);padding:12px 14px}
+  .apoint .num{flex-shrink:0;width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--on-accent);
+    font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px}
+  .apoint b{display:block;font-size:12.5px;margin-bottom:2px}
+  .apoint p{margin:0;font-size:12px;color:var(--text-dim)}
+
+  /* ---- states ---- */
+  .states{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .statecard{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-1);overflow:hidden}
+  .statecard .schd{padding:8px 12px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;
+    letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint)}
+  .statecard .scbody{padding:14px 12px;min-height:132px;display:flex;flex-direction:column;gap:8px;justify-content:center}
+  .skel{height:34px;border-radius:8px;background:linear-gradient(90deg,var(--surface-2),var(--surface-3),var(--surface-2));
+    background-size:200% 100%;animation:sh 1.4s ease infinite}
+  @keyframes sh{to{background-position:-200% 0}}
+  @media (prefers-reduced-motion: reduce){.skel{animation:none;background:var(--surface-2)}}
+  .scmsg{text-align:center;font-size:12px;color:var(--text-faint)}
+  .scmsg .cta{display:inline-block;margin-top:8px;border:1px solid var(--border-strong);border-radius:var(--radius);
+    background:var(--surface-2);color:var(--text);font-size:12px;font-weight:600;padding:5px 12px;cursor:pointer}
+  .scmsg .cta:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* ---- behavior table ---- */
+  .rules{border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+  .rule{display:grid;grid-template-columns:190px 1fr;gap:14px;padding:11px 14px;background:var(--surface-1);font-size:12.5px}
+  .rule + .rule{border-top:1px solid var(--border)}
+  .rule .k{font-weight:600;color:var(--text)}
+  .rule .v{color:var(--text-dim)}
+  .rule .v code{font-size:11px;background:var(--surface-3);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+  .prop{font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--warn);
+    border:1px solid color-mix(in srgb,var(--warn) 50%,var(--border));border-radius:10px;padding:0 6px;margin-left:6px}
+
+  .oq{border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--surface-1));
+    border-radius:var(--radius);padding:12px 16px;font-size:12.5px;color:var(--text-dim)}
+  .oq b{color:var(--text)}
+  .oq ul{margin:6px 0 0;padding-left:18px}
+  .oq li{margin:3px 0}
+  kbd{font-family:inherit;font-size:11px;border:1px solid var(--border-strong);border-bottom-width:2px;
+    border-radius:4px;padding:0 5px;background:var(--surface-2)}
+</style>
+
+<div class="page">
+  <header>
+    <div class="eyebrow">novelai-desktop · Phase 2 UI · mockup 01 · rev 5 — design locked</div>
+    <h1>Prompt widget — quick access with a Library search mode</h1>
+    <p class="lede">The Library anchor zone becomes a two-mode widget. <b>Quick access</b> holds the work’s
+    hand-picked palette (plus on-the-fly custom blocks) and feeds the station; <b>Find in Library</b>
+    searches the vault — pinned blocks leave its pool. Every ＋ / drag out of the palette produces an
+    independent copy; the palette itself persists with the work.</p>
+  </header>
+
+  <!-- ============ live demo ============ -->
+  <section class="sec">
+    <div class="sechd">
+      <h2>Canvas context (interactive)</h2>
+      <div class="sub">Try: switch modes · category dropdown &amp; search in Find-in-Library · hover a row for the details card · Pin a block, then find it greyed-out in search · “+ New” in Quick access.</div>
+    </div>
+    <div class="canvasdemo">
+      <span class="co" style="left:332px;top:36px">1</span>
+      <span class="co" style="left:332px;top:84px">2</span>
+      <span class="co" style="left:332px;top:136px">3</span>
+      <span class="co" style="left:332px;top:200px">4</span>
+      <span class="co" style="left:332px;top:390px">5</span>
+      <span class="co" style="left:332px;top:604px">6</span>
+
+      <div class="widget" id="widget">
+        <div class="whd">
+          <span>✦</span><span>Prompt blocks</span>
+          <span class="anchor-tag">anchor</span>
+          <button class="collapse" title="Collapse to header (persisted with the work)">▾</button>
+        </div>
+        <div class="wmode" id="mode">
+          <button data-m="stash" class="active">Quick access <span class="n" id="stashN"></span></button>
+          <button data-m="browse">Find in Library</button>
+        </div>
+
+        <!-- browse tools -->
+        <div class="wtools" id="tools" hidden>
+          <div class="wsearch">
+            <span class="ic">⌕</span>
+            <input id="q" type="text" placeholder="Search blocks…  ( / )" />
+          </div>
+          <div class="frow">
+            <div class="catdd" id="catdd">
+              <button class="catbtn" id="catbtn"></button>
+              <div class="catpanel" id="catpanel"></div>
+            </div>
+          </div>
+          <div class="tagrow">
+            <span class="tglbl">Tags</span>
+            <span class="ftag">portrait <button title="Remove">✕</button></span>
+            <button class="addtag">+ filter</button>
+          </div>
+        </div>
+
+        <!-- stash toolbar: chips derived from the pinned set, sorted by count -->
+        <div class="stashbar" id="stashbar">
+          <div class="row">
+            <div class="catrow" id="stashcats"></div>
+          </div>
+        </div>
+
+        <div class="wlist" id="list"></div>
+        <div class="wfoot"><span id="count"></span><a class="lib" id="footlink">Open Library ↗</a></div>
+      </div>
+
+      <div class="pop" id="pop"></div>
+
+      <div class="stationhint">
+        <div class="shd">Generation</div>
+        <div class="lane pos"><span class="lanelbl">Positive</span></div>
+        <div class="lane neg"><span class="lanelbl">Negative</span></div>
+      </div>
+
+      <div class="ghost" style="left:430px;top:540px">⠿ Golden hour <span style="font-weight:500;color:var(--text-faint)">(copy)</span></div>
+      <svg class="droparrow" style="left:352px;top:540px" width="86" height="60" viewBox="0 0 86 60" fill="none" aria-hidden="true">
+        <path d="M6 12 C 30 24, 50 34, 78 30" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <path d="M70 26 l9 4 -5 8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+      </svg>
+
+      <div class="hintbar">Pin moves a block from the Library pool into Quick access · ＋ / drag out = independent copy, the pin stays · dropped canvas blocks snap into order</div>
+    </div>
+  </section>
+
+  <!-- ============ anatomy ============ -->
+  <section class="sec">
+    <div class="sechd">
+      <h2>Anatomy</h2>
+      <div class="sub">Numbered against the callouts above (3–4 belong to Find-in-Library mode).</div>
+    </div>
+    <div class="anatomy">
+      <div class="apoint"><span class="num">1</span><div>
+        <b>Zone header</b>
+        <p>Unchanged zone grammar: icon, title, anchor tag, collapse chevron. Collapse state <b>persists with the work</b> (layout layer, like the station ratios); scroll position doesn’t.</p>
+      </div></div>
+      <div class="apoint"><span class="num">2</span><div>
+        <b>Mode switch</b>
+        <p><b>Quick access</b> — the work’s palette (zone children, persisted). <b>Find in Library</b> — read-only vault search whose pool <b>excludes already-pinned blocks</b>. Mode + filters are transient; a reopened work starts in Quick access.</p>
+      </div></div>
+      <div class="apoint"><span class="num">3</span><div>
+        <b>Search (browse)</b>
+        <p>Debounced name + text search via <b>GET /library/blocks?search=</b>. <kbd>/</kbd> focuses it. Pinned blocks that match the query appear greyed-out with a <b>Pinned ✓</b> mark — search never pretends a block doesn’t exist; clicking one jumps to it in Quick access.</p>
+      </div></div>
+      <div class="apoint"><span class="num">4</span><div>
+        <b>Category dropdown + tag filter (browse)</b>
+        <p>Categories moved from chips to a <b>searchable dropdown</b> — chips don’t scale past ~20 categories. Counts and category colors inside; tag typeahead unchanged (AND-semantics).</p>
+      </div></div>
+      <div class="apoint"><span class="num">5</span><div>
+        <b>Palette list + hover card</b>
+        <p>In Quick access the category chips <b>are derived from the pinned set and sorted by count</b> — a naturally small, self-pruning filter row. The list ends with a full-width <b>＋ New custom block</b> row (not in the chips row — it creates a block, not a filter). Hover ~250 ms opens the details card with <b>Prompt</b> and <b>Gallery tags</b> labelled apart, provenance, and the block’s actions (Save to Library / Update). Unpin is the ✕ on the row itself.</p>
+      </div></div>
+      <div class="apoint"><span class="num">6</span><div>
+        <b>Footer</b>
+        <p>Count + “Open Library ↗” escape hatch. The widget writes to the vault only on the explicit <b>Save to Library</b> action — nothing else ever mutates Library blocks.</p>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- ============ states ============ -->
+  <section class="sec">
+    <div class="sechd"><h2>States</h2></div>
+    <div class="states">
+      <div class="statecard">
+        <div class="schd">Loading (browse)</div>
+        <div class="scbody"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
+      </div>
+      <div class="statecard">
+        <div class="schd">Empty result (browse)</div>
+        <div class="scbody"><div class="scmsg">No blocks match “cyberpunk” in <b>Lighting</b>.<br/><button class="cta">Clear filters</button></div></div>
+      </div>
+      <div class="statecard">
+        <div class="schd">Empty palette (quick access)</div>
+        <div class="scbody"><div class="scmsg">Nothing pinned yet.<br/><button class="cta">Find in Library</button> <button class="cta">＋ New block</button></div></div>
+      </div>
+      <div class="statecard">
+        <div class="schd">No vault</div>
+        <div class="scbody"><div class="scmsg">Connect a vault to browse your prompt blocks.<br/><button class="cta">Open Settings</button></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ behavior ============ -->
+  <section class="sec">
+    <div class="sechd"><h2>Behavior rules (all locked)</h2></div>
+    <div class="rules">
+      <div class="rule"><span class="k">Exclusive membership</span><span class="v">Pinning moves a block out of the Find-in-Library pool: default listings <b>exclude pinned blocks</b>. The vault block itself is untouched — exclusion is a view filter over this work’s pins.</span></div>
+      <div class="rule"><span class="k">Search never lies</span><span class="v">A search query that matches a pinned block shows it greyed-out with <code>Pinned ✓</code> (click = jump to it in Quick access); default listings without a query exclude pinned blocks entirely.</span></div>
+      <div class="rule"><span class="k">Prompt ≠ tags</span><span class="v">Two independent fields with different jobs. <b>Prompt</b> (<code>text</code>) is the generative payload — the frozen copy that gets assembled and sent to NovelAI. <b>Tags</b> are curation metadata on the block: they propagate to generated images through the snapshot components and power gallery filtering and examples. Widget search matches name + prompt; the tag filter matches tags only. The hover card labels them apart.</span></div>
+      <div class="rule"><span class="k">Palette semantics</span><span class="v">＋ (strict polarity routing — positive → Positive lane, negative → Negative) and drag-out both create an <b>independent copy</b>: fresh node id, frozen text. The pinned original stays; editing a copy never touches it, editing the pinned master never touches already-placed copies. <b>Unpin = ✕ on row hover</b> — the block leaves the palette and returns to the Library pool (the vault block is untouched).</span></div>
+      <div class="rule"><span class="k">Magnetic drop-in</span><span class="v">Dragging any canvas block over the widget shows an insertion slot; on drop the node re-parents to the zone and auto-packs into the single-column order (index from drop y). No free placement inside the widget.</span></div>
+      <div class="rule"><span class="k">Custom on the fly</span><span class="v">The <code>＋ New custom block</code> row at the list end creates a work-local custom block (category <code>custom</code>, <code>local</code> badge, no <code>block_id</code>). It persists with the work but is <b>not</b> in the vault until the user explicitly hits <code>Save to Library…</code> on the hover card — which opens the <b>Library editor drawer prefilled</b> (adjust name/category/tags at the moment of saving), then links the pin via the returned <code>block_id</code>.</span></div>
+      <div class="rule"><span class="k">Version drift</span><span class="v">A pinned copy never auto-updates (freeze semantics). If the Library block moved on (pinned v2, vault at v4), the row and hover card show <code>↻ v4</code>; updating is an explicit action that re-freezes the newer text.</span></div>
+      <div class="rule"><span class="k">Persistence</span><span class="v">Palette = zone children → persisted with the work (Phase-1 layout/domain split). Collapse state persists (layout). Mode, filters, search, scroll — transient.</span></div>
+      <div class="rule"><span class="k">Categories at scale</span><span class="v">Browse: searchable dropdown with counts (survives 20+ categories). Quick access: chips derived from pinned blocks, sorted by count desc — bounded by the palette itself.</span></div>
+      <div class="rule"><span class="k">Data</span><span class="v">Existing endpoints only (<code>/library/blocks|categories|tags</code>) + the LibraryView race guard; the single new write path is <code>Save to Library</code> → existing <code>POST /library/blocks</code>.</span></div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="oq">
+      <b>Design locked — decision log</b>
+      <ul>
+        <li>Two modes: Quick access (persisted palette) / Find in Library (transient read-only search) · collapse persists, filters don’t.</li>
+        <li>Exclusive membership: pinning removes the block from the Library pool; search shows pinned matches greyed-out (<code>Pinned ✓</code>, click = jump).</li>
+        <li>＋ / drag from the palette = independent copy (strict polarity routing on ＋); unpin = ✕ on row hover.</li>
+        <li>Custom blocks via the list-end <code>＋ New custom block</code> row; graduate to the vault only through <code>Save to Library…</code> → prefilled Library editor drawer.</li>
+        <li>Version drift is explicit: pinned copies never auto-update; <code>↻ vN</code> action re-freezes.</li>
+        <li>Categories: searchable dropdown in browse; count-sorted chips from the pinned set in Quick access.</li>
+        <li>Prompt (generative payload) and tags (curation metadata → image tags → gallery filters) are independent fields, labelled apart everywhere.</li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script>
+  const CATS = {
+    style:'#6e5dc6', character:'#0c66e4', pose:'#ae4787', environment:'#1f845a',
+    lighting:'#b65c02', camera:'#12b5a6', outfit:'#d4537e', negative:'#e2483d', custom:'#738496',
+  }
+  const LIB = [
+    { name:'Portrait base', cat:'character', text:'1girl, solo, portrait, looking at viewer, detailed eyes', pol:'+', tags:['portrait','solo'], v:'v2' },
+    { name:'Silver hair', cat:'character', text:'silver hair, long hair, blue eyes, hair between eyes', pol:'+', tags:['hair','portrait'], v:'v4' },
+    { name:'Watercolor wash', cat:'style', text:'watercolor (medium), soft shading, pastel palette, paper texture', pol:'+', tags:['painterly','soft'], v:'v1' },
+    { name:'Film grain', cat:'style', text:'film grain, chromatic aberration, cinematic still, shallow depth of field', pol:'+', tags:['cinematic'], v:'v3' },
+    { name:'Golden hour', cat:'lighting', text:'golden hour, rim light, warm lighting, long shadows, lens flare', pol:'+', tags:['warm','outdoor'], v:'v2' },
+    { name:'Low angle', cat:'camera', text:'from below, dutch angle, dynamic perspective, foreshortening', pol:'+', tags:['dynamic'], v:'v1' },
+    { name:'Forest clearing', cat:'environment', text:'forest, dappled sunlight, moss, ancient trees, volumetric light', pol:'+', tags:['outdoor','nature'], v:'v2' },
+    { name:'School uniform', cat:'outfit', text:'school uniform, pleated skirt, ribbon, knee-high socks', pol:'+', tags:['clothing'], v:'v1' },
+    { name:'Contrapposto', cat:'pose', text:'standing, contrapposto, hand on hip, relaxed pose', pol:'+', tags:['standing'], v:'v1' },
+    { name:'Anatomy guard', cat:'negative', text:'bad anatomy, extra digits, low quality, blurry, artifacts, watermark', pol:'−', tags:['quality'], v:'v5' },
+  ]
+  const mkPin = (i, over) => ({ ...LIB[i], libIdx:i, prov:'Library · '+LIB[i].v, ...(over||{}) })
+  const stash = [
+    mkPin(0),
+    mkPin(1, { text:'silver hair, long hair, blue eyes', prov:'Library · v2 (pinned)', update:LIB[1].v }), // pinned older copy
+    mkPin(4),
+    { name:'Quick tweak', cat:'custom', text:'glowing embers, drifting sparks', pol:'+', tags:[], prov:'custom · local', local:true },
+  ]
+  let mode = 'stash', activeCat = '', stashCat = '', catOpen = false
+  const $ = (s) => document.querySelector(s)
+
+  function renderMode(){
+    document.querySelectorAll('#mode button').forEach((b) => b.classList.toggle('active', b.dataset.m === mode))
+    $('#tools').hidden = mode !== 'browse'
+    $('#stashbar').hidden = mode !== 'stash'
+    $('#stashN').textContent = stash.length
+    $('#footlink').textContent = mode === 'browse' ? 'Open Library ↗' : 'Find in Library ⌕'
+    renderCatDd(); renderStashCats(); renderList()
+  }
+
+  /* ---- browse: searchable category dropdown ---- */
+  function browsePool(){ // pinned blocks leave the pool
+    const pinned = new Set(stash.map((s) => s.libIdx).filter((x) => x !== undefined))
+    return LIB.filter((_, i) => !pinned.has(i))
+  }
+  function renderCatDd(){
+    const pool = browsePool()
+    const counts = {}
+    for (const b of pool) counts[b.cat] = (counts[b.cat]||0)+1
+    const cur = activeCat || ''
+    $('#catbtn').innerHTML = (cur?`<span class="cdot" style="--cat:${CATS[cur]}"></span>`:'') +
+      `<span class="lbl">${cur ? cur[0].toUpperCase()+cur.slice(1) : 'All categories'}</span><span class="car">▾</span>`
+    const items = [['','All categories',pool.length], ...Object.keys(CATS).filter(c=>counts[c]).map(c=>[c, c[0].toUpperCase()+c.slice(1), counts[c]])]
+    $('#catpanel').innerHTML = `<input id="catq" type="text" placeholder="Filter categories…" />` +
+      items.map(([slug,label,n]) =>
+        `<button class="catitem${slug===cur?' on':''}" data-cat="${slug}">`+
+        (slug?`<span class="cdot" style="--cat:${CATS[slug]}"></span>`:'<span class="cdot" style="--cat:transparent"></span>')+
+        `${label}<span class="n">${n}</span></button>`).join('')
+    $('#catpanel').classList.toggle('open', catOpen)
+    const cq = $('#catq')
+    if (cq) cq.oninput = () => {
+      const f = cq.value.trim().toLowerCase()
+      document.querySelectorAll('#catpanel .catitem').forEach((el) => {
+        el.style.display = !f || el.textContent.toLowerCase().includes(f) ? '' : 'none'
+      })
+    }
+  }
+  $('#catbtn').addEventListener('click', () => { catOpen = !catOpen; $('#catpanel').classList.toggle('open', catOpen); const cq=$('#catq'); if (catOpen && cq) cq.focus() })
+  $('#catpanel').addEventListener('click', (e) => {
+    const it = e.target.closest('.catitem'); if (!it) return
+    activeCat = it.dataset.cat; catOpen = false; renderCatDd(); renderList()
+  })
+  document.addEventListener('mousedown', (e) => { if (!e.target.closest('.catdd')) { catOpen = false; $('#catpanel').classList.remove('open') } })
+
+  /* ---- stash: chips sorted by pinned count ---- */
+  function renderStashCats(){
+    const counts = {}
+    for (const b of stash) counts[b.cat] = (counts[b.cat]||0)+1
+    const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1])
+    $('#stashcats').innerHTML = [`<button class="catchip${!stashCat?' on':''}" data-cat="">All <span class="n">${stash.length}</span></button>`,
+      ...sorted.map(([c,n]) => `<button class="catchip${c===stashCat?' on':''}" data-cat="${c}" style="--cat:${CATS[c]}"><span class="cdot"></span>${c[0].toUpperCase()+c.slice(1)} <span class="n">${n}</span></button>`)].join('')
+  }
+  $('#stashcats').addEventListener('click', (e) => {
+    const chip = e.target.closest('.catchip'); if (!chip) return
+    stashCat = chip.dataset.cat === stashCat ? '' : chip.dataset.cat
+    renderStashCats(); renderList()
+  })
+  function addCustomBlock(){
+    stash.push({ name:'Untitled', cat:'custom', text:'tags…', pol:'+', tags:[], prov:'custom · local', local:true })
+    renderStashCats(); renderList(); $('#stashN').textContent = stash.length
+  }
+
+  /* ---- lists ---- */
+  function rowHtml(b, i, opts){
+    const badges = (b.local?'<span class="lbadge">local</span>':'') + (b.update?`<span class="ubadge">↻ ${b.update}</span>`:'')
+    if (opts.pinnedGhost) return `<div class="brow pinned" data-jump="${i}" style="--cat:${CATS[b.cat]}">
+      <div class="r1"><span class="bname">${b.name}</span><span class="pol${b.pol==='−'?' neg':''}">${b.pol}</span></div>
+      <div class="btext">${b.text}</div><span class="pinchip">Pinned ✓</span></div>`
+    const unpin = opts.src==='stash' ? `<button class="unpin" data-unpin="${i}" title="Unpin from quick access">✕</button>` : ''
+    return `<div class="brow" draggable="true" data-i="${i}" data-src="${opts.src}" style="--cat:${CATS[b.cat]}">
+      <div class="r1"><span class="grip">⠿</span><span class="bname">${b.name}</span>${badges}<span class="pol${b.pol==='−'?' neg':''}">${b.pol}</span>${unpin}</div>
+      <div class="btext">${b.text}</div>
+      <button class="act" data-i="${i}" title="${opts.act==='Pin'?'Pin into quick access':'Copy into the '+(b.pol==='−'?'negative':'positive')+' lane'}">${opts.act}</button>
+    </div>`
+  }
+  function renderList(){
+    if (mode === 'stash') {
+      const rows = stash.map((b,i)=>[b,i]).filter(([b]) => !stashCat || b.cat === stashCat)
+      $('#list').innerHTML = (rows.length
+        ? rows.map(([b,i]) => rowHtml(b, i, { act:'＋', src:'stash' })).join('')
+        : `<div class="wempty">Nothing pinned${stashCat?` in ${stashCat}`:''} yet.<br/><button id="gofind">Find in Library</button></div>`)
+        + `<button class="newrow" id="newrow">＋ New custom block</button>`
+        + `<div class="snapslot">⇣ insertion slot — appears only while dragging a canvas block over the widget</div>`
+      $('#count').textContent = `${stash.length} pinned`
+      const gf = $('#gofind'); if (gf) gf.onclick = () => { mode='browse'; renderMode() }
+      const nr = $('#newrow'); if (nr) nr.onclick = addCustomBlock
+    } else {
+      const q = $('#q').value.trim().toLowerCase()
+      const match = (b) => (!activeCat || b.cat===activeCat) && (!q || (b.name+' '+b.text).toLowerCase().includes(q))
+      const pinnedIdx = new Set(stash.map((s) => s.libIdx).filter((x) => x !== undefined))
+      const fresh = LIB.map((b,i)=>[b,i]).filter(([b,i]) => !pinnedIdx.has(i) && match(b))
+      const ghost = q ? LIB.map((b,i)=>[b,i]).filter(([b,i]) => pinnedIdx.has(i) && match(b)) : []
+      $('#list').innerHTML = (fresh.length || ghost.length)
+        ? fresh.map(([b,i]) => rowHtml(b, i, { act:'Pin', src:'lib' })).join('') +
+          ghost.map(([b,i]) => rowHtml(b, i, { pinnedGhost:true })).join('')
+        : `<div class="wempty">No blocks match.<br/><button id="clr">Clear filters</button></div>`
+      $('#count').textContent = `${fresh.length} of ${browsePool().length} blocks`
+      const clr = $('#clr'); if (clr) clr.onclick = () => { $('#q').value=''; activeCat=''; renderCatDd(); renderList() }
+    }
+    hidePop()
+  }
+
+  $('#mode').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return
+    mode = b.dataset.m; renderMode()
+  })
+  $('#q').addEventListener('input', renderList)
+  $('#footlink').addEventListener('click', () => { if (mode === 'stash') { mode='browse'; renderMode() } })
+
+  $('#list').addEventListener('click', (e) => {
+    const up = e.target.closest('.unpin')
+    if (up) { // ✕ on the row — the block leaves the palette and returns to the Library pool
+      stash.splice(+up.dataset.unpin, 1)
+      $('#stashN').textContent = stash.length
+      renderStashCats(); renderCatDd(); renderList()
+      return
+    }
+    const jump = e.target.closest('.brow.pinned')
+    if (jump) { // a pinned ghost row in search → jump to it in Quick access and flash it
+      const li = +jump.dataset.jump
+      mode = 'stash'; stashCat = ''; renderMode()
+      const si = stash.findIndex((s) => s.libIdx === li)
+      const el = document.querySelectorAll('#list .brow')[si]
+      if (el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1200) }
+      return
+    }
+    const btn = e.target.closest('.act'); if (!btn) return
+    if (mode === 'browse') {
+      stash.push(mkPin(+btn.dataset.i))
+      $('#stashN').textContent = stash.length
+      btn.textContent = '✓'; btn.classList.add('done')
+      setTimeout(() => { renderCatDd(); renderList() }, 500) // row leaves the pool
+    } else {
+      btn.textContent = '✓'; btn.classList.add('done')
+      setTimeout(() => { btn.textContent = '＋'; btn.classList.remove('done') }, 900)
+    }
+  })
+
+  /* ---- hover details card ---- */
+  let popTimer = null
+  function hidePop(){ $('#pop').classList.remove('show'); if (popTimer) { clearTimeout(popTimer); popTimer = null } }
+  $('#list').addEventListener('mouseover', (e) => {
+    const row = e.target.closest('.brow'); if (!row || row.classList.contains('pinned')) return
+    const fromStash = row.dataset.src === 'stash'
+    const idx = +row.dataset.i
+    const b = fromStash ? stash[idx] : LIB[idx]
+    if (!b) return
+    if (popTimer) clearTimeout(popTimer)
+    popTimer = setTimeout(() => {
+      const pop = $('#pop')
+      const actions = (b.local ? `<button class="pbtn">Save to Library…</button>` : '')
+        + (!b.local && b.update ? `<button class="pbtn upd">↻ Update to ${b.update} (re-freeze)</button>` : '')
+      // Prompt and tags are labelled apart on purpose: text is the generative payload,
+      // tags are curation metadata that flows to generated images (gallery filtering).
+      pop.innerHTML = `<div class="ph"><span class="cdot" style="--cat:${CATS[b.cat]}"></span>
+        <span class="pname">${b.name}</span><span class="ppol${b.pol==='−'?' neg':''}">${b.pol}</span></div>
+        <div class="plbl">Prompt</div>
+        <p class="ptext">${b.text}</p>
+        ${b.tags.length?`<div class="plbl">Gallery tags</div><div class="ptags">${b.tags.map((t)=>`<span>${t}</span>`).join('')}</div>`:''}
+        <div class="pmeta">${b.cat}<span class="sep">·</span>${b.prov || ('Library · '+b.v)}${b.update?`<span class="sep">·</span><span style="color:var(--warn)">${b.update} available</span>`:''}</div>
+        ${actions}`
+      const wRect = $('#widget').getBoundingClientRect()
+      const rRect = row.getBoundingClientRect()
+      const cRect = document.querySelector('.canvasdemo').getBoundingClientRect()
+      pop.style.left = (wRect.right - cRect.left + 10) + 'px'
+      pop.style.top = Math.min(rRect.top - cRect.top, cRect.height - 230) + 'px'
+      pop.classList.add('show')
+    }, 250)
+  })
+  $('#list').addEventListener('mouseout', (e) => {
+    if (!e.relatedTarget || !e.relatedTarget.closest('.brow, .pop')) hidePop() // moving into the card keeps it open
+  })
+  $('#pop').addEventListener('mouseleave', hidePop)
+
+  renderMode()
+</script>
