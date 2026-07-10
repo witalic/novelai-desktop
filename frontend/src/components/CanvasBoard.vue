@@ -406,8 +406,15 @@ function toggleLibraryCollapse() {
   zone.data.collapsed = collapsed
   syncLibraryHidden()
 }
+// The palette's child nodes hide while the widget is collapsed OR browsing the Library (the
+// browse pane occupies the zone body; children would z-fight it). `hidden` is runtime-only.
+const widgetBrowsing = ref(false)
+function setWidgetBrowsing(active: boolean) {
+  widgetBrowsing.value = active
+  syncLibraryHidden()
+}
 function syncLibraryHidden() {
-  const hide = !!findNode(LIBRARY)?.data.collapsed
+  const hide = !!findNode(LIBRARY)?.data.collapsed || widgetBrowsing.value
   for (const n of nodes.value) if (n.parentNode === LIBRARY) n.hidden = hide
 }
 
@@ -424,6 +431,7 @@ function insertLibraryBlock(b: LibraryBlock) {
     },
   }])
   repackLibrary()
+  syncLibraryHidden() // a pin made while browsing must stay hidden until the palette shows again
 }
 watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(insertLibraryBlock) })
 function doGenerate() {
@@ -443,9 +451,15 @@ function doGenerate() {
 // ---- vault: title/save state + logic live in useAutosave (above). Keyboard shortcuts below. ----
 function onKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); manualSave(); return }
+  const t = e.target as HTMLElement | null
+  const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+  if (e.key === '/' && !typing) {
+    e.preventDefault()
+    window.dispatchEvent(new CustomEvent('nai:widget-search')) // the prompt widget opens browse + focuses search
+    return
+  }
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    const t = e.target as HTMLElement | null
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return // typing, not deleting
+    if (typing) return // typing, not deleting
     const ids = nodes.value.filter((n) => n.selected && REMOVABLE.has(n.type)).map((n) => n.id)
     if (ids.length) { e.preventDefault(); removeNodes(ids) }
   }
@@ -687,7 +701,9 @@ function startName(data: any, e: MouseEvent) {
             <NodeResizer v-if="!data.collapsed" :min-width="220" :min-height="180" :is-visible="selected"
               color="var(--accent)" @resize="repackLibrary()" />
             <PromptWidget :data="data" :selected="selected" :count="childCount(id)"
-              @toggle="toggleLibraryCollapse" @open-library="emit('navigate', 'library')" />
+              @toggle="toggleLibraryCollapse" @open-library="emit('navigate', 'library')"
+              @open-settings="emit('navigate', 'settings')" @pin="insertLibraryBlock($event)"
+              @browse="setWidgetBrowsing" />
           </template>
           <template v-else>
             <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />

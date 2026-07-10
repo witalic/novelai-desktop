@@ -7,7 +7,7 @@ export interface PackChild {
   h: number
 }
 
-export const PACK_TOP = 50 // first row sits below the widget header
+export const PACK_TOP = 84 // first row sits below the widget header + mode switch
 export const PACK_GAP = 8
 export const PACK_X = 12
 const PACK_BOTTOM = 44 // room for the widget footer under the last row
