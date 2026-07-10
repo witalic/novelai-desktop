@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canvasToWork, workToCanvas, GALLERY, STATION } from './serialize'
+import { canvasToWork, workToCanvas, workToDrafts, GALLERY, STATION } from './serialize'
 
 /* serialize.ts is framework-free by design — these pin the canvas <-> WorkDoc contract:
  * geometry/parent/snapshot survive the round-trip, aspect ratio is recovered, snapshots dedup by
@@ -50,16 +50,46 @@ describe('canvasToWork', () => {
     expect(doc.images.map((i: any) => i.snapshot_id)).toEqual([doc.snapshots[0].id, doc.snapshots[1].id])
   })
 
-  it('does not persist transient block UI flags', () => {
+  it('whitelists block data: domain + lane layout survive, every transient flag is stripped', () => {
     const block = {
-      id: 'block-1', type: 'block', parentNode: STATION, position: { x: 400, y: 80 }, style: { width: '176px' },
-      data: { name: 'Char', text: '1girl', polarity: 'positive', category: 'character', block_id: 'b1', version: 1, tags: ['x'], expanded: true, editing: true },
+      id: 'block-1', type: 'block', parentNode: STATION, position: { x: 400, y: 80 }, style: { width: '176px' }, zIndex: 2,
+      data: {
+        name: 'Char', text: '1girl', polarity: 'positive', category: 'character',
+        block_id: 'b1', version: 1, tags: ['x'], xFrac: 0.25, laneFrac: 0.5,
+        expanded: true, editing: true, _cw: '176px', _ch: '34px', // transient — must never reach disk
+      },
     }
     const doc = canvasToWork([...anchors(), block], viewport, params, { id: 'w1', title: '' })
-    const saved = doc.canvas.nodes.find((n: any) => n.id === 'block-1')!
-    expect(saved.data.text).toBe('1girl')
-    expect(saved.data).not.toHaveProperty('expanded')
-    expect(saved.data).not.toHaveProperty('editing')
+    const saved = doc.canvas.nodes.find((n) => n.id === 'block-1')!
+    expect(saved.data).toEqual({
+      name: 'Char', text: '1girl', polarity: 'positive', category: 'character',
+      block_id: 'b1', version: 1, tags: ['x'], xFrac: 0.25, laneFrac: 0.5,
+    })
+    expect(saved.zIndex).toBe(2) // stacking order is layout — it persists
+  })
+
+  it('persists image nodes as pure layout (empty data) — domain lives in images[]', () => {
+    const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: '' })
+    const node = doc.canvas.nodes.find((n) => n.id === 'img-1')!
+    expect(node.data).toEqual({})
+  })
+})
+
+describe('workToDrafts', () => {
+  it('restores the stack with created_at, params, and snapshot intact', () => {
+    const draft = {
+      id: 'img-9', url: '/api/vault/works/w1/images/img-9', file: 'images/img-9.png',
+      params: { width: 832 } as any, mock: false, created_at: '2026-01-02T10:00:00Z',
+      snapshot: { components: [], positive: '1girl', negative: '', params: { width: 832, height: 1216, seed: 5 }, hash: 'positive:1girl' },
+    }
+    const doc = canvasToWork([...anchors()], viewport, params, { id: 'w1', title: '' }, [draft])
+    expect(doc.stack[0].created_at).toBe('2026-01-02T10:00:00Z')
+    const restored = workToDrafts(doc)
+    expect(restored).toHaveLength(1)
+    expect(restored[0].created_at).toBe('2026-01-02T10:00:00Z') // the lossy round-trip this test pins
+    expect(restored[0].url).toBe('/api/vault/works/w1/images/img-9')
+    expect(restored[0].params.seed).toBe(5)
+    expect(restored[0].snapshot?.positive).toBe('1girl')
   })
 })
 
@@ -68,12 +98,28 @@ describe('round-trip (canvasToWork -> workToCanvas)', () => {
     const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'Test' })
     const { nodes, viewport: vp } = workToCanvas(doc)
     expect(vp).toEqual(viewport)
-    const img = nodes.find((n: any) => n.id === 'img-1')!
+    const img = nodes.find((n) => n.id === 'img-1')!
     expect(img.parentNode).toBe(GALLERY)
     expect(img.position).toEqual({ x: 12, y: 44 })
     expect(img.style).toEqual({ width: '102px', height: '180px' })
-    expect(img.data.url).toBe('/api/vault/works/w1/images/img-1')
-    expect(img.data.snapshot.params.seed).toBe(42)   // snapshot restored onto the node (re-save keeps it)
-    expect(img.data.ar).toBeCloseTo(832 / 1216)       // recovered from params, not the rounded node size
+    expect((img.data as any).url).toBe('/api/vault/works/w1/images/img-1')
+    expect((img.data as any).snapshot.params.seed).toBe(42)   // snapshot restored onto the node (re-save keeps it)
+    expect((img.data as any).ar).toBeCloseTo(832 / 1216)       // recovered from params, not the rounded node size
+  })
+
+  it('is idempotent: canvas -> doc -> canvas -> doc yields the identical document', () => {
+    const block = {
+      id: 'block-1', type: 'block', parentNode: STATION, position: { x: 400, y: 80 }, style: { width: '176px' }, zIndex: 2,
+      data: { name: 'Char', text: '1girl', polarity: 'positive', category: 'character', block_id: 'b1', version: 3, tags: ['x'], xFrac: 0.25, laneFrac: 0.5 },
+    }
+    const draft = {
+      id: 'img-9', url: '/api/vault/works/w1/images/img-9', file: 'images/img-9.png',
+      params: {} as any, mock: false, created_at: '2026-01-02T10:00:00Z',
+      snapshot: { components: [], positive: 'sky', negative: '', params: { seed: 9 }, hash: 'positive:sky', created_at: '2026-01-02T10:00:00Z' },
+    }
+    const doc1 = canvasToWork([...anchors(), block, galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'T' }, [draft])
+    const { nodes, viewport: vp } = workToCanvas(doc1)
+    const doc2 = canvasToWork(nodes, vp, params, { id: 'w1', title: 'T' }, workToDrafts(doc1))
+    expect(doc2).toEqual(doc1) // no field drifts or drops across a full save/load/save cycle
   })
 })

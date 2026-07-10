@@ -1,20 +1,57 @@
 /* Serialize the Vue Flow canvas to a WorkDoc and back. Framework-free (takes plain node arrays)
- * so it is unit-testable. Only content inside the anchor zones is saved; drafts are dropped. */
-/* eslint-disable @typescript-eslint/no-explicit-any */
+ * so it is unit-testable. Persistence is an explicit whitelist: domain + layout fields are listed
+ * per node type below; everything else on a live node (measured dimensions, selection, transient
+ * UI flags like `expanded`/`editing`/`_cw`/`_ch`) never reaches disk. Only content inside the
+ * anchor zones is saved; drafts are dropped (scratch persistence lands with schema v2). */
+import type {
+  CanvasNode, GenResult, ImageNodeData, NodeStyle, PanelParams, PersistedImage,
+  PersistedSnapshot, PersistedStackItem, SnapshotData, Viewport, WorkDoc,
+} from '../types'
 
 export const STATION = 'station'
 export const LIBRARY = 'library'
 export const GALLERY = 'gallery'
 const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
-function slim(n: any) {
-  let data = n.type === 'image' ? {} : n.data
-  if (n.type === 'block') {
-    const { expanded, editing, ...rest } = n.data || {} // drop transient UI flags — they don't belong on disk
-    void expanded; void editing
-    data = rest
-  }
-  return { id: n.id, type: n.type, position: n.position, parentNode: n.parentNode, style: n.style, data }
+// What serialize reads off a live Vue Flow node (or a persisted CanvasNode being re-saved);
+// runtime-only fields stay unread. `data` is unknown on purpose: each node type casts to its
+// own whitelisted shape below.
+export interface LiveNode {
+  id: string
+  type?: string
+  position?: { x: number; y: number }
+  parentNode?: string
+  style?: unknown
+  zIndex?: number
+  data?: unknown
+}
+
+// ---- persistence whitelists (domain + layout per node type; the rest is transient) ----
+const BLOCK_FIELDS = [
+  'category', 'name', 'text', 'polarity', 'block_id', 'version', 'tags', // domain (frozen copy + vault ref)
+  'xFrac', 'laneFrac',                                                   // layout (station lane placement)
+] as const
+const STATION_FIELDS = ['outputRatio', 'posRatio'] as const
+const ZONE_FIELDS = ['role'] as const
+// image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
+
+function pick(data: Record<string, unknown> | undefined, fields: readonly string[]) {
+  const out: Record<string, unknown> = {}
+  for (const f of fields) if (data && data[f] !== undefined) out[f] = data[f]
+  return out
+}
+
+function slim(n: LiveNode): CanvasNode {
+  const fields =
+    n.type === 'block' ? BLOCK_FIELDS
+    : n.type === 'station' ? STATION_FIELDS
+    : n.type === 'zone' ? ZONE_FIELDS
+    : []
+  return {
+    id: n.id, type: n.type, position: n.position, parentNode: n.parentNode,
+    style: n.style as NodeStyle | undefined, zIndex: n.zIndex,
+    data: pick(n.data as Record<string, unknown> | undefined, fields),
+  } as CanvasNode
 }
 
 // Split a possible data-URL into { file, image_b64 } for persistence.
@@ -23,7 +60,10 @@ function splitImage(url: string, file: string) {
   return { file: isData ? '' : (file || ''), image_b64: isData ? url.replace(/^data:[^,]+,/, '') : null }
 }
 
-export function canvasToWork(nodes: any[], viewport: any, params: any, meta: { id: string; title: string }, drafts: any[] = []) {
+export function canvasToWork(
+  nodes: LiveNode[], viewport: Viewport, params: Partial<PanelParams>,
+  meta: { id: string; title: string }, drafts: GenResult[] = [],
+): WorkDoc {
   const station = nodes.find((n) => n.id === STATION)
   const library = nodes.find((n) => n.id === LIBRARY)
   const gallery = nodes.find((n) => n.id === GALLERY)
@@ -31,15 +71,15 @@ export function canvasToWork(nodes: any[], viewport: any, params: any, meta: { i
   // Saved nodes: the anchors + blocks inside station/library + images inside gallery (drafts excluded).
   const savedBlocks = nodes.filter((n) => n.type === 'block' && (n.parentNode === STATION || n.parentNode === LIBRARY))
   const galleryImages = nodes.filter((n) => n.type === 'image' && n.parentNode === GALLERY)
-  const anchorNodes = [station, library, gallery].filter(Boolean)
+  const anchorNodes = [station, library, gallery].filter((n): n is LiveNode => !!n)
   const canvasNodes = [...anchorNodes, ...savedBlocks, ...galleryImages].map(slim)
 
   // Work-level snapshots (the reproducible recipe: prompt composition + params), deduped and shared by
   // gallery images and the draft stack; each references one via snapshot_id. The dedup key includes the
   // params (seed, steps, …), not just the prompt hash — otherwise two images from the same prompt but a
   // different seed collapse onto one snapshot and lose their real recipe.
-  const snapshotsByKey = new Map<string, any>()
-  const snapshotIdOf = (snap: any): string | null => {
+  const snapshotsByKey = new Map<string, PersistedSnapshot>()
+  const snapshotIdOf = (snap: SnapshotData | undefined): string | null => {
     if (!snap?.hash) return null
     const key = `${snap.hash}|${JSON.stringify(snap.params || {})}`
     if (!snapshotsByKey.has(key)) {
@@ -48,21 +88,25 @@ export function canvasToWork(nodes: any[], viewport: any, params: any, meta: { i
         hash: snap.hash, components: snap.components || [],
         assembled_positive: snap.positive || '', assembled_negative: snap.negative || '',
         params: snap.params || {},
+        created_at: snap.created_at || '', // backend stamps this once, on first save
       })
     }
-    return snapshotsByKey.get(key).id
+    return snapshotsByKey.get(key)!.id
   }
 
-  const images = galleryImages.map((im) => ({
-    id: im.id, snapshot_id: snapshotIdOf(im.data?.snapshot),
-    ...splitImage(im.data?.url || '', im.data?.file || ''),
-    created_at: im.data?.created_at || '', // backend fills this if empty
-    group: im.data?.group || null, favorite: !!im.data?.favorite,
-    tags: im.data?.tags || [], description: im.data?.description || '',
-  }))
+  const images: PersistedImage[] = galleryImages.map((im) => {
+    const d = (im.data ?? {}) as Partial<ImageNodeData>
+    return {
+      id: im.id, snapshot_id: snapshotIdOf(d.snapshot),
+      ...splitImage(d.url || '', d.file || ''),
+      created_at: d.created_at || '', // backend fills this if empty
+      group: d.group ?? null, favorite: !!d.favorite,
+      tags: d.tags || [], description: d.description || '',
+    }
+  })
 
   // The generation output pile ("stack") persists too, so reopening a work restores it.
-  const stack = (drafts || []).map((d) => ({
+  const stack: PersistedStackItem[] = (drafts || []).map((d) => ({
     id: d.id, snapshot_id: snapshotIdOf(d.snapshot),
     ...splitImage(d.url || '', d.file || ''), created_at: d.created_at || '',
   }))
@@ -76,48 +120,53 @@ export function canvasToWork(nodes: any[], viewport: any, params: any, meta: { i
   }
 }
 
-function restoreSnapshot(snap: any) {
+function restoreSnapshot(snap: PersistedSnapshot | undefined): SnapshotData | undefined {
   return snap
-    ? { components: snap.components || [], positive: snap.assembled_positive || '', negative: snap.assembled_negative || '', params: snap.params || {}, hash: snap.hash || '' }
+    ? {
+        components: snap.components || [], positive: snap.assembled_positive || '',
+        negative: snap.assembled_negative || '', params: snap.params || {}, hash: snap.hash || '',
+        created_at: snap.created_at || '',
+      }
     : undefined
 }
 
 // Rebuild the draft stack (GenResult[]) from a saved work's `stack`.
-export function workToDrafts(doc: any): any[] {
-  const snapById = new Map<string, any>((doc.snapshots || []).map((s: any) => [s.id, s]))
-  return (doc.stack || []).map((s: any) => {
-    const snap = s.snapshot_id ? snapById.get(s.snapshot_id) : null
+export function workToDrafts(doc: WorkDoc): GenResult[] {
+  const snapById = new Map((doc.snapshots || []).map((s) => [s.id, s]))
+  return (doc.stack || []).map((s) => {
+    const snap = s.snapshot_id ? snapById.get(s.snapshot_id) : undefined
     return {
       id: s.id, file: s.file || '', mock: false,
       url: s.file ? `/api/vault/works/${doc.id}/images/${s.id}` : '',
-      params: (snap?.params) || {}, snapshot: restoreSnapshot(snap),
+      params: ((snap?.params) || {}) as unknown as GenResult['params'], snapshot: restoreSnapshot(snap),
+      created_at: s.created_at || '', // keep the true generation time across save/reopen cycles
     }
   })
 }
 
-export function workToCanvas(doc: any) {
-  const imageById = new Map<string, any>((doc.images || []).map((im: any) => [im.id, im]))
-  const snapById = new Map<string, any>((doc.snapshots || []).map((s: any) => [s.id, s]))
-  const nodes = (doc.canvas?.nodes || []).map((n: any) => {
+export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Viewport } {
+  const imageById = new Map((doc.images || []).map((im) => [im.id, im]))
+  const snapById = new Map((doc.snapshots || []).map((s) => [s.id, s]))
+  const nodes = (doc.canvas?.nodes || []).map((n): CanvasNode => {
     if (n.type === 'image') {
       const im = imageById.get(n.id)
-      const snap = im?.snapshot_id ? snapById.get(im.snapshot_id) : null
+      const snap = im?.snapshot_id ? snapById.get(im.snapshot_id) : undefined
       const url = im?.file ? `/api/vault/works/${doc.id}/images/${n.id}` : ''
       // Restore the snapshot into the node so a later re-save preserves it (round-trip fix).
       const snapshot = restoreSnapshot(snap)
       // Recover the true aspect ratio from the generation params (always present) so resizing uses it
       // rather than re-deriving from the rounded node size each load — which drifts across save/scale cycles.
-      const p = snap?.params || {}
+      const p = (snap?.params || {}) as { width?: number; height?: number }
       const ar = p.width && p.height ? p.width / p.height : undefined
       return {
         ...n,
         data: {
           url, file: im?.file || '', snapshot, ar, created_at: im?.created_at || '',
-          tags: im?.tags || [], favorite: !!im?.favorite, group: im?.group || null, description: im?.description || '',
+          tags: im?.tags || [], favorite: !!im?.favorite, group: im?.group ?? null, description: im?.description || '',
         },
       }
     }
-    return { ...n, data: { ...n.data } }
+    return { ...n, data: { ...n.data } } as CanvasNode
   })
   return { nodes, viewport: doc.canvas?.viewport || { x: 0, y: 0, zoom: 1 } }
 }

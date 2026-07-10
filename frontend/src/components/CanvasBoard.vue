@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { VueFlow, useVueFlow } from '@vue-flow/core'
+import { VueFlow, useVueFlow, type Node as FlowNode } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { NodeResizer } from '@vue-flow/node-resizer'
@@ -118,7 +118,8 @@ function onCanvasDrop(e: DragEvent) {
   const id = draft.id // reuse the draft's id/file so a restored draft keeps its image when kept
   // The generation recipe (prompt + params) lives in the snapshot; the node keeps only display + meta.
   // `ar` is the true source aspect ratio — resizing derives sizes from it so rounding never accumulates.
-  const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: new Date().toISOString() }
+  // Keep the draft's original generation time when it has one (restored stacks) — materialising is not creating.
+  const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: draft.created_at || new Date().toISOString() }
   // Dropping straight onto the Gallery keeps the image there immediately — no bounce via the canvas first.
   const gal = findNode(GALLERY)
   const gd = gal ? dims(gal) : { w: 0, h: 0 }
@@ -430,7 +431,7 @@ onDeactivated(() => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function loadDoc(doc: any) {
   const { nodes: ns, viewport: vp } = workToCanvas(doc)
-  setNodes(ns)
+  setNodes(ns as unknown as FlowNode[]) // persisted nodes are plain data; Vue Flow hydrates the runtime fields
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
   if (vp) setViewport(vp)

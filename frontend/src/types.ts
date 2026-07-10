@@ -34,6 +34,7 @@ export interface SnapshotData {
   negative: string
   params: Record<string, unknown> // the generation recipe lives in the snapshot, not the image
   hash: string
+  created_at?: string // backend-stamped on first save; carried through so re-saves don't re-stamp
 }
 
 export interface GenResult {
@@ -43,6 +44,7 @@ export interface GenResult {
   params: GenerateParams
   mock: boolean
   snapshot?: SnapshotData
+  created_at?: string // backend-stamped on first save; restored so re-saves keep the true time
 }
 
 // ---- vault recipe contract (the persisted WorkDoc) ----
