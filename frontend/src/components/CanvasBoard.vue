@@ -15,7 +15,7 @@ import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
-import type { GenResult, LibraryBlock, PanelParams, SnapshotData, WorkDoc } from '../types'
+import type { GenResult, LibraryBlock, PanelParams, PersistedComponent, SnapshotData, WorkDoc } from '../types'
 
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -369,7 +369,7 @@ function insertLibraryBlock(b: LibraryBlock) {
 }
 watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(insertLibraryBlock) })
 function doGenerate() {
-  const components = compBlocks.value.slice().sort((a, b) => a.position.x - b.position.x).map((b) => ({
+  const components = compBlocks.value.slice().sort((a, b) => a.position.x - b.position.x).map((b): PersistedComponent => ({
     source: b.data.block_id ? 'library' : 'custom', block_id: b.data.block_id, version: b.data.version,
     name: b.data.name, text: String(b.data.text || '').trim(), polarity: b.data.polarity,
     category: b.data.category, tags: b.data.tags || [],

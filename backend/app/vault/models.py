@@ -1,4 +1,11 @@
-"""Pydantic DTOs for the vault API + on-disk documents."""
+"""Pydantic DTOs for the vault API + on-disk documents.
+
+The work-document models below (Component, Snapshot, Image, StackItem, WorkDoc) are the persisted
+recipe contract — manual parity with ``frontend/src/types.ts``. When one side changes shape, change
+the other and bump ``schema_version`` + add a migration (ROADMAP Phase 1). ``WorkDoc.canvas`` stays
+an opaque dict on purpose: layout is frontend-owned, and validating it here would turn every
+frontend-only layout change into a backend break (deliberate deviation from the roadmap letter).
+"""
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -69,6 +76,9 @@ class Component(BaseModel):
 
 
 class Snapshot(BaseModel):
+    """A frozen recipe: resolved text + params + seed at generation time, plus the component refs
+    it was assembled from. Editing a Library block never mutates past snapshots."""
+
     id: str
     hash: str = ""
     components: list[Component] = Field(default_factory=list)
@@ -108,7 +118,7 @@ class WorkDoc(BaseModel):
     created_at: str = ""
     updated_at: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
-    canvas: dict[str, Any] = Field(default_factory=dict)   # frontend owns the layout; stored opaquely
+    canvas: dict[str, Any] = Field(default_factory=dict)   # frontend owns the layout; stored opaquely (see module docstring)
     snapshots: list[Snapshot] = Field(default_factory=list)
     images: list[Image] = Field(default_factory=list)
     stack: list[StackItem] = Field(default_factory=list)   # the generation output pile (drafts)
