@@ -5,20 +5,14 @@ Images are written BEFORE the manifest so a saved ``work.json`` never references
 """
 import base64
 import json
-import os
 from pathlib import Path
 
+from app.vault import layout
 from app.vault.models import WorkDoc
 
 
 def read_work(work_dir: Path) -> WorkDoc:
     return WorkDoc.model_validate_json((work_dir / "work.json").read_text("utf-8"))
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, "utf-8")
-    os.replace(tmp, path)
 
 
 def write_work(work_dir: Path, doc: WorkDoc) -> None:
@@ -33,7 +27,7 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
             "snapshot_id": im.snapshot_id, "created_at": im.created_at, "tags": im.tags,
             "description": im.description, "group": im.group, "favorite": im.favorite, "source": im.source,
         }
-        (images_dir / f"{im.id}.json").write_text(json.dumps(sidecar, ensure_ascii=False), "utf-8")
+        layout.atomic_write_text(images_dir / f"{im.id}.json", json.dumps(sidecar, ensure_ascii=False))
     # Draft-stack images live alongside gallery images (served by the same /images/{id} route).
     for st in doc.stack:
         if st.image_b64:
@@ -41,7 +35,7 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
             st.file = f"images/{st.id}.png"
             st.image_b64 = None
     _gc_orphans(work_dir, {im.id for im in doc.images} | {st.id for st in doc.stack})
-    _atomic_write_text(work_dir / "work.json", doc.model_dump_json())
+    layout.atomic_write_text(work_dir / "work.json", doc.model_dump_json())
 
 
 def _gc_orphans(work_dir: Path, keep: set[str]) -> None:

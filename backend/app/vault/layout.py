@@ -1,8 +1,18 @@
-"""Path helpers — id validation, slugs, and a traversal-safe join confined under the vault root."""
+"""Path helpers — id validation, slugs, a traversal-safe join, and an atomic text write."""
+import os
 import re
+import threading
 from pathlib import Path
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # \Z (not $) so a trailing newline can't sneak through
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write via a per-writer temp + os.replace so a crash or concurrent writer never leaves the file
+    truncated (matters for the durable JSON: work/block/category manifests and sidecars)."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text, "utf-8")
+    os.replace(tmp, path)
 
 
 def valid_id(value: str) -> bool:

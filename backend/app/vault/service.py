@@ -221,7 +221,7 @@ def save_block(settings: Settings, block: BlockDoc) -> dict:
             old.unlink(missing_ok=True)
     path = layout.safe_join(root, block.category, f"{block.id}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(block.model_dump_json(), "utf-8")
+    layout.atomic_write_text(path, block.model_dump_json())
     conn = index.open_index(vault)
     try:
         index.upsert_block(conn, json.loads(block.model_dump_json()))
@@ -305,7 +305,7 @@ def _reassign_blocks_to_custom(vault: Path, slug: str) -> list[dict]:
             continue
         data["category"] = "custom"
         data["updated_at"] = _now()
-        (dst_dir / bj.name).write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+        layout.atomic_write_text(dst_dir / bj.name, json.dumps(data, ensure_ascii=False))
         bj.unlink(missing_ok=True)
         moved.append(data)
     try:

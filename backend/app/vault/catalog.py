@@ -11,6 +11,7 @@ import json
 import logging
 from pathlib import Path
 
+from app.vault import layout
 from app.vault.models import CategoryDoc
 
 log = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ def _write_raw(vault: Path, overrides: list[dict], hidden: set[str]) -> None:
     path = _path(vault)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"overrides": overrides, "hidden": sorted(hidden)}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    layout.atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def read_all(vault: Path) -> list[CategoryDoc]:

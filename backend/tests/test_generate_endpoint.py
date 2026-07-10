@@ -52,10 +52,12 @@ async def test_generate_surfaces_upstream_status(monkeypatch, exc_path, expected
     from app.routers import generate as gen
     monkeypatch.setattr(gen, "get_client", lambda settings: _StubClient())
     app.dependency_overrides[get_settings] = lambda: Settings(novelai=NovelAISettings(mock=True), _env_file=None)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.post("/api/generate", json={"prompt": "1girl"})
-    app.dependency_overrides.clear()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.post("/api/generate", json={"prompt": "1girl"})
+    finally:
+        app.dependency_overrides.clear()  # never leak the override to other tests, even on failure
     assert resp.status_code == expected
 
 
@@ -65,10 +67,12 @@ async def test_download_writes_files(tmp_path):
         download_dir=str(tmp_path), vault=VaultSettings(state_dir=str(tmp_path / "state")), _env_file=None
     )
     png_b64 = base64.b64encode(solid_png(8, 8)).decode("ascii")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.post("/api/download", json={"images": [png_b64, png_b64]})
-    app.dependency_overrides.clear()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.post("/api/download", json={"images": [png_b64, png_b64]})
+    finally:
+        app.dependency_overrides.clear()  # never leak the override to other tests, even on failure
     assert resp.status_code == 200
     assert resp.json()["count"] == 2
     assert len(list(tmp_path.glob("*.png"))) == 2
