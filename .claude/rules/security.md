@@ -8,6 +8,13 @@ private creative work — leaking a token or the vault is the core risk.
   gitignored and never read into general responses. Never `echo` / `cat` / commit them.
 - **Prefer token over password:** authenticate to NovelAI with the persistent API token from Account settings,
   so the app never handles the user's password. Argon2 login-key derivation is a last resort, not the default.
+- **The local API is not open to the machine.** The sidecar binds loopback only. The shell mints a fresh
+  per-launch secret, passes it via env `NAI_API__AUTH_TOKEN`, and delivers it as a `SameSite=Strict; HttpOnly`
+  `nai_auth` cookie; the backend guard requires it on every `/api` call (constant-time compare) and rejects
+  non-loopback `Host` (anti DNS-rebinding). `/health` stays open and echoes `sha256(token)` so the shell can
+  confirm it reached its own sidecar (port-TOCTOU). This secret is a transient session token, not a stored
+  credential — but never log or commit it either. No token (dev `python -m app`, tests) → guard is a
+  pass-through, so **never rely on the guard as the only defense** for a real secret.
 - **The vault is private:** prompts and generated images are the user's content. Never transmit them anywhere
   except the API they are explicitly bound for (NovelAI for generation, Anthropic for prompt authoring). Never
   commit vault data or generated images to the repo — they live outside version control.
