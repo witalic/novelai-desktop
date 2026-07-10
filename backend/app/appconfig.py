@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from app.settings import Settings
@@ -17,6 +19,7 @@ from app.vault import config as vaultcfg
 
 log = logging.getLogger(__name__)
 _FILE = "settings.json"
+_lock = threading.RLock()  # serialize read-modify-write of settings.json across threads (patch, move, first-run)
 
 
 def config_dir(settings: Settings) -> Path:
@@ -82,20 +85,31 @@ def save(settings: Settings, data: dict) -> dict:
     coerced = _coerce(data, settings)
     cfg = config_dir(settings)
     cfg.mkdir(parents=True, exist_ok=True)
-    # Atomic write: a crash / concurrent writer (the move thread) mid-write must never truncate this file —
-    # a corrupt settings.json falls back to all-defaults, which would silently drop the vault registry.
-    tmp = cfg / f"{_FILE}.tmp"
-    tmp.write_text(json.dumps(coerced, ensure_ascii=False, indent=2), "utf-8")
-    os.replace(tmp, cfg / _FILE)
+    # Atomic write with a per-writer temp name: a crash / concurrent writer mid-write must never truncate
+    # this file (a corrupt settings.json falls back to all-defaults → the vault registry silently vanishes),
+    # and two writers must not fight over a shared temp path.
+    with _lock:
+        tmp = cfg / f"{_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
+        tmp.write_text(json.dumps(coerced, ensure_ascii=False, indent=2), "utf-8")
+        os.replace(tmp, cfg / _FILE)
     return coerced
 
 
+def update(settings: Settings, mutate: Callable[[dict], None]) -> dict:
+    """Atomic read-modify-write of the settings file, serialized across threads — the only safe way to edit
+    it when patch(), the move thread, and first-run registration can all run concurrently."""
+    with _lock:
+        data = load(settings)
+        mutate(data)
+        return save(settings, data)
+
+
 def patch(settings: Settings, changes: dict) -> dict:
-    data = load(settings)
-    for key, value in changes.items():
-        if value is not None:
-            data[key] = value
-    return save(settings, data)
+    def apply(data: dict) -> None:
+        for key, value in changes.items():
+            if value is not None:
+                data[key] = value
+    return update(settings, apply)
 
 
 def active_vault(settings: Settings) -> Path:
@@ -112,10 +126,12 @@ def active_vault(settings: Settings) -> Path:
         if not vaultcfg.is_initialized(target):
             vaultcfg.init_vault(target)
         return target
-    # first run (or the active folder vanished): fall back to the default and register it
+    # first run (or the active folder vanished): fall back to the default and register it atomically
     default = vaultcfg.proposed_default(settings)
     vaultcfg.init_vault(default)
-    data["vaults"] = _dedupe([*data["vaults"], str(default)])
-    data["active_vault"] = str(default)
-    save(settings, data)
+
+    def register(d: dict) -> None:
+        d["vaults"] = _dedupe([*d["vaults"], str(default)])
+        d["active_vault"] = str(default)
+    update(settings, register)
     return default

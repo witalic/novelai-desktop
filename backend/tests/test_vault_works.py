@@ -1,4 +1,5 @@
 """Vault store + index: save/load/list/serve/gallery/rebuild — fully offline (tmp vault)."""
+import asyncio
 import base64
 import os
 from io import BytesIO
@@ -192,6 +193,18 @@ async def test_index_rebuilds_when_deleted(client):
     await ac.put("/api/vault/works", json=_work())
     (vault / ".index.sqlite").unlink()
     assert (await ac.get("/api/vault/works")).json()["total"] == 1
+
+
+async def test_concurrent_saves_share_a_tag_without_racing_the_index(client):
+    ac, _ = client
+    # 8 saves land in parallel (sync handlers run in Starlette's threadpool): the first calls race to build
+    # the index, and all introduce the SAME new tag. Without the per-vault build lock (+ INSERT OR IGNORE)
+    # this races to "table exists" / a UNIQUE IntegrityError → 500s. All must succeed and share one tag row.
+    works = [_work(f"w{i}", tags=["shared", f"uniq{i}"]) for i in range(8)]
+    results = await asyncio.gather(*[ac.put("/api/vault/works", json=w) for w in works])
+    assert [r.status_code for r in results] == [200] * 8
+    hit = (await ac.get("/api/vault/gallery", params={"tags": ["shared"]})).json()
+    assert hit["total"] == 8  # every work indexed under the one shared tag, no dupes/errors
 
 
 async def test_bad_id_and_missing_image(client):

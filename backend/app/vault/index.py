@@ -7,6 +7,7 @@ filter across many images efficiently. Image tags are inherited from the snapsho
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 
 from app.vault.models import WorkDoc
@@ -45,32 +46,57 @@ def _connect(vault: Path) -> sqlite3.Connection:
     return conn
 
 
-def open_index(vault: Path) -> sqlite3.Connection:
-    """Open the index; (re)create + rebuild it if missing, corrupt, or on a schema version bump."""
-    existed = (vault / _DB).exists()
-    conn = _connect(vault)
+# Per-vault lock so parallel first-run requests (the frontend fires several at once) don't both wipe +
+# recreate the index — that races to "table already exists" / a Windows PermissionError unlinking a DB a
+# sibling thread still holds.
+_build_locks: dict[str, threading.Lock] = {}
+_build_locks_guard = threading.Lock()
+
+
+def _build_lock(vault: Path) -> threading.Lock:
+    key = str(vault)
+    with _build_locks_guard:
+        lock = _build_locks.get(key)
+        if lock is None:
+            lock = _build_locks[key] = threading.Lock()
+        return lock
+
+
+def _healthy(conn: sqlite3.Connection) -> bool:
     try:
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        stale = version != _SCHEMA_VERSION
-    except sqlite3.DatabaseError:  # not a valid SQLite file → treat as stale and rebuild (the index is throwaway)
-        stale = True
-    if not existed or stale:
+        return conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
+    except sqlite3.DatabaseError:  # missing/empty (user_version 0) or not a valid SQLite file
+        return False
+
+
+def open_index(vault: Path) -> sqlite3.Connection:
+    """Open the index; (re)build it if missing, corrupt, or on a schema version bump.
+
+    The per-vault lock wraps the whole open (connect + health check + any rebuild), not just the rebuild:
+    otherwise a sibling thread sitting between its own connect() and close() would hold a handle to the DB
+    while this thread unlinks it — a Windows 'file in use' error during the first-run request burst. For the
+    common healthy path the lock is held only for a connect + one PRAGMA, so contention is negligible."""
+    with _build_lock(vault):
+        conn = _connect(vault)
+        if _healthy(conn):
+            return conn
         conn.close()
-        (vault / _DB).unlink(missing_ok=True)
+        for suffix in ("", "-wal", "-shm"):  # drop the DB together with its WAL sidecars
+            (vault / f"{_DB}{suffix}").unlink(missing_ok=True)
         conn = _connect(vault)
         conn.executescript(_SCHEMA)
         conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         conn.commit()
         rebuild(conn, vault)
-    return conn
+        return conn
 
 
 def _tag_id(conn: sqlite3.Connection, name: str) -> int:
     name = name.strip()
-    row = conn.execute("SELECT id FROM tag WHERE name=?", (name,)).fetchone()
-    if row:
-        return row[0]
-    return conn.execute("INSERT INTO tag(name) VALUES(?)", (name,)).lastrowid
+    # INSERT OR IGNORE + SELECT rather than SELECT-then-INSERT — the latter races to a UNIQUE IntegrityError
+    # when two saves introduce the same new tag concurrently.
+    conn.execute("INSERT OR IGNORE INTO tag(name) VALUES(?)", (name,))
+    return conn.execute("SELECT id FROM tag WHERE name=?", (name,)).fetchone()[0]
 
 
 def _delete_work(conn: sqlite3.Connection, work_id: str) -> None:

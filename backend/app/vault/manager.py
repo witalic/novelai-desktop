@@ -39,20 +39,22 @@ def add_vault(settings: Settings, dir_str: str) -> VaultConfig:
     if error:
         raise HTTPException(status_code=400, detail=error)
     vaultcfg.init_vault(target)
-    data = appconfig.load(settings)
-    data["vaults"] = list(dict.fromkeys([*data["vaults"], str(target)]))
-    data["active_vault"] = str(target)  # a freshly added vault becomes active
-    appconfig.save(settings, data)
+
+    def add(d: dict) -> None:
+        d["vaults"] = list(dict.fromkeys([*d["vaults"], str(target)]))
+        d["active_vault"] = str(target)  # a freshly added vault becomes active
+    appconfig.update(settings, add)
     return get_config(settings)
 
 
 def set_active(settings: Settings, dir_str: str) -> VaultConfig:
     target = str(Path(dir_str).expanduser())
-    data = appconfig.load(settings)
-    if target not in data["vaults"]:
-        raise HTTPException(status_code=404, detail="Vault is not in the list — add it first.")
-    data["active_vault"] = target
-    appconfig.save(settings, data)
+
+    def activate(d: dict) -> None:
+        if target not in d["vaults"]:
+            raise HTTPException(status_code=404, detail="Vault is not in the list — add it first.")
+        d["active_vault"] = target
+    appconfig.update(settings, activate)
     return get_config(settings)
 
 
@@ -68,10 +70,12 @@ def delete_vault(settings: Settings, dir_str: str) -> VaultConfig:
             shutil.rmtree(target)
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Could not delete the folder: {exc}") from exc
-    data["vaults"] = [v for v in data["vaults"] if v != ts]
-    if data["active_vault"] == ts:
-        data["active_vault"] = data["vaults"][0] if data["vaults"] else None
-    appconfig.save(settings, data)
+
+    def drop(d: dict) -> None:
+        d["vaults"] = [v for v in d["vaults"] if v != ts]
+        if d["active_vault"] == ts:
+            d["active_vault"] = d["vaults"][0] if d["vaults"] else None
+    appconfig.update(settings, drop)
     return get_config(settings)
 
 
@@ -123,11 +127,12 @@ def _run_move(settings: Settings, src: Path, dst: Path) -> None:
                 shutil.copy2(f, target)
                 _move["done"] += 1
         shutil.rmtree(src)
-        data = appconfig.load(settings)
-        data["vaults"] = list(dict.fromkeys([str(dst) if v == str(src) else v for v in data["vaults"]]))
-        if data["active_vault"] == str(src):
-            data["active_vault"] = str(dst)
-        appconfig.save(settings, data)
+
+        def relink(d: dict) -> None:
+            d["vaults"] = list(dict.fromkeys([str(dst) if v == str(src) else v for v in d["vaults"]]))
+            if d["active_vault"] == str(src):
+                d["active_vault"] = str(dst)
+        appconfig.update(settings, relink)
     except Exception as exc:  # noqa: BLE001 — surface any failure to the poller, don't crash the thread
         _move["error"] = str(exc)
         log.exception("Vault move failed")
