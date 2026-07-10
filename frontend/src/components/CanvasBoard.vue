@@ -7,10 +7,11 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { getAppSettings, getVaultConfig, saveDownloads, saveWork } from '../api'
+import { getVaultConfig, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
 import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
-import { canvasToWork, workToCanvas } from '../vault/serialize'
+import { useAutosave } from '../composables/useAutosave'
+import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
 import type { GenResult, LibraryBlock, PanelParams, SnapshotData, WorkDoc } from '../types'
@@ -33,12 +34,10 @@ const {
 
 // The "station" is one coupled node: [ Output | Positive / Negative lanes ] + header + meta.
 // Internal areas are ratio-driven (data.outputRatio, data.posRatio) so they scale on resize + splitters.
-const STATION = 'station'
+// STATION/LIBRARY/GALLERY zone ids come from serialize (single source of truth). Content inside them is
+// saved; anything loose on the canvas is a draft.
 const HEADER = 44
 const META = 66
-// The three anchor zones. Content inside them is saved; anything loose on the canvas is a draft.
-const LIBRARY = 'library'
-const GALLERY = 'gallery'
 const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
 const CATS: Record<string, string> = {
@@ -68,6 +67,13 @@ const topSelected = ref(false)
 // `sizeOf` are hoisted node-size helpers shared with arrange/settle; the pipeline gets them by reference.
 const { shownSrc, scaleOf, imgScale, fullStyle, imgSrc, seedSrc, swapSrc, applyScale } =
   useImagePipeline({ nodes, findNode, sizeOf, dims })
+
+// Vault autosave (dirty flag, flush, save state). Owns the state + logic; the lifecycle (window listeners,
+// the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
+const { title, vaultReady, workId, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
+  onBeforeUnload, refreshInterval, stopAutosave, resetBaseline } = useAutosave({
+  nodes, viewport, params: () => props.params, drafts: () => props.drafts, onNoVault: () => emit('navigate', 'settings'),
+})
 
 function toFlow(clientX: number, clientY: number) {
   if (typeof screenToFlowCoordinate === 'function') return screenToFlowCoordinate({ x: clientX, y: clientY })
@@ -255,10 +261,7 @@ async function newWork() {
   setNodes(zoneNodes())
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries
   setViewport({ x: 40, y: 40, zoom: 0.7 })
-  lastSig = changeKey()
-  dirty = false
-  saveState.value = 'idle'
-  savedAt.value = ''
+  resetBaseline('idle')
 }
 
 onMounted(async () => {
@@ -353,76 +356,7 @@ function doGenerate() {
   emit('generate', { positive: c.positive, negative: c.negative, snapshot })
 }
 
-// ---- vault: title + save (dirty-flagged; flushed on leave / close / timer), manual save, load ----
-// Not a per-keystroke debounce: edits just mark the work dirty, and it's persisted at meaningful
-// moments (leaving Generate, app close, a periodic timer) — heavy works never save every few seconds.
-type SaveState = 'idle' | 'dirty' | 'saving' | 'saved'
-const title = ref('')
-const vaultReady = ref(false)
-const workId = ref(newId('work'))
-const saveState = ref<SaveState>('idle')
-const savedAt = ref('')
-
-let dirty = false
-let saving = false
-let pendingResave = false
-let lastSig = ''
-
-// A work is worth persisting once it has a title, a kept gallery image, OR a non-empty prompt block in the
-// station/library — otherwise an assembled-but-ungenerated composition would be discarded silently on leave.
-function isMeaningful() {
-  return title.value.trim().length > 0 || nodes.value.some((n) =>
-    (n.type === 'image' && n.parentNode === GALLERY)
-    || (n.type === 'block' && (n.parentNode === STATION || n.parentNode === LIBRARY)
-        && String(n.data?.text || '').trim().length > 0))
-}
-
-// Cheap change signature (excludes image bytes) so an unchanged work is never re-written.
-function changeKey(): string {
-  const sig = nodes.value.map((n) => ({
-    i: n.id, p: n.parentNode ?? null,
-    x: Math.round(n.position?.x ?? 0), y: Math.round(n.position?.y ?? 0),
-    s: n.style, d: n.type === 'image' ? (n.data?.url ? 1 : 0) : n.data,
-  }))
-  return JSON.stringify({ t: title.value, params: props.params, nodes: sig, stack: props.drafts.map((d) => d.id) })
-}
-
-function markDirty() {
-  if (!isMeaningful()) return
-  dirty = true
-  if (saveState.value !== 'saving') saveState.value = 'dirty'
-}
-
-// Persist if there is something new. Coalesces concurrent triggers (one save at a time).
-async function flush(force = false) {
-  if (!vaultReady.value || !isMeaningful()) return
-  if (saving) { pendingResave = true; return }
-  if (!force && !dirty) return
-  const key = changeKey()
-  if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return }
-  saving = true
-  saveState.value = 'saving'
-  try {
-    await saveWork(canvasToWork(nodes.value, viewport.value, props.params, { id: workId.value, title: title.value }, props.drafts) as WorkDoc)
-    lastSig = key
-    dirty = false
-    saveState.value = 'saved'
-    savedAt.value = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  } catch (e) {
-    dirty = true
-    saveState.value = 'dirty'
-    toast.push(e instanceof Error ? e.message : 'Save failed', 'err')
-  } finally {
-    saving = false
-    if (pendingResave) { pendingResave = false; flush() }
-  }
-}
-
-// Manual save (button / ⌘S). With no vault, route the user to Settings.
-function manualSave() {
-  if (!vaultReady.value) { emit('navigate', 'settings'); return }
-  flush(true)
-}
+// ---- vault: title/save state + logic live in useAutosave (above). Keyboard shortcuts below. ----
 function onKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); manualSave(); return }
   if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -433,24 +367,11 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// Browser fallback for window close (Electron uses onBeforeQuit); best-effort, size-limited.
-function onBeforeUnload() {
-  if (!vaultReady.value || !dirty || saving || !isMeaningful() || changeKey() === lastSig) return
-  const doc = canvasToWork(nodes.value, viewport.value, props.params, { id: workId.value, title: title.value }, props.drafts)
-  try { navigator.sendBeacon('/api/vault/works', new Blob([JSON.stringify(doc)], { type: 'application/json' })) } catch { /* best-effort */ }
-}
-
-// Periodic auto-save; interval comes from Settings and is re-read when returning to Generate.
-let autosaveTimer: ReturnType<typeof setInterval> | null = null
-async function refreshInterval() {
-  let ms = 300_000
-  try { ms = Math.max(30, (await getAppSettings()).autosave_interval_s) * 1000 } catch { /* keep default */ }
-  if (autosaveTimer) clearInterval(autosaveTimer)
-  autosaveTimer = setInterval(() => { if (dirty) flush() }, ms)
-}
-
+// Mark the work dirty on any change to the canvas / params / drafts / title (see useAutosave).
 watch([nodes, () => props.params, () => props.drafts, title], markDirty, { deep: true })
 
+// Lifecycle wiring for autosave + keyboard: the save logic lives in useAutosave; here we register the
+// window listeners, the Electron quit hook, the periodic timer, and the KeepAlive activate/deactivate flush.
 let disposeBeforeQuit: (() => void) | null = null
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
@@ -462,10 +383,10 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('beforeunload', onBeforeUnload)
   disposeBeforeQuit?.() // unregister so the IPC listener never stacks across remounts
-  if (autosaveTimer) clearInterval(autosaveTimer)
+  stopAutosave()
 })
-onActivated(refreshInterval)                 // returning to Generate → pick up a changed interval
-onDeactivated(() => { if (dirty) flush() })  // leaving Generate → flush now
+onActivated(refreshInterval) // returning to Generate → pick up a changed interval
+onDeactivated(flushIfDirty)  // leaving Generate → flush now
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function loadDoc(doc: any) {
@@ -476,10 +397,7 @@ function loadDoc(doc: any) {
   if (vp) setViewport(vp)
   workId.value = doc.id
   title.value = doc.title || ''
-  lastSig = changeKey() // the loaded state is the baseline — not dirty
-  dirty = false
-  saveState.value = 'saved'
-  savedAt.value = ''
+  resetBaseline('saved') // the loaded state is the baseline — not dirty
 }
 
 // Right-click context menu for removable nodes (images + prompt blocks): download images, arrange, delete.

@@ -2,9 +2,9 @@
  * so it is unit-testable. Only content inside the anchor zones is saved; drafts are dropped. */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-const STATION = 'station'
-const LIBRARY = 'library'
-const GALLERY = 'gallery'
+export const STATION = 'station'
+export const LIBRARY = 'library'
+export const GALLERY = 'gallery'
 const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
 function slim(n: any) {
