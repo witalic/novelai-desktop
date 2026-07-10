@@ -13,8 +13,13 @@ const emit = defineEmits<{ navigate: [ViewId] }>()
     <div class="navitem" :class="{ active: current === 'generate' }" @click="emit('navigate', 'generate')">
       <i>✦</i> Generate
     </div>
-    <div class="navitem disabled"><i>▤</i> Library <span class="soon">soon</span></div>
-    <div class="navitem disabled"><i>❏</i> Presets <span class="soon">soon</span></div>
+    <div class="navitem" :class="{ active: current === 'works' }" @click="emit('navigate', 'works')">
+      <i>❐</i> Works
+    </div>
+    <div class="navitem" :class="{ active: current === 'library' }" @click="emit('navigate', 'library')">
+      <i>❏</i> Library
+    </div>
+    <div class="navitem disabled"><i>◈</i> Presets <span class="soon">soon</span></div>
 
     <div class="navgroup">Account</div>
     <div class="navitem" :class="{ active: current === 'settings' }" @click="emit('navigate', 'settings')">

@@ -1,4 +1,126 @@
-import type { GenerateParams, GenerateResponse, StreamEvent } from './types'
+import type {
+  BlocksPage, CategoryCount, GenerateParams, GenerateResponse, LibraryBlock,
+  StreamEvent, TagCount, WorkDoc, WorksPage,
+} from './types'
+
+export async function saveWork(doc: WorkDoc): Promise<{ id: string; updated_at: string }> {
+  const resp = await fetch('/api/vault/works', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc),
+  })
+  if (!resp.ok) {
+    let detail = `Save failed (HTTP ${resp.status})`
+    try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
+    throw new Error(detail)
+  }
+  return resp.json()
+}
+
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+export async function listWorks(page = 1, perPage = 24): Promise<WorksPage> {
+  const resp = await fetch(`/api/vault/works?page=${page}&per_page=${perPage}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to list works (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+export async function loadWork(workId: string): Promise<WorkDoc> {
+  const resp = await fetch(`/api/vault/works/${workId}`)
+  if (!resp.ok) throw new Error(`Failed to load work (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+// ---- library ----
+export async function listBlocks(
+  opts: { category?: string; tags?: string[]; search?: string; page?: number; perPage?: number } = {},
+): Promise<BlocksPage> {
+  const p = new URLSearchParams()
+  if (opts.category) p.set('category', opts.category)
+  for (const t of opts.tags ?? []) p.append('tags', t)
+  if (opts.search) p.set('search', opts.search)
+  p.set('page', String(opts.page ?? 1))
+  p.set('per_page', String(opts.perPage ?? 48))
+  const resp = await fetch(`/api/vault/library/blocks?${p}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to list blocks (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+export async function saveBlock(block: LibraryBlock): Promise<{ id: string }> {
+  const resp = await fetch('/api/vault/library/blocks', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(block),
+  })
+  if (!resp.ok) {
+    let detail = `Save failed (HTTP ${resp.status})`
+    try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
+    throw new ApiError(resp.status, detail)
+  }
+  return resp.json()
+}
+
+export async function deleteBlock(blockId: string): Promise<void> {
+  const resp = await fetch(`/api/vault/library/blocks/${blockId}`, { method: 'DELETE' })
+  if (!resp.ok) throw new ApiError(resp.status, `Delete failed (HTTP ${resp.status})`)
+}
+
+export async function listCategories(tags: string[] = []): Promise<CategoryCount[]> {
+  const p = new URLSearchParams()
+  for (const t of tags) p.append('tags', t)
+  const qs = p.toString()
+  const resp = await fetch(`/api/vault/library/categories${qs ? `?${qs}` : ''}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to list categories (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+export async function saveCategory(name: string, color: string, slug?: string): Promise<{ slug: string; name: string; color: string }> {
+  const resp = await fetch('/api/vault/library/categories', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(slug ? { name, color, slug } : { name, color }),
+  })
+  if (!resp.ok) {
+    let detail = `Save failed (HTTP ${resp.status})`
+    try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
+    throw new ApiError(resp.status, detail)
+  }
+  return resp.json()
+}
+
+export async function deleteCategory(slug: string): Promise<void> {
+  const resp = await fetch(`/api/vault/library/categories/${encodeURIComponent(slug)}`, { method: 'DELETE' })
+  if (!resp.ok) {
+    let detail = `Delete failed (HTTP ${resp.status})`
+    try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
+    throw new ApiError(resp.status, detail)
+  }
+}
+
+export interface ExampleImage {
+  image_id: string
+  work_id: string
+  url: string
+  favorite: boolean
+  group: string | null
+  created_at: string
+}
+
+export async function listExamples(tags: string[], limit = 8): Promise<ExampleImage[]> {
+  const p = new URLSearchParams()
+  for (const t of tags) p.append('tags', t)
+  p.set('limit', String(limit))
+  const resp = await fetch(`/api/vault/library/examples?${p}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to load examples (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+export async function listTags(category = ''): Promise<TagCount[]> {
+  const p = category ? `?category=${encodeURIComponent(category)}` : ''
+  const resp = await fetch(`/api/vault/library/tags${p}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to list tags (HTTP ${resp.status})`)
+  return resp.json()
+}
 
 // Same-origin in production (served at /app/ by FastAPI); proxied to the backend in Vite dev.
 export async function generate(params: GenerateParams): Promise<GenerateResponse> {
@@ -18,31 +140,95 @@ export async function generate(params: GenerateParams): Promise<GenerateResponse
   return resp.json()
 }
 
-export interface VaultConfig {
-  vault_dir: string | null
+export interface VaultInfo {
+  dir: string
   initialized: boolean
   writable: boolean
+  active: boolean
+}
+export interface VaultConfig {
+  active: string | null
+  vaults: VaultInfo[]
   proposed_default: string
+}
+export interface MoveStatus {
+  active: boolean
+  total: number
+  done: number
+  error: string | null
+}
+export interface AppSettings {
+  autosave_interval_s: number
+  theme: string
+  accent: string
+  download_dir: string
+}
+
+async function jsonOrThrow<T>(resp: Response, fallback: string): Promise<T> {
+  if (!resp.ok) {
+    let detail = `${fallback} (HTTP ${resp.status})`
+    try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
+    throw new ApiError(resp.status, detail)
+  }
+  return resp.json()
 }
 
 export async function getVaultConfig(): Promise<VaultConfig> {
-  const resp = await fetch('/api/vault/config')
-  if (!resp.ok) throw new Error(`Failed to read vault config (HTTP ${resp.status})`)
-  return resp.json()
+  return jsonOrThrow(await fetch('/api/vault/config'), 'Failed to read vault config')
 }
 
-export async function setVaultConfig(vaultDir: string): Promise<VaultConfig> {
-  const resp = await fetch('/api/vault/config', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ vault_dir: vaultDir }),
-  })
-  if (!resp.ok) {
-    let detail = `Failed to set vault (HTTP ${resp.status})`
-    try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
-    throw new Error(detail)
-  }
-  return resp.json()
+export async function addVault(dir: string): Promise<VaultConfig> {
+  return jsonOrThrow(await fetch('/api/vault/vaults', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }),
+  }), 'Failed to add vault')
+}
+
+export async function setActiveVault(dir: string): Promise<VaultConfig> {
+  return jsonOrThrow(await fetch('/api/vault/active', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }),
+  }), 'Failed to switch vault')
+}
+
+export async function deleteVault(dir: string): Promise<VaultConfig> {
+  return jsonOrThrow(await fetch(`/api/vault/vaults?dir=${encodeURIComponent(dir)}`, { method: 'DELETE' }),
+    'Failed to delete vault')
+}
+
+export async function startMoveVault(src: string, dst: string): Promise<MoveStatus> {
+  return jsonOrThrow(await fetch('/api/vault/move', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ src, dst }),
+  }), 'Failed to start move')
+}
+
+export async function moveStatus(): Promise<MoveStatus> {
+  return jsonOrThrow(await fetch('/api/vault/move/status'), 'Failed to read move status')
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  return jsonOrThrow(await fetch('/api/settings'), 'Failed to read settings')
+}
+
+export async function patchAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  return jsonOrThrow(await fetch('/api/settings', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+  }), 'Failed to save settings')
+}
+
+// NovelAI token — stored in the OS keychain; the value is never returned, only whether it's set.
+export interface TokenStatus { set: boolean }
+
+export async function getTokenStatus(): Promise<TokenStatus> {
+  return jsonOrThrow(await fetch('/api/settings/novelai-token'), 'Failed to read token status')
+}
+
+export async function setNovelaiToken(token: string): Promise<TokenStatus> {
+  return jsonOrThrow(await fetch('/api/settings/novelai-token', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
+  }), 'Failed to save token')
+}
+
+export async function clearNovelaiToken(): Promise<TokenStatus> {
+  return jsonOrThrow(await fetch('/api/settings/novelai-token', { method: 'DELETE' }), 'Failed to clear token')
 }
 
 // Save image(s) to the Downloads folder via the backend (no OS save dialog). `images` are raw base64.
