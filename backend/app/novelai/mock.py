@@ -23,10 +23,14 @@ class MockNovelAIClient:
         ]
 
     async def generate_stream(self, params: GenerateParams) -> AsyncIterator[dict]:
-        log.info("MOCK stream %dx%d (no network, no Anlas)", params.width, params.height)
-        for i in range(3):
-            await asyncio.sleep(0.15)
-            png = solid_png(params.width, params.height, (44, (44 + i * 50) % 216, 52))
-            yield {"type": "intermediate", "samp": 0, "step": i, "mime": "image/png", "image": base64.b64encode(png).decode("ascii")}
-        png = solid_png(params.width, params.height, (44, 130, 52))
-        yield {"type": "final", "mime": "image/png", "image": base64.b64encode(png).decode("ascii")}
+        """Mirror the real client's event shape (client.py): per-sample intermediates then a final,
+        each carrying ``samp`` — the stream router derives sample k's seed as ``seed + samp``, and
+        that path must be exercisable offline (M3)."""
+        log.info("MOCK stream %dx%d n=%d (no network, no Anlas)", params.width, params.height, params.n_samples)
+        for samp in range(params.n_samples):
+            for i in range(3):  # a few previews per sample — bounded, no tight loop
+                await asyncio.sleep(0.15)
+                png = solid_png(params.width, params.height, (44, (44 + i * 50) % 216, 52))
+                yield {"type": "intermediate", "samp": samp, "step": i, "mime": "image/png", "image": base64.b64encode(png).decode("ascii")}
+            png = solid_png(params.width, params.height, (44, (130 + samp * 40) % 216, 52))
+            yield {"type": "final", "samp": samp, "mime": "image/png", "image": base64.b64encode(png).decode("ascii")}
