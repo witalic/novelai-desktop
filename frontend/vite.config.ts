@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
 // Built to frontend/dist and served single-origin by FastAPI at /app/ (see README).
@@ -12,5 +12,10 @@ export default defineConfig({
       '/api': 'http://127.0.0.1:8787',
       '/health': 'http://127.0.0.1:8787',
     },
+  },
+  // Unit tests (vitest). serialize.ts is framework-free by design, so a plain node env is enough.
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
   },
 })
