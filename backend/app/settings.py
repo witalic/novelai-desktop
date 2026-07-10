@@ -30,10 +30,12 @@ class NovelAISettings(BaseModel):
 
 
 class VaultSettings(BaseModel):
-    # Explicit override (env NAI_VAULT__DIR); otherwise the runtime pointer / not-yet-chosen.
+    # Explicit override (env NAI_VAULT__DIR); otherwise the active vault from app settings.
     dir: str | None = None
-    # Where the runtime "chosen vault" pointer lives (OS config dir by default; tests override).
+    # Where persisted app settings live (OS config dir by default; tests override to a tmp dir).
     state_dir: str | None = None
+    # Base for the auto-created first-run vault (defaults to ~/Documents/novelai-vault; tests override).
+    default_dir: str | None = None
 
 
 class Settings(BaseSettings):

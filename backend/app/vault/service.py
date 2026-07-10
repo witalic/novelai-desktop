@@ -4,15 +4,19 @@ Files on disk are authoritative; the SQLite index is opened per call and rebuilt
 """
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException
+from PIL import Image as PILImage
 
+from app import appconfig
 from app.settings import Settings
-from app.vault import config, index, layout, store
+from app.vault import catalog, index, layout, store
 from app.vault.models import (
-    BlockDoc, GalleryItem, GalleryPage, WorkDoc, WorkListItem, WorksPage,
+    BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage,
+    SaveCategory, TagCount, WorkDoc, WorkListItem, WorksPage,
 )
 
 log = logging.getLogger(__name__)
@@ -23,10 +27,8 @@ def _now() -> str:
 
 
 def _vault(settings: Settings) -> Path:
-    vault = config.active_vault_dir(settings)
-    if not vault or not config.is_initialized(vault):
-        raise HTTPException(status_code=409, detail="No vault selected. Choose a folder in Settings.")
-    return vault
+    # Never blocks: resolves the active vault, creating + registering the default on first run.
+    return appconfig.active_vault(settings)
 
 
 def save_work(settings: Settings, doc: WorkDoc) -> dict:
@@ -41,6 +43,16 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
         doc.updated_at = _now()
         if not doc.created_at:
             doc.created_at = doc.updated_at
+        # Stamp creation time on images/snapshots that don't have one yet (kept stable across re-saves).
+        for snap in doc.snapshots:
+            if not snap.created_at:
+                snap.created_at = doc.updated_at
+        for im in doc.images:
+            if not im.created_at:
+                im.created_at = doc.updated_at
+        for st in doc.stack:
+            if not st.created_at:
+                st.created_at = doc.updated_at
         store.write_work(work_dir, doc)
         store.write_thumbnail(work_dir, doc)
         index.upsert_work(conn, doc, dir_name)
@@ -101,6 +113,29 @@ def image_path(settings: Settings, work_id: str, image_id: str) -> Path:
     return path
 
 
+def image_thumb_path(settings: Settings, work_id: str, image_id: str, width: int) -> Path:
+    """Return a width-capped PNG derivative of an image, cached on disk under the work's ``.thumbs/``.
+    A right-sized thumbnail keeps small displays (e.g. the library grid) crisp without the client
+    decoding the full-resolution source — decoding many full images at once pressures Chromium's
+    image-decode budget, which makes it downsample cached bitmaps (the pixelation we hit)."""
+    src = image_path(settings, work_id, image_id)  # validates ids + existence
+    width = max(16, min(width, 4096))
+    dst = src.parent.parent / ".thumbs" / f"{image_id}@{width}.png"
+    if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
+        return dst
+    with PILImage.open(src) as im:
+        if im.width <= width:
+            return src  # never upscale — the source is already at or below the requested width
+        dst.parent.mkdir(exist_ok=True)
+        rgb = im if im.mode in ("RGB", "RGBA") else im.convert("RGBA")
+        # Atomic write into the cache: concurrent requests (and a FileResponse reader) must never see a
+        # half-written PNG. Write a unique temp then os.replace into place.
+        tmp = dst.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        rgb.resize((width, round(im.height * width / im.width)), PILImage.LANCZOS).save(tmp, "PNG")
+    tmp.replace(dst)
+    return dst
+
+
 def preview_path(settings: Settings, work_id: str) -> Path:
     if not layout.valid_id(work_id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
@@ -136,15 +171,26 @@ def gallery(settings: Settings, tags: list[str], favorite: bool, page: int, per_
     return GalleryPage(items=items, total=total, page=page, per_page=per_page)
 
 
+def _blocks_root(vault: Path) -> Path:
+    return vault / "library" / "blocks"
+
+
 def save_block(settings: Settings, block: BlockDoc) -> dict:
     if not layout.valid_id(block.id):
         raise HTTPException(status_code=400, detail="Invalid block id.")
+    if not block.text.strip():
+        raise HTTPException(status_code=400, detail="Block text is required.")
     vault = _vault(settings)
+    block.category = layout.slugify(block.category) or "custom"
     block.updated_at = _now()
     if not block.created_at:
         block.created_at = block.updated_at
-    category = layout.slugify(block.category) or "custom"
-    path = layout.safe_join(vault / "library" / "blocks", category, f"{block.id}.json")
+    # Drop any stale copy first — the category (and thus the folder) may have changed since last save.
+    root = _blocks_root(vault)
+    if root.is_dir():
+        for old in root.glob(f"**/{block.id}.json"):
+            old.unlink(missing_ok=True)
+    path = layout.safe_join(root, block.category, f"{block.id}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(block.model_dump_json(), "utf-8")
     conn = index.open_index(vault)
@@ -153,6 +199,159 @@ def save_block(settings: Settings, block: BlockDoc) -> dict:
     finally:
         conn.close()
     return {"id": block.id}
+
+
+def delete_block(settings: Settings, block_id: str) -> dict:
+    if not layout.valid_id(block_id):
+        raise HTTPException(status_code=400, detail="Invalid block id.")
+    vault = _vault(settings)
+    root = _blocks_root(vault)
+    removed = False
+    if root.is_dir():
+        for bj in root.glob(f"**/{block_id}.json"):
+            bj.unlink(missing_ok=True)
+            removed = True
+    if not removed:
+        raise HTTPException(status_code=404, detail="Block not found.")
+    conn = index.open_index(vault)
+    try:
+        index.delete_block(conn, block_id)
+    finally:
+        conn.close()
+    return {"id": block_id, "deleted": True}
+
+
+def list_blocks(settings: Settings, category: str, tags: list[str], search: str, page: int, per_page: int) -> BlocksPage:
+    vault = _vault(settings)
+    conn = index.open_index(vault)
+    try:
+        total, rows = index.list_blocks(conn, category or None, tags, search or None, page, per_page)
+    finally:
+        conn.close()
+    items = [
+        BlockDoc(
+            id=r["id"], category=r["category"] or "custom", name=r["name"] or "", text=r["text"] or "",
+            polarity=r["polarity"] or "positive", version=r["version"] or 1,
+            created_at=r["created_at"] or "", updated_at=r["updated_at"] or "",
+            tags=r["tags"].split(chr(31)) if r["tags"] else [],
+        )
+        for r in rows
+    ]
+    return BlocksPage(items=items, total=total, page=page, per_page=per_page)
+
+
+def list_categories(settings: Settings, tags: list[str] | None = None) -> list[CategoryCount]:
+    vault = _vault(settings)
+    conn = index.open_index(vault)
+    try:
+        counts = index.category_counts(conn, tags or None)
+    finally:
+        conn.close()
+    cats = catalog.read_all(vault)
+    known = {c.slug for c in cats}
+    result = [
+        CategoryCount(**c.model_dump(), count=counts.get(c.slug, 0), builtin=c.slug in catalog.DEFAULT_SLUGS)
+        for c in cats
+    ]
+    # Surface any category a block references but the catalog doesn't know (fallback color).
+    for slug, cnt in counts.items():
+        if slug not in known:
+            result.append(CategoryCount(slug=slug, name=slug.replace("-", " ").title(), color="#738496", count=cnt))
+    return result
+
+
+def _reassign_blocks_to_custom(vault: Path, slug: str) -> list[dict]:
+    """Move every block file in a category's folder into ``custom/`` (retag); return the moved docs."""
+    root = _blocks_root(vault)
+    src = layout.safe_join(root, slug)
+    if not src.is_dir():
+        return []
+    dst_dir = layout.safe_join(root, "custom")
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    moved: list[dict] = []
+    for bj in src.glob("*.json"):
+        try:
+            data = json.loads(bj.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        data["category"] = "custom"
+        data["updated_at"] = _now()
+        (dst_dir / bj.name).write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+        bj.unlink(missing_ok=True)
+        moved.append(data)
+    try:
+        src.rmdir()
+    except OSError:  # not empty / already gone — harmless
+        pass
+    return moved
+
+
+def delete_category(settings: Settings, slug: str) -> dict:
+    # "custom" is the reassignment sink, so it can't itself be deleted; every other category can —
+    # its blocks move to Custom rather than blocking the delete.
+    if slug == "custom":
+        raise HTTPException(status_code=400, detail="The Custom category is the fallback and can't be deleted.")
+    vault = _vault(settings)
+    moved = _reassign_blocks_to_custom(vault, slug)
+    removed = catalog.remove(vault, slug)
+    if not removed and not moved:
+        raise HTTPException(status_code=404, detail="Category not found.")
+    conn = index.open_index(vault)
+    try:
+        for data in moved:  # targeted re-index of just the moved blocks (no full, crash-prone rebuild)
+            index.upsert_block(conn, data)
+    finally:
+        conn.close()
+    return {"slug": slug, "deleted": True, "moved": len(moved)}
+
+
+def _new_category_id(existing: set[str]) -> str:
+    for _ in range(50):
+        cid = f"cat-{uuid.uuid4()}"
+        if cid not in existing:
+            return cid
+    return f"cat-{uuid.uuid4()}"
+
+
+def save_category(settings: Settings, body: SaveCategory) -> CategoryDoc:
+    vault = _vault(settings)
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="Category name is required.")
+    if body.slug:
+        slug = body.slug  # update (rename/recolor) — the id is stable, independent of the name
+    else:
+        existing = {c.slug for c in catalog.read_all(vault)} | catalog.DEFAULT_SLUGS
+        slug = _new_category_id(existing)  # opaque id, not derived from the (possibly non-Latin) name
+    cat = CategoryDoc(slug=slug, name=body.name.strip(), color=body.color)
+    catalog.upsert(vault, cat)
+    return cat
+
+
+def image_examples(settings: Settings, tags: list[str], limit: int) -> list[GalleryItem]:
+    vault = _vault(settings)
+    conn = index.open_index(vault)
+    try:
+        rows = index.examples_by_tags(conn, [t for t in tags if t.strip()], min(max(limit, 1), 24))
+    finally:
+        conn.close()
+    return [
+        GalleryItem(
+            image_id=r["id"], work_id=r["work_id"],
+            url=f"/api/vault/works/{r['work_id']}/images/{r['id']}",
+            favorite=bool(r["favorite"]), group=r["group_name"], created_at=r["created_at"] or "",
+        )
+        for r in rows
+    ]
+
+
+def list_tags(settings: Settings, category: str) -> list[TagCount]:
+    vault = _vault(settings)
+    conn = index.open_index(vault)
+    try:
+        rows = index.tag_counts(conn, category or None)
+    finally:
+        conn.close()
+    return [TagCount(name=r["name"], count=r["count"]) for r in rows]
 
 
 def reindex(settings: Settings) -> dict:

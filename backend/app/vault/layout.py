@@ -10,7 +10,9 @@ def valid_id(value: str) -> bool:
 
 
 def slugify(title: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
+    # Unicode-aware: keep letters/digits from any script (Cyrillic, etc.), not just ASCII, so
+    # non-Latin names don't all collapse to "untitled". \w includes "_"; runs of anything else → "-".
+    slug = re.sub(r"[^\w]+", "-", (title or "").strip().lower(), flags=re.UNICODE).strip("-_")
     return slug[:48] or "untitled"
 
 

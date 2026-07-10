@@ -30,10 +30,16 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
             im.file = f"images/{im.id}.png"
             im.image_b64 = None
         sidecar = {
-            "snapshot_id": im.snapshot_id, "params": im.params, "tags": im.tags,
+            "snapshot_id": im.snapshot_id, "created_at": im.created_at, "tags": im.tags,
             "description": im.description, "group": im.group, "favorite": im.favorite, "source": im.source,
         }
         (images_dir / f"{im.id}.json").write_text(json.dumps(sidecar, ensure_ascii=False), "utf-8")
+    # Draft-stack images live alongside gallery images (served by the same /images/{id} route).
+    for st in doc.stack:
+        if st.image_b64:
+            (images_dir / f"{st.id}.png").write_bytes(base64.b64decode(st.image_b64))
+            st.file = f"images/{st.id}.png"
+            st.image_b64 = None
     _atomic_write_text(work_dir / "work.json", doc.model_dump_json())
 
 
@@ -45,6 +51,6 @@ def write_thumbnail(work_dir: Path, doc: WorkDoc) -> None:
         return
     from PIL import Image as PILImage
 
-    img = PILImage.open(src)
-    img.thumbnail((512, 512))
-    img.convert("RGB").save(work_dir / "preview.png")
+    with PILImage.open(src) as img:  # context-managed so the source handle is released (Windows: unblocks move/delete)
+        img.thumbnail((512, 512))
+        img.convert("RGB").save(work_dir / "preview.png")

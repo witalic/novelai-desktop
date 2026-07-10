@@ -1,8 +1,7 @@
-"""Vault location: resolve/persist which folder is the active vault, and initialise its tree.
+"""Vault filesystem helpers: initialise a vault's tree, validate a folder, probe writability.
 
-Resolution order for the active dir: explicit env (``NAI_VAULT__DIR``) > runtime pointer file >
-None (not chosen yet). The pointer is app-config (not a secret) — it lives in the OS config dir,
-never in the keychain or ``.env`` (``rules/security.md``).
+Which folder is *active* (and the list of known vaults) is owned by ``app.appconfig`` — it persists
+that in the OS config dir. Secrets never live here or there; they belong in the keychain.
 """
 import json
 import logging
@@ -15,42 +14,14 @@ log = logging.getLogger(__name__)
 
 _MARKER = ".vault.json"
 _SCHEMA_VERSION = 1
-_STATE_FILE = "vault_state.json"
 
 
-def proposed_default() -> Path:
+def proposed_default(settings: Settings) -> Path:
+    if settings.vault.default_dir:  # test / explicit override
+        return Path(settings.vault.default_dir)
     docs = Path.home() / "Documents"
     base = docs if docs.is_dir() else Path.home()
     return base / "novelai-vault"
-
-
-def _config_dir(settings: Settings) -> Path:
-    if settings.vault.state_dir:
-        return Path(settings.vault.state_dir)
-    appdata = os.environ.get("APPDATA")
-    root = Path(appdata) if appdata else (Path.home() / ".config")
-    return root / "novelai-desktop"
-
-
-def read_pointer(settings: Settings) -> Path | None:
-    try:
-        data = json.loads((_config_dir(settings) / _STATE_FILE).read_text("utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    chosen = data.get("vault_dir")
-    return Path(chosen) if chosen else None
-
-
-def write_pointer(settings: Settings, vault_dir: Path) -> None:
-    cfg = _config_dir(settings)
-    cfg.mkdir(parents=True, exist_ok=True)
-    (cfg / _STATE_FILE).write_text(json.dumps({"vault_dir": str(vault_dir)}), "utf-8")
-
-
-def active_vault_dir(settings: Settings) -> Path | None:
-    if settings.vault.dir:
-        return Path(settings.vault.dir)
-    return read_pointer(settings)
 
 
 def is_initialized(vault_dir: Path) -> bool:

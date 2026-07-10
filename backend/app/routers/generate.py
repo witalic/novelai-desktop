@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app import appconfig
 from app.novelai import GenerateParams, get_client
 from app.novelai.errors import NovelAIError
 from app.settings import Settings, get_settings
@@ -57,7 +58,7 @@ class DownloadRequest(BaseModel):
 @router.post("/download")
 async def download(req: DownloadRequest, settings: Settings = Depends(get_settings)) -> dict:
     """Write image(s) straight to the Downloads folder (no OS save dialog); the UI just toasts the result."""
-    dest = Path(settings.download_dir)
+    dest = Path(appconfig.load(settings)["download_dir"])
     dest.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())
     saved: list[str] = []

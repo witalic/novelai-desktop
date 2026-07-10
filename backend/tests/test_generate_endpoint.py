@@ -5,7 +5,7 @@ import pytest
 
 from app.main import app
 from app.novelai._png import solid_png
-from app.settings import NovelAISettings, Settings, get_settings
+from app.settings import NovelAISettings, Settings, VaultSettings, get_settings
 
 
 @pytest.fixture
@@ -35,7 +35,10 @@ async def test_generate_rejects_empty_prompt(mock_client):
 
 
 async def test_download_writes_files(tmp_path):
-    app.dependency_overrides[get_settings] = lambda: Settings(download_dir=str(tmp_path), _env_file=None)
+    # state_dir pins app settings to tmp (no real settings.json), so download_dir falls back to the env value.
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        download_dir=str(tmp_path), vault=VaultSettings(state_dir=str(tmp_path / "state")), _env_file=None
+    )
     png_b64 = base64.b64encode(solid_png(8, 8)).decode("ascii")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:

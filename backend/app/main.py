@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.routers import generate, system, vault
+from app.routers import generate, settings, system, vault
 
 _DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(system.router)
     app.include_router(generate.router)
     app.include_router(vault.router)
+    app.include_router(settings.router)
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon() -> Response:

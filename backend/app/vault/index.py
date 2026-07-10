@@ -14,7 +14,7 @@ from app.vault.models import WorkDoc
 log = logging.getLogger(__name__)
 
 _DB = ".index.sqlite"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE work(id TEXT PRIMARY KEY, dir TEXT NOT NULL, title TEXT, slug TEXT,
@@ -24,7 +24,7 @@ CREATE TABLE snapshot(id TEXT PRIMARY KEY, work_id TEXT NOT NULL, hash TEXT,
 CREATE TABLE image(id TEXT PRIMARY KEY, work_id TEXT NOT NULL, snapshot_id TEXT, file TEXT,
   favorite INTEGER DEFAULT 0, group_name TEXT, seed INTEGER, model TEXT, created_at TEXT);
 CREATE TABLE block(id TEXT PRIMARY KEY, category TEXT, name TEXT, text TEXT,
-  version INTEGER, created_at TEXT, updated_at TEXT);
+  polarity TEXT DEFAULT 'positive', version INTEGER, created_at TEXT, updated_at TEXT);
 CREATE TABLE tag(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);
 CREATE TABLE image_tag(image_id TEXT, tag_id INTEGER, source TEXT, PRIMARY KEY(image_id, tag_id, source));
 CREATE TABLE work_tag(work_id TEXT, tag_id INTEGER, source TEXT, PRIMARY KEY(work_id, tag_id, source));
@@ -41,15 +41,20 @@ def _connect(vault: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(vault / _DB)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")  # WAL has a single writer — wait out a concurrent save/rebuild
     return conn
 
 
 def open_index(vault: Path) -> sqlite3.Connection:
-    """Open the index; (re)create + rebuild it if missing or on a schema version bump."""
+    """Open the index; (re)create + rebuild it if missing, corrupt, or on a schema version bump."""
     existed = (vault / _DB).exists()
     conn = _connect(vault)
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if not existed or version != _SCHEMA_VERSION:
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        stale = version != _SCHEMA_VERSION
+    except sqlite3.DatabaseError:  # not a valid SQLite file → treat as stale and rebuild (the index is throwaway)
+        stale = True
+    if not existed or stale:
         conn.close()
         (vault / _DB).unlink(missing_ok=True)
         conn = _connect(vault)
@@ -83,18 +88,21 @@ def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str) -> None:
         (doc.id, dir_name, doc.title, doc.slug, doc.created_at, doc.updated_at, doc.preview_image_id, len(doc.images)),
     )
     snap_tags: dict[str, set[str]] = {}
+    snap_params: dict[str, dict] = {}
     for s in doc.snapshots:
         conn.execute(
-            "INSERT INTO snapshot(id,work_id,hash,positive,negative,created_at) VALUES(?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO snapshot(id,work_id,hash,positive,negative,created_at) VALUES(?,?,?,?,?,?)",
             (s.id, doc.id, s.hash, s.assembled_positive, s.assembled_negative, s.created_at),
         )
         snap_tags[s.id] = {t for c in s.components for t in c.tags}
+        snap_params[s.id] = s.params
     work_tag_ids: set[int] = set()
     for im in doc.images:
+        params = snap_params.get(im.snapshot_id or "", {})  # generation params live on the snapshot
         conn.execute(
-            "INSERT INTO image(id,work_id,snapshot_id,file,favorite,group_name,seed,model,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO image(id,work_id,snapshot_id,file,favorite,group_name,seed,model,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
             (im.id, doc.id, im.snapshot_id, im.file, int(im.favorite), im.group,
-             im.params.get("seed"), im.params.get("model"), im.created_at),
+             params.get("seed"), params.get("model"), im.created_at),
         )
         for t in snap_tags.get(im.snapshot_id or "", set()):
             tid = _tag_id(conn, t)
@@ -111,14 +119,92 @@ def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str) -> None:
 
 def upsert_block(conn: sqlite3.Connection, data: dict) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO block(id,category,name,text,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO block(id,category,name,text,polarity,version,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
         (data["id"], data.get("category", "custom"), data.get("name", ""), data.get("text", ""),
-         data.get("version", 1), data.get("created_at", ""), data.get("updated_at", "")),
+         data.get("polarity", "positive"), data.get("version", 1),
+         data.get("created_at", ""), data.get("updated_at", "")),
     )
     conn.execute("DELETE FROM block_tag WHERE block_id=?", (data["id"],))
     for t in data.get("tags", []):
         conn.execute("INSERT OR IGNORE INTO block_tag(block_id,tag_id) VALUES(?,?)", (data["id"], _tag_id(conn, t)))
     conn.commit()
+
+
+def delete_block(conn: sqlite3.Connection, block_id: str) -> None:
+    conn.execute("DELETE FROM block_tag WHERE block_id=?", (block_id,))
+    conn.execute("DELETE FROM block WHERE id=?", (block_id,))
+    conn.commit()
+
+
+def list_blocks(conn, category: str | None, tags: list[str], search: str | None, page: int, per_page: int):
+    where, params = [], []
+    if category:
+        where.append("b.category=?")
+        params.append(category)
+    if search:
+        where.append("(b.name LIKE ? OR b.text LIKE ?)")
+        like = f"%{search}%"
+        params += [like, like]
+    if tags:
+        ph = ",".join("?" * len(tags))
+        where.append(
+            f"b.id IN (SELECT bt.block_id FROM block_tag bt JOIN tag t ON t.id=bt.tag_id "
+            f"WHERE t.name IN ({ph}) GROUP BY bt.block_id HAVING COUNT(DISTINCT t.name)=?)"
+        )
+        params += tags + [len(tags)]
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    total = conn.execute(f"SELECT COUNT(*) FROM block b {clause}", params).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT b.id,b.category,b.name,b.text,b.polarity,b.version,b.created_at,b.updated_at, "
+        f"(SELECT GROUP_CONCAT(t.name, char(31)) FROM block_tag bt JOIN tag t ON t.id=bt.tag_id "
+        f"WHERE bt.block_id=b.id) AS tags FROM block b {clause} "
+        f"ORDER BY b.updated_at DESC, b.name LIMIT ? OFFSET ?",
+        params + [per_page, (page - 1) * per_page],
+    ).fetchall()
+    return total, rows
+
+
+def category_counts(conn, tags: list[str] | None = None) -> dict[str, int]:
+    if tags:
+        ph = ",".join("?" * len(tags))
+        rows = conn.execute(
+            f"SELECT b.category AS category, COUNT(*) AS c FROM block b WHERE b.id IN "
+            f"(SELECT bt.block_id FROM block_tag bt JOIN tag t ON t.id=bt.tag_id WHERE t.name IN ({ph}) "
+            f"GROUP BY bt.block_id HAVING COUNT(DISTINCT t.name)=?) GROUP BY b.category",
+            tags + [len(tags)],
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT category, COUNT(*) AS c FROM block GROUP BY category").fetchall()
+    return {r["category"]: r["c"] for r in rows}
+
+
+def examples_by_tags(conn, tags: list[str], limit: int):
+    """Images that carry ALL of the given tags (exact match — the block was actually used)."""
+    if not tags:
+        return []
+    ph = ",".join("?" * len(tags))
+    return conn.execute(
+        f"SELECT i.id AS id, i.work_id AS work_id, i.favorite AS favorite, i.group_name AS group_name, "
+        f"i.created_at AS created_at "
+        f"FROM image_tag it JOIN tag t ON t.id=it.tag_id JOIN image i ON i.id=it.image_id "
+        f"WHERE t.name IN ({ph}) GROUP BY i.id HAVING COUNT(DISTINCT t.name)=? "
+        f"ORDER BY RANDOM() LIMIT ?",  # random pick so a large match set stays varied
+        [*tags, len(tags), limit],
+    ).fetchall()
+
+
+def tag_counts(conn, category: str | None):
+    clause, params = "", []
+    if category:
+        clause = "WHERE b.category=?"
+        params.append(category)
+    return conn.execute(
+        f"SELECT t.name AS name, COUNT(*) AS count FROM block_tag bt "
+        f"JOIN tag t ON t.id=bt.tag_id JOIN block b ON b.id=bt.block_id {clause} "
+        f"GROUP BY t.name ORDER BY count DESC, t.name",
+        params,
+    ).fetchall()
 
 
 def find_work_dir(conn: sqlite3.Connection, work_id: str) -> str | None:
@@ -168,8 +254,12 @@ def rebuild(conn: sqlite3.Connection, vault: Path) -> dict:
             except Exception:  # noqa: BLE001 — a bad file must not abort the whole rebuild
                 log.warning("Skipping unreadable work: %s", wj)
                 continue
-            upsert_work(conn, doc, wj.parent.name)
-            works += 1
+            try:
+                upsert_work(conn, doc, wj.parent.name)
+                works += 1
+            except Exception:  # noqa: BLE001 — one corrupt/duplicate work must not 500 the rebuild
+                conn.rollback()
+                log.warning("Skipping work that failed to index: %s", wj)
     blocks = 0
     blocks_root = vault / "library" / "blocks"
     if blocks_root.is_dir():
