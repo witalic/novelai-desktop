@@ -100,10 +100,14 @@ export function workToCanvas(doc: any) {
       const url = im?.file ? `/api/vault/works/${doc.id}/images/${n.id}` : ''
       // Restore the snapshot into the node so a later re-save preserves it (round-trip fix).
       const snapshot = restoreSnapshot(snap)
+      // Recover the true aspect ratio from the generation params (always present) so resizing uses it
+      // rather than re-deriving from the rounded node size each load — which drifts across save/scale cycles.
+      const p = snap?.params || {}
+      const ar = p.width && p.height ? p.width / p.height : undefined
       return {
         ...n,
         data: {
-          url, file: im?.file || '', snapshot, created_at: im?.created_at || '',
+          url, file: im?.file || '', snapshot, ar, created_at: im?.created_at || '',
           tags: im?.tags || [], favorite: !!im?.favorite, group: im?.group || null, description: im?.description || '',
         },
       }
