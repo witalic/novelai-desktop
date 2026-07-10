@@ -132,7 +132,12 @@ export interface StationNode extends CanvasNodeBase {
 
 export interface ZoneNode extends CanvasNodeBase {
   type: 'zone'
-  data: { role: 'library' | 'gallery' }
+  data: {
+    role: 'library' | 'gallery'
+    // library-zone (prompt widget) layout — additive optional fields, no schema bump needed
+    collapsed?: boolean
+    expandedH?: number // height to restore on expand (style.height holds 38px while collapsed)
+  }
 }
 
 export interface BlockNodeData {

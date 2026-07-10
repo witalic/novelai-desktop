@@ -33,7 +33,7 @@ const BLOCK_FIELDS = [
   'xFrac', 'laneFrac',                                                   // layout (station lane placement)
 ] as const
 const STATION_FIELDS = ['outputRatio', 'posRatio'] as const
-const ZONE_FIELDS = ['role'] as const
+const ZONE_FIELDS = ['role', 'collapsed', 'expandedH'] as const // prompt-widget collapse is layout
 // image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
 
 function pick(data: Record<string, unknown> | undefined, fields: readonly string[]) {

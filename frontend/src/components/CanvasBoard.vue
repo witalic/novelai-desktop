@@ -13,6 +13,8 @@ import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import { insertionIndex, packColumn, packedHeight, PACK_X } from '../canvas/pack'
+import PromptWidget from './PromptWidget.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
 import type { GenResult, LibraryBlock, PanelParams, PersistedComponent, SnapshotData, WorkDoc } from '../types'
@@ -331,15 +333,23 @@ function settleNode(node: any) {
       live.data.xFrac = clamp01((live.position.x - outputW) / Math.max(1, (stW - outputW) - bd.w))
       live.data.laneFrac = clamp01((live.position.y - lTop) / Math.max(1, (lBot - lTop) - bd.h))
     } else {
-      // Not in the composition — drop into the Library quick-access zone, or detach to draft.
+      // Not in the composition — magnetic drop into the quick-access palette, or detach to scratch.
       const lib = getIntersectingNodes(node).find((n) => n.id === LIBRARY)
       if (lib) {
-        const lp = lib.computedPosition
-        if (live.parentNode !== LIBRARY) live.position = { x: node.computedPosition.x - lp.x, y: node.computedPosition.y - lp.y }
+        const dropY = node.computedPosition.y - lib.computedPosition.y
+        const others = nodes.value
+          .filter((n) => n.type === 'block' && n.parentNode === LIBRARY && n.id !== live.id)
+          .sort((a, b) => a.position.y - b.position.y)
+        const slot = insertionIndex(others.map((o) => ({ y: o.position.y, h: blockH(o) })), dropY)
         live.parentNode = LIBRARY
+        const order = others.map((o) => o.id)
+        order.splice(slot, 0, live.id)
+        repackLibrary(order) // snaps the drop into the column — no free placement inside the widget
       } else if (live.parentNode) {
         live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
+        const fromLibrary = live.parentNode === LIBRARY
         live.parentNode = undefined
+        if (fromLibrary) repackLibrary() // close the gap the departed block left
       }
     }
   } else if (node.type === 'image') {
@@ -356,19 +366,64 @@ function settleNode(node: any) {
   }
 }
 
+// ---- prompt widget (library zone): magnetic column packing + collapse ----
+// The palette's layout IS its order (design/prompt-widget-mockup.html): children pack into a
+// single column; a drop picks its slot by y. `order` (ids) overrides the y-derived order when the
+// caller has just computed an insertion slot.
+// Style-first (like sizeOf): authoritative right after expand/collapse/resize mutations, before
+// Vue Flow re-measures `dimensions` (which is async — packing with it would use stale heights).
+const blockH = (n: any) => Number.parseFloat(n.style?.height) || n.dimensions?.height || 34
+function repackLibrary(order?: string[]) {
+  const zone = findNode(LIBRARY)
+  if (!zone) return
+  const children = nodes.value.filter((n) => n.type === 'block' && n.parentNode === LIBRARY)
+  const sorted = order
+    ? order.map((id) => children.find((c) => c.id === id)).filter((c): c is any => !!c)
+    : children.slice().sort((a, b) => a.position.y - b.position.y)
+  const rowW = dims(zone).w - PACK_X * 2
+  const items = sorted.map((c) => ({ id: c.id, h: blockH(c) }))
+  for (const p of packColumn(items)) {
+    const live = findNode(p.id)!
+    live.position = { x: p.x, y: p.y }
+    live.style = { ...(live.style as object), width: `${rowW}px` }
+  }
+  // Auto-grow the zone so the column always fits (never shrink — the user owns the zone size).
+  const need = packedHeight(items)
+  if (!zone.data.collapsed && need > dims(zone).h) zone.style = { ...(zone.style as object), height: `${need}px` }
+}
+
+// Collapse persists with the work (layout layer); the runtime `hidden` flag on children does not.
+function toggleLibraryCollapse() {
+  const zone = findNode(LIBRARY)
+  if (!zone) return
+  const collapsed = !zone.data.collapsed
+  if (collapsed) {
+    zone.data.expandedH = dims(zone).h
+    zone.style = { ...(zone.style as object), height: '38px' }
+  } else {
+    zone.style = { ...(zone.style as object), height: `${zone.data.expandedH || 440}px` }
+  }
+  zone.data.collapsed = collapsed
+  syncLibraryHidden()
+}
+function syncLibraryHidden() {
+  const hide = !!findNode(LIBRARY)?.data.collapsed
+  for (const n of nodes.value) if (n.parentNode === LIBRARY) n.hidden = hide
+}
+
 // A block "used" from the Library tab lands in the canvas Library zone, keeping its vault link
 // (block_id/version/tags) so generated snapshots and inherited image tags stay traceable.
 function insertLibraryBlock(b: LibraryBlock) {
-  const stacked = childCount(LIBRARY)
   addNodes([{
     // Unique node id (not a per-mount counter) so re-inserting a block into a reloaded work can't collide.
     id: newId(`lib-${b.id}`), type: 'block', parentNode: LIBRARY, zIndex: 2,
-    position: { x: 16, y: 52 + stacked * 46 }, style: { width: '176px' },
+    position: { x: PACK_X, y: 1e6 }, style: { width: '176px' }, // y sorts it last; repack sets the real slot
     data: {
       category: b.category, name: b.name, text: b.text, polarity: b.polarity, expanded: false,
       block_id: b.id, version: b.version ?? 1, tags: b.tags ?? [],
     },
   }])
+  repackLibrary()
 }
 watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(insertLibraryBlock) })
 function doGenerate() {
@@ -436,6 +491,7 @@ function loadDoc(doc: any) {
   setNodes(ns as unknown as FlowNode[]) // persisted nodes are plain data; Vue Flow hydrates the runtime fields
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
+  syncLibraryHidden() // a work saved with a collapsed widget reopens with its palette hidden
   if (vp) setViewport(vp)
   workId.value = doc.id
   title.value = doc.title || ''
@@ -539,6 +595,7 @@ function toggleExpand(id: string) {
     live.style = d._ch ? { width: d._cw || '176px', height: d._ch } : { width: d._cw || '176px' }
     d.expanded = false
   }
+  if (live.parentNode === LIBRARY) repackLibrary() // the row's height changed — keep the column tight
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -626,17 +683,23 @@ function startName(data: any, e: MouseEvent) {
         </template>
 
         <template #node-zone="{ id, data, selected }">
-          <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />
-          <div class="zonenode" :class="[data.role, { selected }]">
-            <div class="zonehd">
-              <span class="zicon">{{ data.role === 'library' ? '✦' : '▤' }}</span>
-              <span class="ztitle">{{ data.role === 'library' ? 'Library' : 'Gallery' }}</span>
-              <span class="anchor-tag">anchor</span>
+          <template v-if="data.role === 'library'">
+            <NodeResizer v-if="!data.collapsed" :min-width="220" :min-height="180" :is-visible="selected"
+              color="var(--accent)" @resize="repackLibrary()" />
+            <PromptWidget :data="data" :selected="selected" :count="childCount(id)"
+              @toggle="toggleLibraryCollapse" @open-library="emit('navigate', 'library')" />
+          </template>
+          <template v-else>
+            <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />
+            <div class="zonenode" :class="[data.role, { selected }]">
+              <div class="zonehd">
+                <span class="zicon">▤</span>
+                <span class="ztitle">Gallery</span>
+                <span class="anchor-tag">anchor</span>
+              </div>
+              <div v-if="!childCount(id)" class="zhint">Drag kept images here to save them.</div>
             </div>
-            <div v-if="!childCount(id)" class="zhint">
-              {{ data.role === 'library' ? 'Drag prompt blocks here for quick access.' : 'Drag kept images here to save them.' }}
-            </div>
-          </div>
+          </template>
         </template>
 
         <template #node-block="{ id, data, selected }">
