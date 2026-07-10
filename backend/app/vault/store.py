@@ -40,7 +40,23 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
             (images_dir / f"{st.id}.png").write_bytes(base64.b64decode(st.image_b64))
             st.file = f"images/{st.id}.png"
             st.image_b64 = None
+    _gc_orphans(work_dir, {im.id for im in doc.images} | {st.id for st in doc.stack})
     _atomic_write_text(work_dir / "work.json", doc.model_dump_json())
+
+
+def _gc_orphans(work_dir: Path, keep: set[str]) -> None:
+    """Drop image files, sidecars, and thumbnails for images no longer in the work (e.g. removed on the
+    canvas) so a human-readable vault doesn't accumulate orphans on every re-save."""
+    images_dir = work_dir / "images"
+    if images_dir.is_dir():
+        for f in images_dir.iterdir():
+            if f.stem not in keep:  # both <id>.png and <id>.json share the stem
+                f.unlink(missing_ok=True)
+    thumbs = work_dir / ".thumbs"
+    if thumbs.is_dir():
+        for f in thumbs.iterdir():
+            if f.name.split("@", 1)[0] not in keep:  # <id>@<width>.png
+                f.unlink(missing_ok=True)
 
 
 def write_thumbnail(work_dir: Path, doc: WorkDoc) -> None:

@@ -119,5 +119,6 @@ class NovelAIClient:
                     if kind == "intermediate":
                         yield {"type": "intermediate", "samp": data.get("samp_ix", 0), "step": data.get("step_ix", 0), "mime": "image/jpeg", "image": data.get("image", "")}
                     elif kind == "final":
-                        yield {"type": "final", "mime": "image/png", "image": data.get("image", "")}
+                        # samp lets the caller stamp the per-sample seed (NovelAI derives sample k as seed+k).
+                        yield {"type": "final", "samp": data.get("samp_ix", 0), "mime": "image/png", "image": data.get("image", "")}
         log.info("NovelAI stream complete [%dx%d, %d steps]", params.width, params.height, params.steps)

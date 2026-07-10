@@ -42,6 +42,7 @@ async def generate(params: GenerateParams, settings: Settings = Depends(get_sett
         "mock": client.is_mock,
         "count": len(images),
         "seed": params.seed,
+        "seeds": [params.seed + i for i in range(len(images))],  # per sample (NovelAI: sample k = seed + k)
         "images": [base64.b64encode(img).decode("ascii") for img in images],
     }
 
@@ -60,8 +61,8 @@ async def generate_stream(params: GenerateParams, settings: Settings = Depends(g
     async def sse():
         try:
             async for event in client.generate_stream(params):
-                if event.get("type") == "final":
-                    event = {**event, "seed": params.seed}
+                if event.get("type") == "final":  # NovelAI derives sample k from seed + k — stamp the real one
+                    event = {**event, "seed": params.seed + event.get("samp", 0)}
                 yield f"data: {json.dumps(event)}\n\n"
         except NovelAIError as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc), 'status': exc.http_status or 502})}\n\n"

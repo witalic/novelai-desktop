@@ -207,6 +207,31 @@ async def test_concurrent_saves_share_a_tag_without_racing_the_index(client):
     assert hit["total"] == 8  # every work indexed under the one shared tag, no dupes/errors
 
 
+async def test_delete_work_removes_dir_and_index(client):
+    ac, vault = client
+    await ac.put("/api/vault/works", json=_work("w1"))
+    assert (await ac.delete("/api/vault/works/w1")).status_code == 200
+    assert not list((vault / "works").glob("*/work.json"))          # folder gone
+    assert (await ac.get("/api/vault/works/w1")).status_code == 404  # dropped from the index too
+    assert (await ac.get("/api/vault/works")).json()["total"] == 0
+
+
+async def test_resave_gcs_removed_image_files(client):
+    ac, vault = client
+    work = _work("w1")
+    work["images"].append({"id": "img-extra", "snapshot_id": "s-w1", "favorite": False, "tags": [],
+                           "image_b64": base64.b64encode(solid_png(64, 64)).decode("ascii")})
+    await ac.put("/api/vault/works", json=work)
+    await ac.get("/api/vault/works/w1/images/img-extra", params={"w": 32})  # make a thumbnail for it too
+    imgs = next((vault / "works").glob("*/images"))
+    assert (imgs / "img-extra.png").is_file()
+    # Re-save without the extra image → its png, sidecar, and thumbnail must be garbage-collected.
+    work["images"] = [work["images"][0]]
+    await ac.put("/api/vault/works", json=work)
+    assert not (imgs / "img-extra.png").exists() and not (imgs / "img-extra.json").exists()
+    assert not list((imgs.parent / ".thumbs").glob("img-extra@*"))
+
+
 async def test_bad_id_and_missing_image(client):
     ac, _ = client
     await ac.put("/api/vault/works", json=_work())

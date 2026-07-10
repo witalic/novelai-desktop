@@ -4,6 +4,7 @@ Files on disk are authoritative; the SQLite index is opened per call and rebuilt
 """
 import json
 import logging
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +79,25 @@ def load_work(settings: Settings, work_id: str) -> WorkDoc:
     if not (work_dir / "work.json").is_file():
         raise HTTPException(status_code=404, detail="Work not found.")
     return store.read_work(work_dir)
+
+
+def delete_work(settings: Settings, work_id: str) -> dict:
+    """Remove a work: its index rows and its on-disk folder (images, sidecars, preview, thumbnails)."""
+    if not layout.valid_id(work_id):
+        raise HTTPException(status_code=400, detail="Invalid work id.")
+    vault = _vault(settings)
+    conn = index.open_index(vault)
+    try:
+        dir_name = index.find_work_dir(conn, work_id)
+        if not dir_name:
+            raise HTTPException(status_code=404, detail="Work not found.")
+        index.remove_work(conn, work_id)
+    finally:
+        conn.close()
+    work_dir = layout.safe_join(vault / "works", dir_name)
+    if work_dir.is_dir():
+        shutil.rmtree(work_dir)
+    return {"deleted": work_id}
 
 
 def list_works(settings: Settings, page: int, per_page: int) -> WorksPage:

@@ -107,6 +107,12 @@ def _delete_work(conn: sqlite3.Connection, work_id: str) -> None:
     conn.execute("DELETE FROM work WHERE id=?", (work_id,))
 
 
+def remove_work(conn: sqlite3.Connection, work_id: str) -> None:
+    """Fully drop a work from the index (rows only — the caller removes the on-disk files)."""
+    _delete_work(conn, work_id)
+    conn.commit()
+
+
 def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str) -> None:
     _delete_work(conn, doc.id)
     conn.execute(

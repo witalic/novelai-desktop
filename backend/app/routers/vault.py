@@ -69,6 +69,11 @@ def load_work(work_id: str, settings: Settings = Depends(get_settings)) -> WorkD
     return service.load_work(settings, work_id)
 
 
+@router.delete("/works/{work_id}")
+def delete_work(work_id: str, settings: Settings = Depends(get_settings)) -> dict:
+    return service.delete_work(settings, work_id)
+
+
 @router.get("/works/{work_id}/images/{image_id}")
 def get_image(
     work_id: str, image_id: str,
