@@ -43,6 +43,8 @@ def _read_raw(vault: Path) -> tuple[list[dict], set[str]]:
         return [], set()
     if isinstance(data, list):  # legacy shape: a bare list of overrides
         return data, set()
+    if not isinstance(data, dict):  # a scalar (null/number/string) in the file → treat as empty, not a 500
+        return [], set()
     return data.get("overrides", []), set(data.get("hidden", []))
 
 

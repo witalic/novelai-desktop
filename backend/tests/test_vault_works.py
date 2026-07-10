@@ -243,6 +243,16 @@ async def test_rejects_garbage_base64_and_traversal_image_id(client):
     assert (await ac.put("/api/vault/works", json=traversal)).status_code == 400
 
 
+async def test_save_blocked_while_a_move_is_in_progress(client):
+    ac, _ = client
+    from app.vault import manager
+    manager._move["active"] = True  # simulate an in-flight vault move
+    try:
+        assert (await ac.put("/api/vault/works", json=_work("w1"))).status_code == 409
+    finally:
+        manager._move["active"] = False
+
+
 async def test_bad_id_and_missing_image(client):
     ac, _ = client
     await ac.put("/api/vault/works", json=_work())

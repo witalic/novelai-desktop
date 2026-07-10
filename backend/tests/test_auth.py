@@ -1,4 +1,4 @@
-"""The shell's per-launch shared secret guards /api (via a custom header) and rejects non-loopback hosts.
+"""The shell's per-launch shared secret guards /api (via the nai_auth cookie) and rejects non-loopback hosts.
 Offline; the guard is a no-op unless a token is provisioned, so the rest of the suite is unaffected."""
 import httpx
 import pytest

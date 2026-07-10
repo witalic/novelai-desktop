@@ -14,7 +14,7 @@ from PIL import Image as PILImage
 
 from app import appconfig
 from app.settings import Settings
-from app.vault import catalog, index, layout, store
+from app.vault import catalog, index, layout, manager, store
 from app.vault.models import (
     BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage,
     SaveCategory, TagCount, WorkDoc, WorkListItem, WorksPage,
@@ -35,6 +35,8 @@ def _vault(settings: Settings) -> Path:
 def save_work(settings: Settings, doc: WorkDoc) -> dict:
     if not layout.valid_id(doc.id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
+    if manager.move_status().active:  # a save landing between a move's copy and rmtree would vanish
+        raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:

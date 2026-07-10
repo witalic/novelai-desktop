@@ -2,6 +2,7 @@
 
 Serves the API and the built frontend single-origin at ``/app/`` (README: один origin, no CORS).
 """
+import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -39,7 +40,7 @@ def create_app() -> FastAPI:
             host = (request.headers.get("host") or "").split(":")[0]
             if host not in _LOOPBACK:
                 return JSONResponse({"detail": "Bad host."}, status_code=400)
-            if request.url.path.startswith("/api") and request.cookies.get("nai_auth") != token:
+            if request.url.path.startswith("/api") and not secrets.compare_digest(request.cookies.get("nai_auth") or "", token):
                 return JSONResponse({"detail": "Unauthorized."}, status_code=403)
         return await call_next(request)
 

@@ -10,6 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app import appconfig
 from app.novelai import GenerateParams, get_client
@@ -30,7 +31,7 @@ def _with_seed(params: GenerateParams) -> GenerateParams:
 
 @router.post("/generate")
 async def generate(params: GenerateParams, settings: Settings = Depends(get_settings)) -> dict:
-    client = get_client(settings)
+    client = await run_in_threadpool(get_client, settings)  # get_client reads the keychain (blocking) — off the loop
     params = _with_seed(params)
     try:
         images = await client.generate(params)
@@ -55,14 +56,14 @@ async def generate_stream(params: GenerateParams, settings: Settings = Depends(g
     ``{type:'final',mime,image,seed}`` / ``{type:'error',message,status}`` (``image`` is raw base64).
     The final event carries the resolved ``seed`` so the client can persist a reproducible snapshot.
     """
-    client = get_client(settings)
+    client = await run_in_threadpool(get_client, settings)  # keychain read is blocking — keep it off the loop
     params = _with_seed(params)
 
     async def sse():
         try:
             async for event in client.generate_stream(params):
                 if event.get("type") == "final":  # NovelAI derives sample k from seed + k — stamp the real one
-                    event = {**event, "seed": params.seed + event.get("samp", 0)}
+                    event = {**event, "seed": params.seed + event.get("samp", 0), "mock": client.is_mock}
                 yield f"data: {json.dumps(event)}\n\n"
         except NovelAIError as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc), 'status': exc.http_status or 502})}\n\n"
