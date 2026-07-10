@@ -26,6 +26,7 @@ async function fetchPage(p = page.value) {
     items.value = res.items
     total.value = res.total
     page.value = res.page
+    requestedPage = res.page
     noVault.value = false
   } catch (e) {
     if (req !== fetchReq) return
@@ -43,8 +44,10 @@ async function fetchPage(p = page.value) {
 }
 
 const pages = () => Math.max(1, Math.ceil(total.value / perPage))
+let requestedPage = 1 // the last page we asked for — dedup rapid clicks before the response updates page.value
 function go(p: number) {
-  if (p < 1 || p > pages() || p === page.value) return
+  if (p < 1 || p > pages() || p === requestedPage) return
+  requestedPage = p
   fetchPage(p)
 }
 

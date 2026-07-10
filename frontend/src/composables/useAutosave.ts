@@ -88,7 +88,8 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
   // land mid-save, and the promise resolves only once the save has actually finished — so callers (New work,
   // quit, leave) can await it and learn whether it succeeded.
   async function flush(force = false): Promise<boolean> {
-    if (!vaultReady.value || !isMeaningful()) return true
+    if (!isMeaningful()) return true          // nothing worth saving → "ok"
+    if (!vaultReady.value) return false        // meaningful content but no vault → NOT persisted (New work confirms)
     if (inflight) { pendingResave = true; return inflight } // join the running save (and make it re-run)
     if (!force && !dirty) return true
     const run = (async () => {

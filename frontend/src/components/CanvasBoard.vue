@@ -590,6 +590,7 @@ function startName(data: any, e: MouseEvent) {
                   <div v-else-if="drafts.length" class="topwrap nodrag" :class="{ selected: topSelected }" draggable="true"
                     @dragstart="onDraftDragStart" @pointerdown.stop @click.stop="topSelected = !topSelected" title="Drag onto the canvas to keep">
                     <img class="topimg" :src="drafts[0].url" alt="latest generation" draggable="false" />
+                    <span v-if="drafts[0].mock" class="mockbadge" title="Offline placeholder — no NovelAI token set">MOCK</span>
                     <span class="stackbadge">{{ drafts.length }} in stack</span>
                     <span class="draghint">⤴ drag to keep</span>
                   </div>
@@ -739,6 +740,7 @@ function startName(data: any, e: MouseEvent) {
 .topwrap:active{cursor:grabbing}
 .topimg{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;border:1px solid var(--border);box-shadow:0 2px 10px rgba(0,0,0,.35);transition:box-shadow .12s,border-color .12s}
 .topwrap:hover .topimg{border-color:var(--border-strong)}
+.mockbadge{position:absolute;top:14px;left:14px;font-size:9px;font-weight:800;letter-spacing:.5px;background:var(--warn,#b65c02);color:#fff;padding:2px 7px;border-radius:10px;pointer-events:none}
 .topwrap.selected .topimg{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
 .stackbadge{position:absolute;top:2px;right:2px;font-size:10px;font-weight:600;background:color-mix(in srgb,#000 58%,transparent);color:#fff;padding:2px 8px;border-radius:20px}
 .draghint{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:600;background:var(--accent);color:var(--on-accent);padding:3px 10px;border-radius:20px;opacity:0;transition:opacity .12s;pointer-events:none;white-space:nowrap}

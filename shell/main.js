@@ -61,7 +61,7 @@ function createWindow (apiOrigin) {
     const finish = () => { if (done) return; done = true; quitting = true; win.destroy() }
     ipcMain.once('app:quit-ready', finish)
     win.webContents.send('app:before-quit')
-    setTimeout(finish, 3000) // safety: never hang the close on a stuck renderer
+    setTimeout(finish, 10000) // safety fallback for a stuck renderer — generous so a large real save can finish
   })
 }
 
