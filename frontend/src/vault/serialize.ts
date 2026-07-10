@@ -1,8 +1,9 @@
 /* Serialize the Vue Flow canvas to a WorkDoc and back. Framework-free (takes plain node arrays)
  * so it is unit-testable. Persistence is an explicit whitelist: domain + layout fields are listed
  * per node type below; everything else on a live node (measured dimensions, selection, transient
- * UI flags like `expanded`/`editing`/`_cw`/`_ch`) never reaches disk. Only content inside the
- * anchor zones is saved; drafts are dropped (scratch persistence lands with schema v2). */
+ * UI flags like `expanded`/`editing`/`_cw`/`_ch`) never reaches disk. The WHOLE canvas persists —
+ * zones define role, not survival: images inside the gallery zone are `role: 'gallery'`, anything
+ * loose is `role: 'scratch'` (kept with the work, invisible to galleries/counts/previews). */
 import type {
   CanvasNode, GenResult, ImageNodeData, NodeStyle, PanelParams, PersistedImage,
   PersistedSnapshot, PersistedStackItem, SnapshotData, Viewport, WorkDoc,
@@ -68,11 +69,11 @@ export function canvasToWork(
   const library = nodes.find((n) => n.id === LIBRARY)
   const gallery = nodes.find((n) => n.id === GALLERY)
 
-  // Saved nodes: the anchors + blocks inside station/library + images inside gallery (drafts excluded).
-  const savedBlocks = nodes.filter((n) => n.type === 'block' && (n.parentNode === STATION || n.parentNode === LIBRARY))
-  const galleryImages = nodes.filter((n) => n.type === 'image' && n.parentNode === GALLERY)
+  // The whole canvas persists: anchors + every block/image node, in or out of a zone.
+  const allBlocks = nodes.filter((n) => n.type === 'block')
+  const allImages = nodes.filter((n) => n.type === 'image')
   const anchorNodes = [station, library, gallery].filter((n): n is LiveNode => !!n)
-  const canvasNodes = [...anchorNodes, ...savedBlocks, ...galleryImages].map(slim)
+  const canvasNodes = [...anchorNodes, ...allBlocks, ...allImages].map(slim)
 
   // Work-level snapshots (the reproducible recipe: prompt composition + params), deduped and shared by
   // gallery images and the draft stack; each references one via snapshot_id. The dedup key includes the
@@ -94,10 +95,11 @@ export function canvasToWork(
     return snapshotsByKey.get(key)!.id
   }
 
-  const images: PersistedImage[] = galleryImages.map((im) => {
+  const images: PersistedImage[] = allImages.map((im) => {
     const d = (im.data ?? {}) as Partial<ImageNodeData>
     return {
       id: im.id, snapshot_id: snapshotIdOf(d.snapshot),
+      role: im.parentNode === GALLERY ? 'gallery' as const : 'scratch' as const,
       ...splitImage(d.url || '', d.file || ''),
       created_at: d.created_at || '', // backend fills this if empty
       group: d.group ?? null, favorite: !!d.favorite,
@@ -116,7 +118,8 @@ export function canvasToWork(
     canvas: { viewport, nodes: canvasNodes },
     snapshots: [...snapshotsByKey.values()],
     images, stack,
-    preview_image_id: images.length ? images[0].id : null,
+    // Scratch is working material — a work previews (and counts) only by its gallery images.
+    preview_image_id: images.find((im) => im.role === 'gallery')?.id ?? null,
   }
 }
 

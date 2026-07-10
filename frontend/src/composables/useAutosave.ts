@@ -3,7 +3,7 @@
  * every few seconds. Owns the save state + logic; the component wires the lifecycle (listeners, hooks). */
 import { nextTick, ref, type Ref } from 'vue'
 import { getAppSettings, saveWork } from '../api'
-import { canvasToWork, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import { canvasToWork } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { useToast } from './useToast'
 import type { GenResult, PanelParams, WorkDoc } from '../types'
@@ -34,13 +34,13 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
   let lastSig = ''
   let ignoreDirty = false // suppress markDirty while onSaved rewrites persisted urls (not a user edit)
 
-  // A work is worth persisting once it has a title, a kept gallery image, OR a non-empty prompt block in the
-  // station/library — otherwise an assembled-but-ungenerated composition would be discarded silently on leave.
+  // A work is worth persisting once it has a title, ANY kept image, or ANY non-empty prompt block —
+  // in a zone or loose: scratch persists too (zones define role, not survival), so a scratch-only
+  // work must not be discarded silently on leave.
   function isMeaningful() {
     return title.value.trim().length > 0 || nodes.value.some((n) =>
-      (n.type === 'image' && n.parentNode === GALLERY)
-      || (n.type === 'block' && (n.parentNode === STATION || n.parentNode === LIBRARY)
-          && String(n.data?.text || '').trim().length > 0))
+      n.type === 'image'
+      || (n.type === 'block' && String(n.data?.text || '').trim().length > 0))
   }
 
   // Cheap change signature (excludes image bytes) so an unchanged work is never re-written.

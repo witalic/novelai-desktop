@@ -15,7 +15,7 @@ from app.vault.models import WorkDoc
 log = logging.getLogger(__name__)
 
 _DB = ".index.sqlite"
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3  # 3: image.role (gallery/scratch) — bumping rebuilds the throwaway index
 
 _SCHEMA = """
 CREATE TABLE work(id TEXT PRIMARY KEY, dir TEXT NOT NULL, title TEXT, slug TEXT,
@@ -23,7 +23,7 @@ CREATE TABLE work(id TEXT PRIMARY KEY, dir TEXT NOT NULL, title TEXT, slug TEXT,
 CREATE TABLE snapshot(id TEXT PRIMARY KEY, work_id TEXT NOT NULL, hash TEXT,
   positive TEXT, negative TEXT, created_at TEXT);
 CREATE TABLE image(id TEXT PRIMARY KEY, work_id TEXT NOT NULL, snapshot_id TEXT, file TEXT,
-  favorite INTEGER DEFAULT 0, group_name TEXT, seed INTEGER, model TEXT, created_at TEXT);
+  role TEXT DEFAULT 'gallery', favorite INTEGER DEFAULT 0, group_name TEXT, seed INTEGER, model TEXT, created_at TEXT);
 CREATE TABLE block(id TEXT PRIMARY KEY, category TEXT, name TEXT, text TEXT,
   polarity TEXT DEFAULT 'positive', version INTEGER, created_at TEXT, updated_at TEXT);
 CREATE TABLE tag(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);
@@ -115,9 +115,10 @@ def remove_work(conn: sqlite3.Connection, work_id: str) -> None:
 
 def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str) -> None:
     _delete_work(conn, doc.id)
+    gallery_count = sum(1 for im in doc.images if im.role == "gallery")  # scratch never counts
     conn.execute(
         "INSERT INTO work(id,dir,title,slug,created_at,updated_at,preview_image_id,image_count) VALUES(?,?,?,?,?,?,?,?)",
-        (doc.id, dir_name, doc.title, doc.slug, doc.created_at, doc.updated_at, doc.preview_image_id, len(doc.images)),
+        (doc.id, dir_name, doc.title, doc.slug, doc.created_at, doc.updated_at, doc.preview_image_id, gallery_count),
     )
     snap_tags: dict[str, set[str]] = {}
     snap_params: dict[str, dict] = {}
@@ -132,8 +133,8 @@ def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str) -> None:
     for im in doc.images:
         params = snap_params.get(im.snapshot_id or "", {})  # generation params live on the snapshot
         conn.execute(
-            "INSERT OR REPLACE INTO image(id,work_id,snapshot_id,file,favorite,group_name,seed,model,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (im.id, doc.id, im.snapshot_id, im.file, int(im.favorite), im.group,
+            "INSERT OR REPLACE INTO image(id,work_id,snapshot_id,file,role,favorite,group_name,seed,model,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (im.id, doc.id, im.snapshot_id, im.file, im.role, int(im.favorite), im.group,
              params.get("seed"), params.get("model"), im.created_at),
         )
         for t in snap_tags.get(im.snapshot_id or "", set()):
@@ -221,7 +222,7 @@ def examples_by_tags(conn, tags: list[str], limit: int):
         f"SELECT i.id AS id, i.work_id AS work_id, i.favorite AS favorite, i.group_name AS group_name, "
         f"i.created_at AS created_at "
         f"FROM image_tag it JOIN tag t ON t.id=it.tag_id JOIN image i ON i.id=it.image_id "
-        f"WHERE t.name IN ({ph}) GROUP BY i.id HAVING COUNT(DISTINCT t.name)=? "
+        f"WHERE t.name IN ({ph}) AND i.role='gallery' GROUP BY i.id HAVING COUNT(DISTINCT t.name)=? "
         f"ORDER BY RANDOM() LIMIT ?",  # random pick so a large match set stays varied
         [*tags, len(tags), limit],
     ).fetchall()
@@ -255,7 +256,7 @@ def list_works(conn: sqlite3.Connection, page: int, per_page: int):
 
 
 def gallery(conn, tags: list[str], favorite: bool, page: int, per_page: int):
-    where, params = [], []
+    where, params = ["i.role='gallery'"], []  # scratch is working material — never listed
     if favorite:
         where.append("i.favorite=1")
     if tags:
@@ -265,7 +266,7 @@ def gallery(conn, tags: list[str], favorite: bool, page: int, per_page: int):
             f"WHERE t.name IN ({ph}) GROUP BY it.image_id HAVING COUNT(DISTINCT t.name)=?)"
         )
         params += tags + [len(tags)]
-    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    clause = "WHERE " + " AND ".join(where)
     total = conn.execute(f"SELECT COUNT(*) FROM image i {clause}", params).fetchone()[0]
     rows = conn.execute(
         f"SELECT i.id,i.work_id,i.favorite,i.group_name,i.created_at FROM image i {clause} "

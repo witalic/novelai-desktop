@@ -73,6 +73,30 @@ describe('canvasToWork', () => {
     const node = doc.canvas.nodes.find((n) => n.id === 'img-1')!
     expect(node.data).toEqual({})
   })
+
+  it('persists out-of-zone content as scratch — zones define role, not survival', () => {
+    const looseImage = { ...galleryImage('img-s', 7), parentNode: undefined }
+    const looseBlock = {
+      id: 'block-s', type: 'block', position: { x: 900, y: 600 }, style: { width: '176px' },
+      data: { name: 'Idea', text: 'sky, clouds', polarity: 'positive', category: 'custom' },
+    }
+    const doc = canvasToWork([...anchors(), looseImage, looseBlock], viewport, params, { id: 'w1', title: '' })
+    expect(doc.images).toHaveLength(1)
+    expect(doc.images[0]).toMatchObject({ id: 'img-s', role: 'scratch', file: 'images/img-s.png' })
+    expect(doc.preview_image_id).toBeNull() // scratch never previews
+    const { nodes } = workToCanvas(doc)
+    const img = nodes.find((n) => n.id === 'img-s')!
+    expect(img.parentNode).toBeUndefined() // loose stays loose
+    expect((img.data as any).snapshot.params.seed).toBe(7) // the recipe survives outside the gallery
+    expect(nodes.find((n) => n.id === 'block-s')!.data).toMatchObject({ name: 'Idea', text: 'sky, clouds' })
+  })
+
+  it('previews by the first gallery image, ignoring earlier scratch', () => {
+    const scratch = { ...galleryImage('img-s', 7), parentNode: undefined }
+    const doc = canvasToWork([...anchors(), scratch, galleryImage('img-g', 8)], viewport, params, { id: 'w1', title: '' })
+    expect(doc.images.map((i) => i.role)).toEqual(['scratch', 'gallery'])
+    expect(doc.preview_image_id).toBe('img-g')
+  })
 })
 
 describe('workToDrafts', () => {
@@ -112,14 +136,22 @@ describe('round-trip (canvasToWork -> workToCanvas)', () => {
       id: 'block-1', type: 'block', parentNode: STATION, position: { x: 400, y: 80 }, style: { width: '176px' }, zIndex: 2,
       data: { name: 'Char', text: '1girl', polarity: 'positive', category: 'character', block_id: 'b1', version: 3, tags: ['x'], xFrac: 0.25, laneFrac: 0.5 },
     }
+    const looseBlock = {
+      id: 'block-s', type: 'block', position: { x: 900, y: 600 }, style: { width: '176px' },
+      data: { name: 'Idea', text: 'sky, clouds', polarity: 'positive', category: 'custom' },
+    }
+    const scratchImage = { ...galleryImage('img-s', 7), parentNode: undefined }
     const draft = {
       id: 'img-9', url: '/api/vault/works/w1/images/img-9', file: 'images/img-9.png',
       params: {} as any, mock: false, created_at: '2026-01-02T10:00:00Z',
       snapshot: { components: [], positive: 'sky', negative: '', params: { seed: 9 }, hash: 'positive:sky', created_at: '2026-01-02T10:00:00Z' },
     }
-    const doc1 = canvasToWork([...anchors(), block, galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'T' }, [draft])
+    const doc1 = canvasToWork(
+      [...anchors(), block, looseBlock, galleryImage('img-1', 42), scratchImage],
+      viewport, params, { id: 'w1', title: 'T' }, [draft],
+    )
     const { nodes, viewport: vp } = workToCanvas(doc1)
     const doc2 = canvasToWork(nodes, vp, params, { id: 'w1', title: 'T' }, workToDrafts(doc1))
-    expect(doc2).toEqual(doc1) // no field drifts or drops across a full save/load/save cycle
+    expect(doc2).toEqual(doc1) // no field drifts or drops across a full save/load/save cycle — scratch included
   })
 })

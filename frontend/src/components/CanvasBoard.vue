@@ -59,8 +59,9 @@ const composed = computed(() => {
   return { positive: pick(false).join(', '), negative: pick(true).join(', ') }
 })
 const tokenEstimate = computed(() => Math.ceil((composed.value.positive.length + composed.value.negative.length) / 4))
-// Loose blocks/images not inside any anchor zone are drafts — they won't be saved.
-const orphanCount = computed(() => nodes.value.filter((n) => (n.type === 'block' || n.type === 'image') && !ANCHORS.has(n.parentNode ?? '')).length)
+// Loose blocks/images not inside any anchor zone are scratch — saved with the work, but with no
+// role in generation or galleries.
+const scratchCount = computed(() => nodes.value.filter((n) => (n.type === 'block' || n.type === 'image') && !ANCHORS.has(n.parentNode ?? '')).length)
 const childCount = (id: string) => nodes.value.filter((n) => n.parentNode === id).length
 
 const flowRef = ref<HTMLElement | null>(null)
@@ -84,7 +85,8 @@ const { title, vaultReady, workId, saveState, savedAt, markDirty, flush, flushIf
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function rewriteSavedUrls(wid: string) {
   for (const n of nodes.value as any[]) {
-    if (n.type === 'image' && n.parentNode === GALLERY && typeof n.data?.url === 'string' && n.data.url.startsWith('data:')) {
+    // Every image node persists now (gallery AND scratch), so every just-saved data: URL repoints.
+    if (n.type === 'image' && typeof n.data?.url === 'string' && n.data.url.startsWith('data:')) {
       n.data = { ...n.data, url: `/api/vault/works/${wid}/images/${n.id}`, file: `images/${n.id}.png` }
     }
   }
@@ -566,7 +568,7 @@ function startName(data: any, e: MouseEvent) {
     </div>
 
     <div class="flowwrap" ref="flowRef" @drop="onCanvasDrop" @dragover.prevent>
-      <div v-if="orphanCount" class="orphan-banner">⚠ {{ orphanCount }} item{{ orphanCount > 1 ? 's' : '' }} outside the zones — won't be saved</div>
+      <div v-if="scratchCount" class="scratch-banner">{{ scratchCount }} scratch item{{ scratchCount > 1 ? 's' : '' }} outside the zones</div>
       <VueFlow :min-zoom="0.2" :max-zoom="2.5" :delete-key-code="null" :only-render-visible-elements="true"
                :multi-selection-key-code="['Control', 'Meta']" :selection-key-code="'Shift'"
                :zoom-on-double-click="false" style="height:100%;width:100%">
@@ -698,10 +700,10 @@ function startName(data: any, e: MouseEvent) {
 .barbtn{border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:6px 10px;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px}
 .barbtn:hover{color:var(--text);border-color:var(--border-strong)}
 .flowwrap{flex:1;position:relative;min-height:0}
-.orphan-banner{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;
-  display:flex;align-items:center;font-size:12px;font-weight:600;color:#e8913a;padding:6px 14px;border-radius:20px;
-  background:color-mix(in srgb,#b65c02 16%,var(--surface-1));border:1px solid color-mix(in srgb,#b65c02 45%,var(--border));
-  box-shadow:0 4px 16px rgba(0,0,0,.35)}
+.scratch-banner{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;
+  display:flex;align-items:center;font-size:12px;font-weight:500;color:var(--text-dim);padding:5px 13px;border-radius:20px;
+  background:color-mix(in srgb,var(--surface-1) 88%,transparent);border:1px solid var(--border);
+  box-shadow:0 4px 16px rgba(0,0,0,.25)}
 .ctxback{position:fixed;inset:0;z-index:998}
 .ctxmenu{position:fixed;z-index:999;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 6px 24px rgba(0,0,0,.4);padding:4px;min-width:170px}
 .ctxmenu button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;color:var(--text);font-size:13px;padding:8px 10px;border-radius:var(--radius);cursor:pointer;text-align:left}

@@ -97,6 +97,33 @@ async def test_block_examples_require_all_tags(client):
     assert len(ex) == 1 and ex[0]["work_id"] == "w1"  # exact match: only the image carrying BOTH tags
 
 
+async def test_scratch_images_persist_but_never_surface(client):
+    """Zones define role, not survival: scratch images live on disk with their recipe, are served
+    for the canvas, but stay invisible to the gallery, work counts, and examples."""
+    ac, vault = client
+    work = _work("w1")
+    work["images"].append({
+        "id": "img-scr", "snapshot_id": "s-w1", "role": "scratch", "image_b64": _png_b64(),
+    })
+    assert (await ac.put("/api/vault/works", json=work)).status_code == 200
+    wdir = list((vault / "works").glob("*/work.json"))[0].parent
+    assert (wdir / "images" / "img-scr.png").is_file()  # scratch bytes ARE on disk
+
+    body = (await ac.get("/api/vault/works/w1")).json()
+    assert {im["id"]: im["role"] for im in body["images"]} == {"img-w1": "gallery", "img-scr": "scratch"}
+    assert (await ac.get("/api/vault/works/w1/images/img-scr")).status_code == 200  # served for the canvas
+
+    works = (await ac.get("/api/vault/works")).json()
+    assert works["items"][0]["image_count"] == 1  # gallery images only
+
+    gal = (await ac.get("/api/vault/gallery")).json()
+    assert gal["total"] == 1 and gal["items"][0]["image_id"] == "img-w1"
+
+    # Examples exclude scratch too — img-scr shares the same snapshot (and thus its block tags).
+    ex = (await ac.get("/api/vault/library/examples", params={"tags": ["silver hair", "night"]})).json()
+    assert [e["image_id"] for e in ex] == ["img-w1"]
+
+
 async def test_image_thumbnail_resized_and_capped(client):
     ac, vault = client
     work = _work("w1")

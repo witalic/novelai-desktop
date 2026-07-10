@@ -24,7 +24,7 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
             im.file = f"images/{im.id}.png"
             im.image_b64 = None
         sidecar = {
-            "snapshot_id": im.snapshot_id, "created_at": im.created_at, "tags": im.tags,
+            "snapshot_id": im.snapshot_id, "role": im.role, "created_at": im.created_at, "tags": im.tags,
             "description": im.description, "group": im.group, "favorite": im.favorite, "source": im.source,
         }
         layout.atomic_write_text(images_dir / f"{im.id}.json", json.dumps(sidecar, ensure_ascii=False))

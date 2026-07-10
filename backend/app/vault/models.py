@@ -91,6 +91,9 @@ class Snapshot(BaseModel):
 class Image(BaseModel):
     id: str
     snapshot_id: str | None = None
+    # Zones define role, not survival: 'gallery' images surface in galleries/counts/previews;
+    # 'scratch' is working material loose on the canvas — persisted, but never listed.
+    role: Literal["gallery", "scratch"] = "gallery"
     file: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
     group: str | None = None
