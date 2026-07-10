@@ -2,9 +2,11 @@
 import base64
 import json
 import logging
+import secrets
 import time
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -18,16 +20,28 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["generate"])
 
 
+def _with_seed(params: GenerateParams) -> GenerateParams:
+    """Resolve a random seed up front so the actually-used seed can be surfaced — otherwise a saved image
+    can't be reproduced. A caller-supplied seed is kept as-is."""
+    if params.seed is not None:
+        return params
+    return params.model_copy(update={"seed": secrets.randbelow(2**32)})
+
+
 @router.post("/generate")
 async def generate(params: GenerateParams, settings: Settings = Depends(get_settings)) -> dict:
     client = get_client(settings)
+    params = _with_seed(params)
     try:
         images = await client.generate(params)
     except NovelAIError as exc:
         raise HTTPException(status_code=exc.http_status or 502, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:  # timeout / connect / read against an unofficial upstream → clean 502
+        raise HTTPException(status_code=502, detail=f"NovelAI request failed: {exc}") from exc
     return {
         "mock": client.is_mock,
         "count": len(images),
+        "seed": params.seed,
         "images": [base64.b64encode(img).decode("ascii") for img in images],
     }
 
@@ -37,16 +51,22 @@ async def generate_stream(params: GenerateParams, settings: Settings = Depends(g
     """Server-sent stream of the generation: intermediate previews then the final image.
 
     Each SSE data line is a JSON event: ``{type:'intermediate',step,mime,image}`` /
-    ``{type:'final',mime,image}`` / ``{type:'error',message,status}`` (``image`` is raw base64).
+    ``{type:'final',mime,image,seed}`` / ``{type:'error',message,status}`` (``image`` is raw base64).
+    The final event carries the resolved ``seed`` so the client can persist a reproducible snapshot.
     """
     client = get_client(settings)
+    params = _with_seed(params)
 
     async def sse():
         try:
             async for event in client.generate_stream(params):
+                if event.get("type") == "final":
+                    event = {**event, "seed": params.seed}
                 yield f"data: {json.dumps(event)}\n\n"
         except NovelAIError as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc), 'status': exc.http_status or 502})}\n\n"
+        except httpx.HTTPError as exc:  # never drop the SSE silently — the UI spinner would hang forever
+            yield f"data: {json.dumps({'type': 'error', 'message': f'NovelAI request failed: {exc}', 'status': 502})}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
 

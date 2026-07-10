@@ -25,7 +25,7 @@ export interface GenerateResponse {
 
 export type StreamEvent =
   | { type: 'intermediate'; samp: number; step: number; mime: string; image: string }
-  | { type: 'final'; mime: string; image: string }
+  | { type: 'final'; mime: string; image: string; seed: number }
   | { type: 'error'; message: string; status: number }
 
 export interface SnapshotData {

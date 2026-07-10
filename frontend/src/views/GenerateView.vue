@@ -45,8 +45,11 @@ async function onGenerate(payload: { positive: string; negative: string; snapsho
       if (ev.type === 'intermediate') {
         if (ev.samp === 0) preview.value = `data:${ev.mime};base64,${ev.image}`
       } else if (ev.type === 'final') {
+        // Record the backend-resolved seed so the kept image is reproducible (params.seed may be null).
+        const seed = ev.seed ?? full.seed
+        const withSeed: SnapshotData = { ...snapshot, params: { ...snapshot.params, seed } }
         drafts.value = [
-          { id: newId('img'), url: `data:${ev.mime};base64,${ev.image}`, params: { ...full }, mock: false, snapshot },
+          { id: newId('img'), url: `data:${ev.mime};base64,${ev.image}`, params: { ...full, seed }, mock: false, snapshot: withSeed },
           ...drafts.value,
         ].slice(0, 50)
       } else if (ev.type === 'error') {
