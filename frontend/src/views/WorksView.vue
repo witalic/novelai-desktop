@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onActivated, ref } from 'vue'
-import { ApiError, listWorks } from '../api'
+import { ApiError, deleteWork, listWorks } from '../api'
 import { useToast } from '../composables/useToast'
+import { useConfirm } from '../composables/useConfirm'
 import type { WorkListItem } from '../types'
 
 const emit = defineEmits<{ open: [string] }>()
 const { push } = useToast()
+const { confirm } = useConfirm()
 
 const items = ref<WorkListItem[]>([])
 const total = ref(0)
@@ -42,9 +44,25 @@ function go(p: number) {
   fetchPage(p)
 }
 
-// Refresh whenever the tab comes into view (KeepAlive keeps it mounted).
+async function removeWork(w: WorkListItem) {
+  const ok = await confirm({
+    title: 'Delete work?', danger: true, confirmLabel: 'Delete',
+    message: `Delete “${w.title || 'Untitled'}” and its images from disk? This can't be undone.`,
+  })
+  if (!ok) return
+  try {
+    await deleteWork(w.id)
+    push('Work deleted', 'ok')
+    // If the last item on a page is gone, step back a page.
+    fetchPage(items.value.length === 1 && page.value > 1 ? page.value - 1 : page.value)
+  } catch (e) {
+    push(e instanceof Error ? e.message : 'Delete failed', 'err')
+  }
+}
+
+// Refresh whenever the tab comes into view — onActivated also fires on first mount under KeepAlive, so a
+// separate setup-time fetch would just double-load.
 onActivated(() => fetchPage())
-fetchPage()
 </script>
 
 <template>
@@ -65,16 +83,18 @@ fetchPage()
     </div>
 
     <div v-else class="grid">
-      <button v-for="w in items" :key="w.id" class="card" @click="emit('open', w.id)">
+      <div v-for="w in items" :key="w.id" class="card" role="button" tabindex="0"
+        @click="emit('open', w.id)" @keyup.enter="emit('open', w.id)">
         <div class="thumb">
           <img v-if="w.preview_url" :src="w.preview_url" :alt="w.title" loading="lazy" />
           <span v-else class="ph">✦</span>
+          <button class="del" title="Delete work" @click.stop="removeWork(w)">🗑</button>
         </div>
         <div class="meta">
           <div class="title">{{ w.title || 'Untitled' }}</div>
           <div class="sub">{{ w.image_count }} image{{ w.image_count === 1 ? '' : 's' }}</div>
         </div>
-      </button>
+      </div>
     </div>
 
     <footer v-if="pages() > 1" class="pager">
@@ -97,9 +117,14 @@ fetchPage()
 .card { text-align: left; padding: 0; background: var(--surface-1); border: 1px solid var(--border);
   border-radius: var(--radius); overflow: hidden; cursor: pointer; transition: border-color .12s, transform .12s; }
 .card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
-.thumb { aspect-ratio: 3 / 4; background: var(--surface-3); display: flex; align-items: center; justify-content: center; }
+.thumb { position: relative; aspect-ratio: 3 / 4; background: var(--surface-3); display: flex; align-items: center; justify-content: center; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .thumb .ph { font-size: 30px; color: var(--text-faint); }
+.del { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border: 0; border-radius: 7px;
+  background: color-mix(in srgb, #000 55%, transparent); color: #fff; font-size: 12px; cursor: pointer;
+  opacity: 0; transition: opacity .12s; }
+.card:hover .del { opacity: 1; }
+.del:hover { background: var(--danger, #e2483d); }
 .meta { padding: 10px 12px 12px; }
 .title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub { font-size: 11px; color: var(--text-faint); margin-top: 3px; }

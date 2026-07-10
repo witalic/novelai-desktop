@@ -34,6 +34,11 @@ export async function loadWork(workId: string): Promise<WorkDoc> {
   return resp.json()
 }
 
+export async function deleteWork(workId: string): Promise<void> {
+  const resp = await fetch(`/api/vault/works/${encodeURIComponent(workId)}`, { method: 'DELETE' })
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to delete work (HTTP ${resp.status})`)
+}
+
 // ---- library ----
 export async function listBlocks(
   opts: { category?: string; tags?: string[]; search?: string; page?: number; perPage?: number } = {},

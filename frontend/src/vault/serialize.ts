@@ -8,7 +8,12 @@ export const GALLERY = 'gallery'
 const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
 function slim(n: any) {
-  const data = n.type === 'image' ? {} : n.data
+  let data = n.type === 'image' ? {} : n.data
+  if (n.type === 'block') {
+    const { expanded, editing, ...rest } = n.data || {} // drop transient UI flags — they don't belong on disk
+    void expanded; void editing
+    data = rest
+  }
   return { id: n.id, type: n.type, position: n.position, parentNode: n.parentNode, style: n.style, data }
 }
 

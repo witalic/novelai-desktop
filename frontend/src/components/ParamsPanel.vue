@@ -6,6 +6,15 @@ import type { PanelParams } from '../types'
 const props = defineProps<{ params: PanelParams; open: boolean }>()
 defineEmits<{ toggle: [] }>()
 
+// A seed is a non-negative 32-bit integer; anything else (letters, overflow) clears it → random, so the
+// user never silently gets a random seed from a typo they think stuck.
+function parseSeed(v: string): number | null {
+  const s = v.trim()
+  if (!/^\d+$/.test(s)) return null
+  const n = Number(s)
+  return Number.isSafeInteger(n) && n <= 4294967295 ? n : null
+}
+
 const MODELS = [
   { value: 'nai-diffusion-4-5-full', label: 'NAI Diffusion 4.5 — Full' },
   { value: 'nai-diffusion-4-5-curated', label: 'NAI Diffusion 4.5 — Curated' },
@@ -117,7 +126,7 @@ const clampDim = (n: number) => Math.max(64, Math.min(2048, Math.round((n || 64)
               <span class="label">Seed</span>
               <div class="seedwrap">
                 <input type="text" :value="params.seed ?? ''" placeholder="random"
-                  @input="params.seed = ($event.target as HTMLInputElement).value ? Number(($event.target as HTMLInputElement).value) : null" />
+                  @input="params.seed = parseSeed(($event.target as HTMLInputElement).value)" />
                 <button class="mini" title="Randomize" @click="params.seed = Math.floor(Math.random() * 4294967295)">⚄</button>
                 <button class="mini" title="Clear" @click="params.seed = null">✕</button>
               </div>

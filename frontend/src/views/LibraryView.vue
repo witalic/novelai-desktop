@@ -43,26 +43,30 @@ async function loadCategories() {
 async function loadTags() {
   try { tagOptions.value = await listTags(activeCategory.value) } catch { tagOptions.value = [] }
 }
+let blocksReq = 0
 async function loadBlocks() {
+  const req = ++blocksReq // rapid category/tag/search changes: a slow earlier response must not overwrite a newer one
   loading.value = true
   try {
     const res = await listBlocks({ category: activeCategory.value, tags: selectedTags.value, search: search.value, page: page.value, perPage })
+    if (req !== blocksReq) return // superseded
     blocks.value = res.items
     total.value = res.total
     noVault.value = false
   } catch (e) {
+    if (req !== blocksReq) return
     if (e instanceof ApiError && e.status === 409) { noVault.value = true; blocks.value = []; total.value = 0 }
     else push(e instanceof Error ? e.message : 'Could not load blocks', 'err')
   } finally {
-    loading.value = false
+    if (req === blocksReq) loading.value = false
   }
 }
 async function refreshAll() {
   await loadCategories()
   await Promise.all([loadBlocks(), loadTags()])
 }
+// onActivated also fires on first mount under KeepAlive, so a separate setup-time call would double-load.
 onActivated(refreshAll)
-refreshAll()
 
 function selectCategory(slug: string) {
   if (activeCategory.value === slug) return
