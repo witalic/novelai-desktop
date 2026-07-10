@@ -1,7 +1,7 @@
 /* Vault autosave (extracted from CanvasBoard): a dirty-flagged work persisted at meaningful moments —
  * leaving Generate, app close, and a periodic timer — never on every keystroke, so heavy works don't save
  * every few seconds. Owns the save state + logic; the component wires the lifecycle (listeners, hooks). */
-import { ref, type Ref } from 'vue'
+import { nextTick, ref, type Ref } from 'vue'
 import { getAppSettings, saveWork } from '../api'
 import { canvasToWork, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { newId } from '../vault/ids'
@@ -17,9 +17,10 @@ interface Deps {
   params: () => PanelParams
   drafts: () => GenResult[]
   onNoVault: () => void // no vault configured → route the user to Settings
+  onSaved?: (workId: string) => void // after a successful save: swap just-persisted data: URLs for vault URLs
 }
 
-export function useAutosave({ nodes, viewport, params, drafts, onNoVault }: Deps) {
+export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSaved }: Deps) {
   const toast = useToast()
   const title = ref('')
   const vaultReady = ref(false)
@@ -31,6 +32,7 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault }: Deps
   let saving = false
   let pendingResave = false
   let lastSig = ''
+  let ignoreDirty = false // suppress markDirty while onSaved rewrites persisted urls (not a user edit)
 
   // A work is worth persisting once it has a title, a kept gallery image, OR a non-empty prompt block in the
   // station/library — otherwise an assembled-but-ungenerated composition would be discarded silently on leave.
@@ -52,8 +54,11 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault }: Deps
   }
 
   function markDirty() {
-    if (!isMeaningful()) return
+    if (ignoreDirty || !isMeaningful()) return
     dirty = true
+    // An edit that lands mid-save would otherwise be cleared by the in-flight flush's `dirty = false` and
+    // never re-persisted — flag a re-save so `flush`'s finally coalesces it.
+    if (saving) pendingResave = true
     if (saveState.value !== 'saving') saveState.value = 'dirty'
   }
 
@@ -72,6 +77,10 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault }: Deps
       dirty = false
       saveState.value = 'saved'
       savedAt.value = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      // Swap just-persisted data: URLs for vault URLs so the next save doesn't re-serialize their base64.
+      // changeKey treats url as present/absent (not by value), so this never marks the work dirty; the
+      // suppression flag stops the deep watcher's mutation from doing so during the microtask.
+      if (onSaved) { ignoreDirty = true; onSaved(workId.value); await nextTick(); ignoreDirty = false }
     } catch (e) {
       dirty = true
       saveState.value = 'dirty'

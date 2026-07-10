@@ -72,8 +72,20 @@ const { shownSrc, scaleOf, imgScale, fullStyle, imgSrc, seedSrc, swapSrc, applyS
 // the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
 const { title, vaultReady, workId, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
   onBeforeUnload, refreshInterval, stopAutosave, resetBaseline } = useAutosave({
-  nodes, viewport, params: () => props.params, drafts: () => props.drafts, onNoVault: () => emit('navigate', 'settings'),
+  nodes, viewport, params: () => props.params, drafts: () => props.drafts,
+  onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls,
 })
+// After a save, point kept gallery images at their on-disk vault URL so later saves don't re-serialize their
+// base64 (a 30-image work would otherwise ship hundreds of MB per flush). Display is unaffected — the shown
+// src (shownSrc) still holds the data: URL until the next scale swaps in the sized thumbnail.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rewriteSavedUrls(wid: string) {
+  for (const n of nodes.value as any[]) {
+    if (n.type === 'image' && n.parentNode === GALLERY && typeof n.data?.url === 'string' && n.data.url.startsWith('data:')) {
+      n.data = { ...n.data, url: `/api/vault/works/${wid}/images/${n.id}`, file: `images/${n.id}.png` }
+    }
+  }
+}
 
 function toFlow(clientX: number, clientY: number) {
   if (typeof screenToFlowCoordinate === 'function') return screenToFlowCoordinate({ x: clientX, y: clientY })
@@ -265,7 +277,7 @@ async function newWork() {
 }
 
 onMounted(async () => {
-  try { vaultReady.value = !!(await getVaultConfig()).active } catch { /* backend not ready */ }
+  await checkVault()
   if (props.openWork) loadDoc(props.openWork)
   else addNodes(zoneNodes()) // fresh start → empty anchor zones (no demo blocks; the Library holds those)
 })
@@ -370,23 +382,35 @@ function onKeydown(e: KeyboardEvent) {
 // Mark the work dirty on any change to the canvas / params / drafts / title (see useAutosave).
 watch([nodes, () => props.params, () => props.drafts, title], markDirty, { deep: true })
 
-// Lifecycle wiring for autosave + keyboard: the save logic lives in useAutosave; here we register the
-// window listeners, the Electron quit hook, the periodic timer, and the KeepAlive activate/deactivate flush.
+// Re-read whether a vault is configured. Under KeepAlive onMounted runs once, so a vault added in Settings
+// mid-session would otherwise leave `vaultReady` false forever → autosave silently dead (H7).
+async function checkVault() {
+  try { vaultReady.value = !!(await getVaultConfig()).active } catch { /* backend not ready */ }
+}
+
+// Lifecycle. The window/quit listeners must be live whenever the app is open, so they sit in onMounted. The
+// keydown handler (Ctrl+S / Delete) is scoped to onActivated/onDeactivated: CanvasBoard stays mounted under
+// KeepAlive, so a global Delete would otherwise remove canvas nodes while another view is showing (H8).
 let disposeBeforeQuit: (() => void) | null = null
 onMounted(() => {
-  window.addEventListener('keydown', onKeydown)
   window.addEventListener('beforeunload', onBeforeUnload)
   disposeBeforeQuit = onBeforeQuit(() => flush()) // Electron: main waits for this before quitting
-  refreshInterval()
 })
 onUnmounted(() => {
-  window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('beforeunload', onBeforeUnload)
-  disposeBeforeQuit?.() // unregister so the IPC listener never stacks across remounts
+  window.removeEventListener('keydown', onKeydown) // safety if destroyed while active
+  disposeBeforeQuit?.()
   stopAutosave()
 })
-onActivated(refreshInterval) // returning to Generate → pick up a changed interval
-onDeactivated(flushIfDirty)  // leaving Generate → flush now
+onActivated(() => {
+  window.addEventListener('keydown', onKeydown)
+  checkVault()      // a vault may have been configured while we were away
+  refreshInterval() // pick up a changed autosave interval
+})
+onDeactivated(() => {
+  window.removeEventListener('keydown', onKeydown)
+  flushIfDirty() // leaving Generate → flush now
+})
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function loadDoc(doc: any) {
