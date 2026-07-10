@@ -9,6 +9,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
 import { getAppSettings, getVaultConfig, saveDownloads, saveWork } from '../api'
 import { useToast } from '../composables/useToast'
+import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
 import { canvasToWork, workToCanvas } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -62,6 +63,11 @@ const childCount = (id: string) => nodes.value.filter((n) => n.parentNode === id
 let blockSeq = 0
 const flowRef = ref<HTMLElement | null>(null)
 const topSelected = ref(false)
+
+// Image-rendering pipeline (decode sizing, ?w= thumbnails, flash-free swap, reference scaling). `dims` and
+// `sizeOf` are hoisted node-size helpers shared with arrange/settle; the pipeline gets them by reference.
+const { shownSrc, scaleOf, imgScale, fullStyle, imgSrc, seedSrc, swapSrc, applyScale } =
+  useImagePipeline({ nodes, findNode, sizeOf, dims })
 
 function toFlow(clientX: number, clientY: number) {
   if (typeof screenToFlowCoordinate === 'function') return screenToFlowCoordinate({ x: clientX, y: clientY })
@@ -135,104 +141,7 @@ function nudgeById(id: string) {
   if (live) nudgeIfOverlapping(live)
 }
 
-// ---- image scaling to reference multiples + grid arrange ----
-const SCALES = [0.5, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10]
-const BASE_LONG = 180 // the long side at scale ×1
-function snapScale(v: number) {
-  return SCALES.reduce((best, s) => (Math.abs(s - v) < Math.abs(best - v) ? s : best), SCALES[0])
-}
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function scaleOf(n: any) {
-  const d = dims(n)
-  return snapScale(Math.max(d.w, d.h) / BASE_LONG)
-}
-function imgScale(id: string) {
-  const n = findNode(id)
-  return n ? `×${scaleOf(n)}` : ''
-}
-// The <img> is laid out at a chosen long side (→ decoded at that size) then transform-scaled down to the
-// node box, so the decode never collapses to a tiny display size (which smears when scaled back up). The
-// long side = node size × device-pixel-ratio × a supersample headroom, floored so it can't go tiny and
-// capped at the source resolution.
-const DEC_FLOOR = 480 // never fetch below this long side (crisp when scaled small)
-const DEC_CEIL = 1920 // up to the source's long side — big scales get full detail (backend never upscales)
-// Supersample headroom: fetching more pixels than the screen shows and letting the browser downscale
-// antialiases → sharper edges. It TAPERS with the image count so a large work (100-200) can't blow
-// Chromium's decode-memory budget (which would make it downsample cached bitmaps → pixelation), while a
-// normal work keeps maximum sharpness. Bucketed so it only steps at coarse thresholds — adding/removing a
-// single image never re-fetches every derivative. Viewport culling handles the zoomed-in case; this bounds
-// the zoomed-out "all images visible at once" case.
-const imageCount = computed(() => nodes.value.reduce((c, n) => c + (n.type === 'image' ? 1 : 0), 0))
-const headroom = computed(() => {
-  const n = imageCount.value
-  return n <= 30 ? 3.5 : n <= 60 ? 2.6 : n <= 120 ? 1.9 : 1.4
-})
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function decodeDims(id: string, data: any) {
-  const n = findNode(id)
-  const box = n ? sizeOf(n) : { w: 180, h: 320 }
-  const ar = data.ar || box.w / box.h || 832 / 1216
-  const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3) // physical pixels per CSS px
-  const nl = Math.min(DEC_CEIL, Math.max(DEC_FLOOR, Math.ceil(Math.max(box.w, box.h) * headroom.value * dpr)))
-  const nw = ar >= 1 ? nl : Math.round(nl * ar)
-  const nh = ar >= 1 ? Math.round(nl / ar) : nl
-  return { box, nw, nh }
-}
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fullStyle(id: string, data: any) {
-  const { box, nw, nh } = decodeDims(id, data)
-  return { width: `${nw}px`, height: `${nh}px`, transform: `scale(${box.w / nw})`, transformOrigin: 'top left' }
-}
-// Vault-stored images are fetched right-sized (`?w=`) so the browser never decodes the full-resolution
-// source only to shrink it — a server-sent thumbnail decodes correctly on any display/DPR and can't be
-// downsampled under decode-memory pressure. Freshly generated images are data: URIs and stay as-is.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function imgSrc(id: string, data: any) {
-  if (!data.url || data.url.startsWith('data:')) return data.url
-  return `${data.url}?w=${decodeDims(id, data).nw}`
-}
-// Flash-free resolution swap: when a node's target ?w= changes we preload the new derivative off-screen
-// and only swap the visible <img> once it has decoded — the current image stays put meanwhile, so a
-// resolution change never blanks the card. `shownSrc` is seeded when a node first appears (seedSrc) so
-// there is always an "old" src to hold during the swap.
-const shownSrc = ref<Record<string, string>>({})
-// Record the current target as shown, immediately (no preload) — for a node that has no visible image yet.
-function seedSrc(id: string) {
-  const n = findNode(id)
-  if (n && n.type === 'image' && !shownSrc.value[id]) shownSrc.value[id] = imgSrc(id, n.data)
-}
-// Swap to the node's current target, preloading first so the card never blanks. Called imperatively from
-// the events that actually change the target (scale, headroom bucket) — NOT from a deep node watcher,
-// which would re-run per drag frame (O(images) each) and dominate drag cost at large works.
-function swapSrc(id: string) {
-  const n = findNode(id)
-  if (!n || n.type !== 'image') return
-  const want = imgSrc(id, n.data)
-  if (!want || shownSrc.value[id] === want) return
-  if (!shownSrc.value[id] || want.startsWith('data:')) { shownSrc.value[id] = want; return } // no old to hold
-  const pre = new Image()
-  pre.onload = () => { const cur = findNode(id); if (cur && imgSrc(id, cur.data) === want) shownSrc.value[id] = want }
-  pre.onerror = () => { /* keep the current (older) src on a failed derivative rather than blanking the card */ }
-  pre.src = want
-}
-// When the supersample bucket steps (work grew/shrank past a threshold), re-target every image.
-watch(headroom, () => { for (const n of nodes.value) if (n.type === 'image') swapSrc(n.id) })
-// Set an image to a reference scale (long side = BASE_LONG × scale), keeping its aspect ratio.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyScale(node: any, scale: number) {
-  const live = findNode(node.id)
-  if (!live) return
-  // Aspect ratio comes from a stable source (stored `ar`), never re-derived from the last rounded size —
-  // otherwise integer rounding accumulates each resize and object-fit:cover crops the image progressively.
-  // Restored works predating `ar` cache it once from their still-unscaled dimensions.
-  if (live.data.ar == null) { const d0 = dims(live); live.data = { ...live.data, ar: d0.w / d0.h } }
-  const ar = live.data.ar
-  const long = BASE_LONG * scale
-  const w = Math.round(ar >= 1 ? long : long * ar)
-  const h = Math.round(ar >= 1 ? long / ar : long)
-  live.style = { width: `${w}px`, height: `${h}px` }
-  swapSrc(live.id) // scale changed the target ?w= → preload + swap without blanking
-}
+// ---- grid arrange (reference scaling + the image pipeline live in useImagePipeline) ----
 // Grid-arrange a set of images with equal gaps, keeping reading order. Anchoring: inside a zone,
 // pack from the zone's top-left; loose on the canvas, pack from the set's own top-left (or a stable
 // captured anchor during a resize) so nothing jumps to the origin.
@@ -272,7 +181,6 @@ function arrangeImages(imgs: any[], anchors?: Map<string, Anchor>) {
 
 // Clickable scale picker under an all-images selection (up to ×5). Screen-space box of the selected
 // images + whether every selected node is an image; reactive to selection, sizes and the viewport.
-const PICK_SCALES = SCALES.filter((s) => s <= 5)
 const scalePicker = computed(() => {
   const sel = nodes.value.filter((n) => n.selected)
   if (!sel.length || !sel.every((n) => n.type === 'image')) return null
