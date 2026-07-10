@@ -29,20 +29,23 @@ export function canvasToWork(nodes: any[], viewport: any, params: any, meta: { i
   const anchorNodes = [station, library, gallery].filter(Boolean)
   const canvasNodes = [...anchorNodes, ...savedBlocks, ...galleryImages].map(slim)
 
-  // Work-level snapshots (the reproducible recipe: prompt composition + params), deduped by hash and
-  // shared by gallery images and the draft stack; each references one via snapshot_id.
-  const snapshotsByHash = new Map<string, any>()
+  // Work-level snapshots (the reproducible recipe: prompt composition + params), deduped and shared by
+  // gallery images and the draft stack; each references one via snapshot_id. The dedup key includes the
+  // params (seed, steps, …), not just the prompt hash — otherwise two images from the same prompt but a
+  // different seed collapse onto one snapshot and lose their real recipe.
+  const snapshotsByKey = new Map<string, any>()
   const snapshotIdOf = (snap: any): string | null => {
     if (!snap?.hash) return null
-    if (!snapshotsByHash.has(snap.hash)) {
-      snapshotsByHash.set(snap.hash, {
-        id: `snap-${snap.hash.length}-${snapshotsByHash.size}-${meta.id.slice(0, 6)}`,
+    const key = `${snap.hash}|${JSON.stringify(snap.params || {})}`
+    if (!snapshotsByKey.has(key)) {
+      snapshotsByKey.set(key, {
+        id: `snap-${snap.hash.length}-${snapshotsByKey.size}-${meta.id.slice(0, 6)}`,
         hash: snap.hash, components: snap.components || [],
         assembled_positive: snap.positive || '', assembled_negative: snap.negative || '',
         params: snap.params || {},
       })
     }
-    return snapshotsByHash.get(snap.hash).id
+    return snapshotsByKey.get(key).id
   }
 
   const images = galleryImages.map((im) => ({
@@ -62,7 +65,7 @@ export function canvasToWork(nodes: any[], viewport: any, params: any, meta: { i
   return {
     schema_version: 1, id: meta.id, title: meta.title, params,
     canvas: { viewport, nodes: canvasNodes },
-    snapshots: [...snapshotsByHash.values()],
+    snapshots: [...snapshotsByKey.values()],
     images, stack,
     preview_image_id: images.length ? images[0].id : null,
   }

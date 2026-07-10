@@ -459,8 +459,13 @@ let saving = false
 let pendingResave = false
 let lastSig = ''
 
+// A work is worth persisting once it has a title, a kept gallery image, OR a non-empty prompt block in the
+// station/library — otherwise an assembled-but-ungenerated composition would be discarded silently on leave.
 function isMeaningful() {
-  return title.value.trim().length > 0 || nodes.value.some((n) => n.type === 'image' && n.parentNode === GALLERY)
+  return title.value.trim().length > 0 || nodes.value.some((n) =>
+    (n.type === 'image' && n.parentNode === GALLERY)
+    || (n.type === 'block' && (n.parentNode === STATION || n.parentNode === LIBRARY)
+        && String(n.data?.text || '').trim().length > 0))
 }
 
 // Cheap change signature (excludes image bytes) so an unchanged work is never re-written.
