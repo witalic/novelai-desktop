@@ -11,8 +11,10 @@ integration for authoring prompts. Scope for now: **images only**.
 
 Image generation, the vault (works + Library blocks/categories + multi-vault manager + thumbnails),
 the Vue-Flow canvas composer, and the Electron shell are **implemented and tested**; Claude
-prompt-authoring is deferred. The full phased plan is `ROADMAP.md`; current phase = **Phase 1
-(recipe as a typed, versioned contract)**.
+prompt-authoring is deferred. The full phased plan is `ROADMAP.md`; **Phase 1 (recipe as a typed,
+versioned contract) closed 2026-07-10** — schema v2 + read-time migrations, domain/layout/transient
+whitelist, scratch persistence, server-owned block versioning, freeze invariant under test. Current
+work = **Phase 2**, starting with the Prompt widget (`design/prompt-widget-mockup.html`, design locked).
 
 ## Working rules
 - **Language:** converse in Ukrainian; code, comments, UI copy, and docs in English. `README` may be Ukrainian.
