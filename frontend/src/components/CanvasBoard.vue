@@ -401,6 +401,7 @@ onUnmounted(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)
   window.removeEventListener('keydown', onKeydown) // safety if destroyed while active
   disposeBeforeQuit?.()
+  activeSplitCleanup?.() // tear down splitter drag listeners if we unmount mid-drag
   stopAutosave()
 })
 onActivated(() => {
@@ -497,10 +498,13 @@ function startSplit(kind: 'v' | 'h', e: MouseEvent) {
   const onUp = () => {
     window.removeEventListener('mousemove', onMove)
     window.removeEventListener('mouseup', onUp)
+    activeSplitCleanup = null
   }
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
+  activeSplitCleanup = onUp // so an unmount mid-drag can still tear these window listeners down
 }
+let activeSplitCleanup: (() => void) | null = null
 
 // Auto-grow a block to fit its text on expand; restore the collapsed size on collapse.
 function toggleExpand(id: string) {
