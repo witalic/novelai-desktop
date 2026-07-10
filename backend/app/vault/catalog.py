@@ -45,7 +45,10 @@ def _read_raw(vault: Path) -> tuple[list[dict], set[str]]:
         return data, set()
     if not isinstance(data, dict):  # a scalar (null/number/string) in the file → treat as empty, not a 500
         return [], set()
-    return data.get("overrides", []), set(data.get("hidden", []))
+    overrides = data.get("overrides", [])
+    hidden = data.get("hidden", [])
+    # Non-list overrides/hidden (e.g. {"hidden": null}) must also degrade gracefully, not 500.
+    return (overrides if isinstance(overrides, list) else []), set(hidden if isinstance(hidden, list) else [])
 
 
 def _write_raw(vault: Path, overrides: list[dict], hidden: set[str]) -> None:

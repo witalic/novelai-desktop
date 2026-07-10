@@ -32,11 +32,16 @@ def _vault(settings: Settings) -> Path:
     return appconfig.active_vault(settings)
 
 
+def _guard_no_move() -> None:
+    # Any vault write landing between a move's copy and rmtree would silently vanish — refuse while moving.
+    if manager.move_status().active:
+        raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
+
+
 def save_work(settings: Settings, doc: WorkDoc) -> dict:
     if not layout.valid_id(doc.id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
-    if manager.move_status().active:  # a save landing between a move's copy and rmtree would vanish
-        raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
+    _guard_no_move()
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:
@@ -94,6 +99,7 @@ def delete_work(settings: Settings, work_id: str) -> dict:
     """Remove a work: its index rows and its on-disk folder (images, sidecars, preview, thumbnails)."""
     if not layout.valid_id(work_id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
+    _guard_no_move()
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:
@@ -209,6 +215,7 @@ def _blocks_root(vault: Path) -> Path:
 def save_block(settings: Settings, block: BlockDoc) -> dict:
     if not layout.valid_id(block.id):
         raise HTTPException(status_code=400, detail="Invalid block id.")
+    _guard_no_move()
     if not block.text.strip():
         raise HTTPException(status_code=400, detail="Block text is required.")
     vault = _vault(settings)
@@ -235,6 +242,7 @@ def save_block(settings: Settings, block: BlockDoc) -> dict:
 def delete_block(settings: Settings, block_id: str) -> dict:
     if not layout.valid_id(block_id):
         raise HTTPException(status_code=400, detail="Invalid block id.")
+    _guard_no_move()
     vault = _vault(settings)
     root = _blocks_root(vault)
     removed = False
@@ -320,6 +328,7 @@ def _reassign_blocks_to_custom(vault: Path, slug: str) -> list[dict]:
 def delete_category(settings: Settings, slug: str) -> dict:
     # "custom" is the reassignment sink, so it can't itself be deleted; every other category can —
     # its blocks move to Custom rather than blocking the delete.
+    _guard_no_move()
     if slug == "custom":
         raise HTTPException(status_code=400, detail="The Custom category is the fallback and can't be deleted.")
     vault = _vault(settings)
@@ -345,6 +354,7 @@ def _new_category_id(existing: set[str]) -> str:
 
 
 def save_category(settings: Settings, body: SaveCategory) -> CategoryDoc:
+    _guard_no_move()
     vault = _vault(settings)
     if not body.name.strip():
         raise HTTPException(status_code=400, detail="Category name is required.")

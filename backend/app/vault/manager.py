@@ -60,6 +60,8 @@ def set_active(settings: Settings, dir_str: str) -> VaultConfig:
 
 def delete_vault(settings: Settings, dir_str: str) -> VaultConfig:
     """Physically delete the vault folder and drop it from the list (destructive — the UI warns)."""
+    if _move["active"]:  # don't rmtree a vault while a move is copying/removing folders
+        raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
     target = Path(dir_str).expanduser()
     ts = str(target)
     data = appconfig.load(settings)
