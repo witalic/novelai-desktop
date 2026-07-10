@@ -16,7 +16,7 @@ function galleryImage(id: string, seed: number, url = `/api/vault/works/w1/image
   return {
     id, type: 'image', parentNode: GALLERY, position: { x: 12, y: 44 }, style: { width: '102px', height: '180px' },
     data: {
-      url, file: `images/${id}.png`, created_at: '2026-01-01',
+      url, file: `images/${id}.png`, created_at: '2026-01-01', ar: 832 / 1216, // live nodes always carry ar
       snapshot: { components: [{ polarity: 'positive', text: '1girl' }], positive: '1girl', negative: '',
         params: { width: 832, height: 1216, seed }, hash: 'positive:1girl' },
     },
@@ -29,10 +29,11 @@ const viewport = { x: 40, y: 40, zoom: 0.7 }
 describe('canvasToWork', () => {
   it('splits a vault-path image into a file ref (no base64) and keeps its recipe', () => {
     const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'Test' })
+    expect(doc.schema_version).toBe(2)
     expect(doc.id).toBe('w1')
     expect(doc.title).toBe('Test')
     expect(doc.images).toHaveLength(1)
-    expect(doc.images[0]).toMatchObject({ id: 'img-1', file: 'images/img-1.png', image_b64: null })
+    expect(doc.images[0]).toMatchObject({ id: 'img-1', file: 'images/img-1.png', image_b64: null, ar: 832 / 1216 })
     expect(doc.snapshots).toHaveLength(1)
     expect(doc.snapshots[0].params.seed).toBe(42)
     expect(doc.preview_image_id).toBe('img-1')
@@ -128,7 +129,17 @@ describe('round-trip (canvasToWork -> workToCanvas)', () => {
     expect(img.style).toEqual({ width: '102px', height: '180px' })
     expect((img.data as any).url).toBe('/api/vault/works/w1/images/img-1')
     expect((img.data as any).snapshot.params.seed).toBe(42)   // snapshot restored onto the node (re-save keeps it)
-    expect((img.data as any).ar).toBeCloseTo(832 / 1216)       // recovered from params, not the rounded node size
+    expect((img.data as any).ar).toBeCloseTo(832 / 1216)       // persisted ar (v2), never the rounded node size
+  })
+
+  it('prefers the persisted ar over the params-derived one, and falls back for v1 docs', () => {
+    const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: '' })
+    // Persisted ar wins even when it disagrees with the snapshot params (e.g. edited/imported image).
+    doc.images[0].ar = 2.0
+    expect((workToCanvas(doc).nodes.find((n) => n.id === 'img-1')!.data as any).ar).toBe(2.0)
+    // v1 doc (no persisted ar) → derived from the snapshot's generation params.
+    doc.images[0].ar = null
+    expect((workToCanvas(doc).nodes.find((n) => n.id === 'img-1')!.data as any).ar).toBeCloseTo(832 / 1216)
   })
 
   it('is idempotent: canvas -> doc -> canvas -> doc yields the identical document', () => {

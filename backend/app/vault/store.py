@@ -7,12 +7,14 @@ import base64
 import json
 from pathlib import Path
 
-from app.vault import layout
+from app.vault import layout, migrate
 from app.vault.models import WorkDoc
 
 
 def read_work(work_dir: Path) -> WorkDoc:
-    return WorkDoc.model_validate_json((work_dir / "work.json").read_text("utf-8"))
+    # All reads go through migrate.load_doc — on-disk files stay at their written schema_version
+    # until the next save (lazy migration).
+    return migrate.load_doc((work_dir / "work.json").read_text("utf-8"))
 
 
 def write_work(work_dir: Path, doc: WorkDoc) -> None:

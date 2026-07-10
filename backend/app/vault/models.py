@@ -94,6 +94,7 @@ class Image(BaseModel):
     # Zones define role, not survival: 'gallery' images surface in galleries/counts/previews;
     # 'scratch' is working material loose on the canvas — persisted, but never listed.
     role: Literal["gallery", "scratch"] = "gallery"
+    ar: float | None = None  # true source aspect ratio (v2) — outlives a lost/dangling snapshot
     file: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
     group: str | None = None
@@ -114,7 +115,7 @@ class StackItem(BaseModel):
 
 
 class WorkDoc(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2  # bump together with a migrate.py step + frontend serialize.ts
     id: str
     title: str = ""
     slug: str = ""

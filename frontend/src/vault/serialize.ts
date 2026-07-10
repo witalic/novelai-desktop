@@ -100,6 +100,7 @@ export function canvasToWork(
     return {
       id: im.id, snapshot_id: snapshotIdOf(d.snapshot),
       role: im.parentNode === GALLERY ? 'gallery' as const : 'scratch' as const,
+      ar: d.ar ?? null, // persisted (v2) so the true ratio outlives a lost snapshot
       ...splitImage(d.url || '', d.file || ''),
       created_at: d.created_at || '', // backend fills this if empty
       group: d.group ?? null, favorite: !!d.favorite,
@@ -114,7 +115,7 @@ export function canvasToWork(
   }))
 
   return {
-    schema_version: 1, id: meta.id, title: meta.title, params,
+    schema_version: 2, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
     canvas: { viewport, nodes: canvasNodes },
     snapshots: [...snapshotsByKey.values()],
     images, stack,
@@ -157,10 +158,10 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
       const url = im?.file ? `/api/vault/works/${doc.id}/images/${n.id}` : ''
       // Restore the snapshot into the node so a later re-save preserves it (round-trip fix).
       const snapshot = restoreSnapshot(snap)
-      // Recover the true aspect ratio from the generation params (always present) so resizing uses it
-      // rather than re-deriving from the rounded node size each load — which drifts across save/scale cycles.
+      // The persisted ar (v2) wins; params-derived is the v1 fallback. Never re-derive from the
+      // rounded node size — that drifts across save/scale cycles.
       const p = (snap?.params || {}) as { width?: number; height?: number }
-      const ar = p.width && p.height ? p.width / p.height : undefined
+      const ar = im?.ar ?? (p.width && p.height ? p.width / p.height : undefined)
       return {
         ...n,
         data: {

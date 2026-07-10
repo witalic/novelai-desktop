@@ -83,6 +83,7 @@ export interface PersistedImage {
   // Zones define role, not survival: every image node persists; only 'gallery' ones surface in
   // galleries, counts, and previews. 'scratch' = working material loose on the canvas.
   role: 'gallery' | 'scratch'
+  ar: number | null // true source aspect ratio (v2) — outlives a lost/dangling snapshot
   file: string
   image_b64?: string | null // inline bytes on save; the backend writes the file and never persists this
   created_at: string

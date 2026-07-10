@@ -10,6 +10,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from app.vault import migrate
 from app.vault.models import WorkDoc
 
 log = logging.getLogger(__name__)
@@ -284,7 +285,9 @@ def rebuild(conn: sqlite3.Connection, vault: Path) -> dict:
     if works_root.is_dir():
         for wj in works_root.glob("*/work.json"):
             try:
-                doc = WorkDoc.model_validate_json(wj.read_text("utf-8"))
+                # Same migration choke point as store.read_work — a v1 work must index the same
+                # way it loads, or the gallery and the canvas would disagree.
+                doc = migrate.load_doc(wj.read_text("utf-8"))
             except Exception:  # noqa: BLE001 — a bad file must not abort the whole rebuild
                 log.warning("Skipping unreadable work: %s", wj)
                 continue
