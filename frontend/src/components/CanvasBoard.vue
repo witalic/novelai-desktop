@@ -9,6 +9,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
 import { getVaultConfig, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
+import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
@@ -17,6 +18,7 @@ import { onBeforeQuit } from '../electron'
 import type { GenResult, LibraryBlock, PanelParams, SnapshotData, WorkDoc } from '../types'
 
 const toast = useToast()
+const { confirm } = useConfirm()
 const props = defineProps<{
   drafts: GenResult[]; busy: boolean; error: string; preview: string; params: PanelParams
   openWork: WorkDoc | null; insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
@@ -25,6 +27,7 @@ const emit = defineEmits<{
   generate: [{ positive: string; negative: string; snapshot: SnapshotData }]
   take: []
   cancel: []
+  saved: [string]
   navigate: [string]
 }>()
 
@@ -85,6 +88,9 @@ function rewriteSavedUrls(wid: string) {
       n.data = { ...n.data, url: `/api/vault/works/${wid}/images/${n.id}`, file: `images/${n.id}.png` }
     }
   }
+  // The draft stack lives in GenerateView — emit synchronously so it repoints its data: URLs within the same
+  // dirty-suppression window (the stack, up to 50 images, would otherwise re-serialize as base64 each save).
+  emit('saved', wid)
 }
 
 function toFlow(clientX: number, clientY: number) {
@@ -268,7 +274,14 @@ function zoneNodes(): any[] {
 // Start a fresh work: persist the current one, then reset in a SINGLE setNodes to the anchor zones.
 // (Never clear to an empty graph — that detaches Vue Flow's drag/zoom handlers and locks the canvas.)
 async function newWork() {
-  await flush(true)
+  // Persist the current work first; if the save fails, confirm before wiping — never discard silently.
+  if (!(await flush(true))) {
+    const proceed = await confirm({
+      title: 'Discard unsaved changes?', danger: true, confirmLabel: 'Discard & new',
+      message: "The current work couldn't be saved. Start a new work anyway? Unsaved changes will be lost.",
+    })
+    if (!proceed) return
+  }
   workId.value = newId('work')
   title.value = ''
   setNodes(zoneNodes())
@@ -395,7 +408,7 @@ async function checkVault() {
 let disposeBeforeQuit: (() => void) | null = null
 onMounted(() => {
   window.addEventListener('beforeunload', onBeforeUnload)
-  disposeBeforeQuit = onBeforeQuit(() => flush()) // Electron: main waits for this before quitting
+  disposeBeforeQuit = onBeforeQuit(async () => { await flush() }) // Electron waits for the full save before quitting
 })
 onUnmounted(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)

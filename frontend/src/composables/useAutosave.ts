@@ -29,7 +29,7 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
   const savedAt = ref('')
 
   let dirty = false
-  let saving = false
+  let inflight: Promise<boolean> | null = null // the current save (if any), so callers can join + await it
   let pendingResave = false
   let lastSig = ''
   let ignoreDirty = false // suppress markDirty while onSaved rewrites persisted urls (not a user edit)
@@ -56,20 +56,14 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
   function markDirty() {
     if (ignoreDirty || !isMeaningful()) return
     dirty = true
-    // An edit that lands mid-save would otherwise be cleared by the in-flight flush's `dirty = false` and
-    // never re-persisted — flag a re-save so `flush`'s finally coalesces it.
-    if (saving) pendingResave = true
+    if (inflight) pendingResave = true // edit landed mid-save → the in-flight run re-saves it (see flush)
     if (saveState.value !== 'saving') saveState.value = 'dirty'
   }
 
-  // Persist if there is something new. Coalesces concurrent triggers (one save at a time).
-  async function flush(force = false) {
-    if (!vaultReady.value || !isMeaningful()) return
-    if (saving) { pendingResave = true; return }
-    if (!force && !dirty) return
+  // One save attempt. Returns true if the work is persisted (or nothing needed saving), false on error.
+  async function doSave(): Promise<boolean> {
     const key = changeKey()
-    if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return }
-    saving = true
+    if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return true }
     saveState.value = 'saving'
     try {
       await saveWork(canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts()) as WorkDoc)
@@ -81,16 +75,34 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
       // changeKey treats url as present/absent (not by value), so this never marks the work dirty; the
       // suppression flag stops the deep watcher's mutation from doing so during the microtask.
       if (onSaved) { ignoreDirty = true; onSaved(workId.value); await nextTick(); ignoreDirty = false }
+      return true
     } catch (e) {
       dirty = true
       saveState.value = 'dirty'
       toast.push(e instanceof Error ? e.message : 'Save failed', 'err')
-    } finally {
-      saving = false
-      if (pendingResave) { pendingResave = false; flush() }
+      return false
     }
   }
-  const flushIfDirty = () => { if (dirty) flush() }
+
+  // Persist if needed. Concurrent triggers coalesce onto ONE in-flight save that re-runs for edits which
+  // land mid-save, and the promise resolves only once the save has actually finished — so callers (New work,
+  // quit, leave) can await it and learn whether it succeeded.
+  async function flush(force = false): Promise<boolean> {
+    if (!vaultReady.value || !isMeaningful()) return true
+    if (inflight) { pendingResave = true; return inflight } // join the running save (and make it re-run)
+    if (!force && !dirty) return true
+    const run = (async () => {
+      let ok = true
+      do {
+        pendingResave = false
+        ok = await doSave()
+      } while (ok && pendingResave) // re-save edits that arrived while the previous attempt was in flight
+      return ok
+    })()
+    inflight = run
+    try { return await run } finally { inflight = null }
+  }
+  const flushIfDirty = () => flush() // force=false → no-op unless dirty
 
   // Manual save (button / ⌘S). With no vault, route the user to Settings.
   function manualSave() {
@@ -100,7 +112,7 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
 
   // Browser fallback for window close (Electron uses onBeforeQuit); best-effort, size-limited.
   function onBeforeUnload() {
-    if (!vaultReady.value || !dirty || saving || !isMeaningful() || changeKey() === lastSig) return
+    if (!vaultReady.value || !dirty || inflight || !isMeaningful() || changeKey() === lastSig) return
     const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts())
     try { navigator.sendBeacon('/api/vault/works', new Blob([JSON.stringify(doc)], { type: 'application/json' })) } catch { /* best-effort */ }
   }

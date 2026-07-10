@@ -83,6 +83,14 @@ function onTake() {
   drafts.value.shift()
 }
 
+// After a save, the draft stack is on disk under this work — repoint its data: URLs at the vault so later
+// saves don't re-serialize (up to 50) base64 images. Runs synchronously inside the save's dirty-suppression.
+function onWorkSaved(workId: string) {
+  drafts.value = drafts.value.map((d) => (d.url.startsWith('data:')
+    ? { ...d, url: `/api/vault/works/${workId}/images/${d.id}`, file: `images/${d.id}.png` }
+    : d))
+}
+
 // Open a saved work: pull its doc, restore params, hand the doc to the canvas to rebuild.
 watch(() => props.openWorkId, async (raw) => {
   if (!raw) return
@@ -102,7 +110,8 @@ watch(() => props.openWorkId, async (raw) => {
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :insert-blocks="insertBlocks" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate" @navigate="emit('navigate', $event)" />
+      :insert-blocks="insertBlocks" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
+      @saved="onWorkSaved" @navigate="emit('navigate', $event)" />
     <ParamsPanel :params="params" :open="panelOpen" @toggle="panelOpen = !panelOpen" />
   </div>
 </template>
