@@ -67,6 +67,9 @@ async def generate_stream(params: GenerateParams, settings: Settings = Depends(g
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc), 'status': exc.http_status or 502})}\n\n"
         except httpx.HTTPError as exc:  # never drop the SSE silently — the UI spinner would hang forever
             yield f"data: {json.dumps({'type': 'error', 'message': f'NovelAI request failed: {exc}', 'status': 502})}\n\n"
+        except Exception:  # noqa: BLE001 — any other failure must still surface as an error event, not a dead stream
+            log.exception("Generation stream failed")
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Generation failed.', 'status': 500})}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
 
@@ -76,8 +79,10 @@ class DownloadRequest(BaseModel):
 
 
 @router.post("/download")
-async def download(req: DownloadRequest, settings: Settings = Depends(get_settings)) -> dict:
-    """Write image(s) straight to the Downloads folder (no OS save dialog); the UI just toasts the result."""
+def download(req: DownloadRequest, settings: Settings = Depends(get_settings)) -> dict:
+    """Write image(s) straight to the Downloads folder (no OS save dialog); the UI just toasts the result.
+
+    Plain ``def`` — the base64 decode + file writes are blocking, so Starlette runs it in its threadpool."""
     dest = Path(appconfig.load(settings)["download_dir"])
     dest.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())

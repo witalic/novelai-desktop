@@ -49,6 +49,10 @@ def validate_dir(vault_dir: Path) -> str | None:
         probe.unlink()
     except OSError:
         return "Folder is not writable."
+    # Don't scatter a vault tree into an existing non-empty folder (e.g. the user's Documents root) — require
+    # an empty folder, or one that is already a vault.
+    if not is_initialized(vault_dir) and any(vault_dir.iterdir()):
+        return "Folder is not empty — choose an empty folder or an existing vault."
     return None
 
 

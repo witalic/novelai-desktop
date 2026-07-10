@@ -47,6 +47,15 @@ async def test_add_rejects_relative_path(client):
     assert resp.status_code == 400
 
 
+async def test_add_rejects_non_empty_non_vault_folder(client):
+    ac, tmp = client
+    busy = tmp / "busy"
+    busy.mkdir()
+    (busy / "stuff.txt").write_text("x", "utf-8")  # a folder with unrelated content → don't scatter a vault in it
+    assert (await ac.post("/api/vault/vaults", json={"dir": str(busy)})).status_code == 400
+    assert (await ac.post("/api/vault/vaults", json={"dir": str(tmp / "fresh")})).status_code == 200  # empty is fine
+
+
 async def test_switch_to_unknown_vault_404(client):
     ac, tmp = client
     await ac.get("/api/vault/config")

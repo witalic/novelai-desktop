@@ -65,6 +65,8 @@ def delete_vault(settings: Settings, dir_str: str) -> VaultConfig:
     data = appconfig.load(settings)
     if ts not in data["vaults"]:
         raise HTTPException(status_code=404, detail="Vault is not in the list.")
+    if target.is_dir() and not vaultcfg.is_initialized(target):
+        raise HTTPException(status_code=400, detail="Refusing to delete a folder that isn't a vault.")
     try:
         if target.is_dir():
             shutil.rmtree(target)
