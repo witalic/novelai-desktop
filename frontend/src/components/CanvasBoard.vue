@@ -758,7 +758,9 @@ function startName(data: any, e: MouseEvent) {
 .stmeta .mrow b{color:var(--text-faint)}.stmeta .mrow.neg b{color:#e2483d}
 .stmeta .mtok{margin-top:2px;color:var(--text-faint)}
 
-.imgnode{position:relative;width:100%;height:100%;min-width:72px;min-height:104px;border-radius:8px;overflow:hidden;border:1px solid var(--border);background:var(--surface-2);box-shadow:0 2px 6px rgba(0,0,0,.25)}
+/* The min size must stay below any legit node box (×0.5 portrait ≈ 62×90) — a larger clamp makes the
+   card outgrow the node while the image inside stays transform-scaled to the node box (right/bottom gap). */
+.imgnode{position:relative;width:100%;height:100%;min-width:40px;min-height:40px;border-radius:8px;overflow:hidden;border:1px solid var(--border);background:var(--surface-2);box-shadow:0 2px 6px rgba(0,0,0,.25)}
 .imgnode.selected,.imgnode.isnew{border-color:var(--accent)}
 .imgnode.selected{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
 /* Full-resolution decode, CSS-downscaled to the node. The browser decodes an <img> at its *layout* size;
