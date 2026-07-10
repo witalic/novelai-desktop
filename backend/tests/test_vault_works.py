@@ -1,8 +1,11 @@
 """Vault store + index: save/load/list/serve/gallery/rebuild — fully offline (tmp vault)."""
 import base64
+import os
+from io import BytesIO
 
 import httpx
 import pytest
+from PIL import Image
 
 from app.main import app
 from app.novelai._png import solid_png
@@ -109,6 +112,47 @@ async def test_image_thumbnail_resized_and_capped(client):
     # Requesting wider than the source never upscales — the original is served.
     big = await ac.get("/api/vault/works/w1/images/img-w1", params={"w": 4096})
     assert Image.open(BytesIO(big.content)).size == (800, 1200)
+
+
+async def test_thumbnail_cache_reuse_then_invalidate(client):
+    ac, vault = client
+    work = _work("w1")
+    work["images"][0]["image_b64"] = base64.b64encode(solid_png(800, 1200)).decode("ascii")
+    await ac.put("/api/vault/works", json=work)
+
+    r1 = await ac.get("/api/vault/works/w1/images/img-w1", params={"w": 400})
+    cache = next((vault / "works").glob("*/.thumbs/img-w1@400.png"))
+    mtime1 = cache.stat().st_mtime_ns
+    r2 = await ac.get("/api/vault/works/w1/images/img-w1", params={"w": 400})
+    assert r2.content == r1.content and cache.stat().st_mtime_ns == mtime1  # served from cache, not rebuilt
+
+    # A newer source (re-generated pixels) must invalidate the cached thumbnail (mtime-based).
+    src = next((vault / "works").glob("*/images/img-w1.png"))
+    os.utime(src, ns=(cache.stat().st_mtime_ns + 10**9, cache.stat().st_mtime_ns + 10**9))
+    await ac.get("/api/vault/works/w1/images/img-w1", params={"w": 400})
+    assert cache.stat().st_mtime_ns > mtime1  # regenerated because the source is now newer
+
+
+async def test_thumbnail_handles_non_rgb_source(client):
+    ac, _ = client
+    buf = BytesIO()
+    Image.new("L", (600, 900), 128).save(buf, "PNG")  # grayscale → exercises the convert("RGBA") branch
+    work = _work("w1")
+    work["images"][0]["image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
+    await ac.put("/api/vault/works", json=work)
+    resp = await ac.get("/api/vault/works/w1/images/img-w1", params={"w": 300})
+    assert resp.status_code == 200 and Image.open(BytesIO(resp.content)).size == (300, 450)
+
+
+async def test_rebuild_skips_a_corrupt_work(client):
+    ac, vault = client
+    await ac.put("/api/vault/works", json=_work("w1"))
+    bad = vault / "works" / "0000__bad__work-bad"
+    bad.mkdir(parents=True)
+    (bad / "work.json").write_text("{ not valid json", "utf-8")  # a garbage sibling work
+    (vault / ".index.sqlite").unlink()  # force a full rebuild from disk
+    page = (await ac.get("/api/vault/works")).json()
+    assert page["total"] == 1 and page["items"][0]["title"]  # valid work indexed, bad one skipped, no 500
 
 
 async def test_list_image_preview(client):

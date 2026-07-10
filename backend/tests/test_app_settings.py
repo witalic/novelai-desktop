@@ -1,4 +1,6 @@
 """Persisted app settings (config dir): defaults, patch/persist, and resilience to a corrupt file."""
+import json
+
 import httpx
 import pytest
 
@@ -39,6 +41,20 @@ async def test_out_of_range_interval_ignored(client):
     ac, _ = client
     patched = (await ac.patch("/api/settings", json={"autosave_interval_s": 5})).json()
     assert patched["autosave_interval_s"] == 300  # too small → coerced back to default
+
+
+async def test_mistyped_keys_and_vanished_active_vault(client):
+    ac, tmp = client
+    (tmp / "state").mkdir(parents=True, exist_ok=True)
+    # Wrong-typed keys must be dropped (not crash), and a valid one kept.
+    (tmp / "state" / "settings.json").write_text(json.dumps(
+        {"vaults": ["/keep", 123, None], "active_vault": {"bad": "type"}, "theme": "light"}), "utf-8")
+    body = (await ac.get("/api/settings")).json()
+    assert body["theme"] == "light" and body["autosave_interval_s"] == 300  # coerced cleanly
+
+    # active_vault was invalid → resolving the active vault re-defaults to the auto-created one.
+    cfg = (await ac.get("/api/vault/config")).json()
+    assert cfg["active"] == str(tmp / "default-vault")
 
 
 async def test_novelai_token_lifecycle(client, monkeypatch):

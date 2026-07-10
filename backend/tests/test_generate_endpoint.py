@@ -34,6 +34,31 @@ async def test_generate_rejects_empty_prompt(mock_client):
     assert resp.status_code == 422  # pydantic min_length validation
 
 
+@pytest.mark.parametrize("exc_path, expected", [
+    ("app.novelai.errors.NovelAINoAnlasError", 402),   # out of Anlas → surfaced as 402, not a generic 500
+    ("app.novelai.errors.NovelAIRateLimitError", 429),  # rate-limited → 429
+    ("app.novelai.errors.NovelAIError", 502),           # no mapped status → generic 502
+])
+async def test_generate_surfaces_upstream_status(monkeypatch, exc_path, expected):
+    import importlib
+    mod_name, cls_name = exc_path.rsplit(".", 1)
+    exc_cls = getattr(importlib.import_module(mod_name), cls_name)
+
+    class _StubClient:
+        is_mock = False
+        async def generate(self, params):
+            raise exc_cls("upstream failed")
+
+    from app.routers import generate as gen
+    monkeypatch.setattr(gen, "get_client", lambda settings: _StubClient())
+    app.dependency_overrides[get_settings] = lambda: Settings(novelai=NovelAISettings(mock=True), _env_file=None)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/generate", json={"prompt": "1girl"})
+    app.dependency_overrides.clear()
+    assert resp.status_code == expected
+
+
 async def test_download_writes_files(tmp_path):
     # state_dir pins app settings to tmp (no real settings.json), so download_dir falls back to the env value.
     app.dependency_overrides[get_settings] = lambda: Settings(

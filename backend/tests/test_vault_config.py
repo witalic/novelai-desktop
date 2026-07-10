@@ -65,6 +65,41 @@ async def test_delete_vault_is_physical(client):
     assert not any(x["dir"] == str(v2) for x in body["vaults"])
 
 
+async def test_move_rejects_bad_requests(client):
+    ac, tmp = client
+    await ac.get("/api/vault/config")
+    v2 = tmp / "second"
+    await ac.post("/api/vault/vaults", json={"dir": str(v2)})  # v2 added + active, on disk
+    # source not in the list → 404
+    assert (await ac.post("/api/vault/move", json={"src": str(tmp / "ghost"), "dst": str(tmp / "x")})).status_code == 404
+    # target == source → 400
+    assert (await ac.post("/api/vault/move", json={"src": str(v2), "dst": str(v2)})).status_code == 400
+    # target folder is non-empty → 400
+    busy = tmp / "busy"
+    busy.mkdir()
+    (busy / "f.txt").write_text("x", "utf-8")
+    assert (await ac.post("/api/vault/move", json={"src": str(v2), "dst": str(busy)})).status_code == 400
+    # a move already in progress → 409
+    from app.vault import manager
+    manager._move["active"] = True
+    try:
+        resp = await ac.post("/api/vault/move", json={"src": str(v2), "dst": str(tmp / "z")})
+        assert resp.status_code == 409
+    finally:
+        manager._move["active"] = False
+
+
+async def test_delete_active_vault_reassigns_active(client):
+    ac, tmp = client
+    await ac.get("/api/vault/config")  # creates + registers the default
+    default = str(tmp / "default-vault")
+    v2 = str(tmp / "second")
+    await ac.post("/api/vault/vaults", json={"dir": v2})  # v2 becomes active
+    body = (await ac.delete("/api/vault/vaults", params={"dir": v2})).json()  # delete the ACTIVE vault
+    assert body["active"] == default  # active reassigned to the remaining vault
+    assert not any(x["dir"] == v2 for x in body["vaults"])
+
+
 async def test_move_vault_with_progress(client):
     ac, tmp = client
     await ac.get("/api/vault/config")
