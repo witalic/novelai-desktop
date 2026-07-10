@@ -37,7 +37,9 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:
-        dir_name = index.find_work_dir(conn, doc.id) or f"{_now()[:10]}__{layout.slugify(doc.title)}__{doc.id[:8]}"
+        # Full id (not a prefix) in the directory name — a short prefix can collide for two same-title works
+        # created close together, and the second write_work would overwrite the first's work.json.
+        dir_name = index.find_work_dir(conn, doc.id) or f"{_now()[:10]}__{layout.slugify(doc.title)}__{doc.id}"
         work_dir = layout.safe_join(vault / "works", dir_name)
         doc.slug = layout.slugify(doc.title)
         doc.updated_at = _now()

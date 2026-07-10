@@ -144,6 +144,19 @@ async def test_thumbnail_handles_non_rgb_source(client):
     assert resp.status_code == 200 and Image.open(BytesIO(resp.content)).size == (300, 450)
 
 
+async def test_untitled_works_with_shared_id_prefix_dont_collide(client):
+    ac, vault = client
+    # Two ids that share their first 8 chars (as real "work-<uuid>" ids can) + same empty title/day: a dir
+    # name built from an id *prefix* would collapse both into one folder and overwrite the first work.json.
+    a, b = _work("work-aaaa-1"), _work("work-aaaa-2")
+    a["title"] = b["title"] = ""
+    await ac.put("/api/vault/works", json=a)
+    await ac.put("/api/vault/works", json=b)
+    assert len(list((vault / "works").glob("*/work.json"))) == 2  # distinct dirs, neither overwrote the other
+    assert (await ac.get("/api/vault/works/work-aaaa-1")).json()["id"] == "work-aaaa-1"
+    assert (await ac.get("/api/vault/works/work-aaaa-2")).json()["id"] == "work-aaaa-2"
+
+
 async def test_rebuild_skips_a_corrupt_work(client):
     ac, vault = client
     await ac.put("/api/vault/works", json=_work("w1"))

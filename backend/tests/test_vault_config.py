@@ -74,6 +74,8 @@ async def test_move_rejects_bad_requests(client):
     assert (await ac.post("/api/vault/move", json={"src": str(tmp / "ghost"), "dst": str(tmp / "x")})).status_code == 404
     # target == source → 400
     assert (await ac.post("/api/vault/move", json={"src": str(v2), "dst": str(v2)})).status_code == 400
+    # target nested inside source → 400 (else the copy is written into a tree that rmtree then deletes)
+    assert (await ac.post("/api/vault/move", json={"src": str(v2), "dst": str(v2 / "sub")})).status_code == 400
     # target folder is non-empty → 400
     busy = tmp / "busy"
     busy.mkdir()

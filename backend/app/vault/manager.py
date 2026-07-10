@@ -96,6 +96,10 @@ def start_move(settings: Settings, src_str: str, dst_str: str) -> MoveStatus:
         raise HTTPException(status_code=400, detail="Target path must be absolute.")
     if dst == src:
         raise HTTPException(status_code=400, detail="Target is the same as the source.")
+    # Nesting is catastrophic: copying src into a subdir of itself, then rmtree(src), deletes the copy too.
+    rsrc, rdst = src.resolve(), dst.resolve()
+    if rdst.is_relative_to(rsrc) or rsrc.is_relative_to(rdst):
+        raise HTTPException(status_code=400, detail="Target must not be inside the source (or vice versa).")
     if dst.exists() and any(dst.iterdir()):
         raise HTTPException(status_code=400, detail="Target folder must be empty or not exist.")
     with _move_lock:
