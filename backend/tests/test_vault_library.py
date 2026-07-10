@@ -44,6 +44,37 @@ async def test_block_text_required(client):
     assert resp.status_code == 400
 
 
+async def test_edit_bumps_version_and_never_mutates_past_snapshots(client):
+    """The freeze invariant (ROADMAP Phase 1): a snapshot is a frozen recipe — resolved text +
+    params + block refs at generation time. Editing the Library block bumps its server-owned
+    version; works saved earlier keep the old text and version ref, byte for byte."""
+    ac, _ = client
+    # A v1 block, used (as a frozen copy) in a saved work's snapshot.
+    assert (await ac.post("/api/vault/library/blocks", json=_block())).status_code == 200
+    work = {
+        "id": "w1", "title": "T",
+        "snapshots": [{"id": "s1", "hash": "h", "params": {"seed": 1},
+                       "assembled_positive": "1girl, silver hair",
+                       "components": [{"source": "library", "block_id": "b1", "version": 1,
+                                       "name": "Silver-haired girl", "text": "1girl, silver hair"}]}],
+    }
+    assert (await ac.put("/api/vault/works", json=work)).status_code == 200
+
+    # Content edit → version 2 (server-owned, whatever the client sent).
+    edited = _block(text="1girl, silver hair, red eyes")
+    assert (await ac.post("/api/vault/library/blocks", json=edited)).status_code == 200
+    assert (await ac.get("/api/vault/library/blocks")).json()["items"][0]["version"] == 2
+    # An identical re-save must NOT bump.
+    assert (await ac.post("/api/vault/library/blocks", json=edited)).status_code == 200
+    assert (await ac.get("/api/vault/library/blocks")).json()["items"][0]["version"] == 2
+
+    # The earlier work still holds the v1 recipe — the edit never leaked into it.
+    snap = (await ac.get("/api/vault/works/w1")).json()["snapshots"][0]
+    assert snap["components"][0]["text"] == "1girl, silver hair"
+    assert snap["components"][0]["version"] == 1
+    assert snap["assembled_positive"] == "1girl, silver hair"
+
+
 async def test_filter_by_category_tags_search(client):
     ac, _ = client
     await ac.post("/api/vault/library/blocks", json=_block("b1", "character", tags=["a", "b"]))

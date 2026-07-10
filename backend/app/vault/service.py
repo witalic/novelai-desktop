@@ -221,13 +221,29 @@ def save_block(settings: Settings, block: BlockDoc) -> dict:
     vault = _vault(settings)
     block.category = layout.slugify(block.category) or "custom"
     block.updated_at = _now()
-    if not block.created_at:
-        block.created_at = block.updated_at
-    # Drop any stale copy first — the category (and thus the folder) may have changed since last save.
+    # Version is server-owned: a content-changing update bumps it, an identical re-save doesn't.
+    # Snapshot block refs (block_id + version) rely on this to tell which revision a frozen copy
+    # came from. The previous copy is read before the stale-copy sweep (the category — and thus
+    # the folder — may have changed since last save).
     root = _blocks_root(vault)
+    prev: dict | None = None
     if root.is_dir():
         for old in root.glob(f"**/{block.id}.json"):
+            if prev is None:
+                try:
+                    prev = json.loads(old.read_text("utf-8"))
+                except (OSError, ValueError):
+                    prev = None  # unreadable old copy → treat as a fresh save
             old.unlink(missing_ok=True)
+    if prev:
+        changed = any(getattr(block, f) != prev.get(f) for f in ("category", "name", "text", "polarity", "tags"))
+        block.version = int(prev.get("version") or 1) + (1 if changed else 0)
+        if not block.created_at:
+            block.created_at = prev.get("created_at") or block.updated_at
+    else:
+        block.version = 1
+        if not block.created_at:
+            block.created_at = block.updated_at
     path = layout.safe_join(root, block.category, f"{block.id}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     layout.atomic_write_text(path, block.model_dump_json())
