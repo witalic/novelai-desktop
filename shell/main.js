@@ -96,6 +96,8 @@ app.whenReady().then(async () => {
       "font-src 'self' data:; connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:*; object-src 'none'; base-uri 'self'",
     ] } })
   })
+  // The local UI needs no device permissions (camera, geolocation, notifications, …) — deny them all.
+  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false))
   createWindow(api.origin)
 })
 

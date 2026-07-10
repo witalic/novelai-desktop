@@ -9,6 +9,7 @@ const path = require('path')
 const cfg = require('./config')
 
 const newToken = () => crypto.randomBytes(32).toString('hex') // per-launch shared secret (cookie-delivered)
+const sigOf = (token) => (token ? crypto.createHash('sha256').update(token).digest('hex') : null)
 
 // Ask the OS for an ephemeral free port on the loopback host (bind :0, read it back, release it).
 function freePort () {
@@ -22,13 +23,18 @@ function freePort () {
   })
 }
 
-async function healthOk (baseUrl, timeoutMs = 1000) {
+async function healthOk (baseUrl, expectedSig = null, timeoutMs = 1000) {
   try {
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), timeoutMs)
     const r = await fetch(`${baseUrl}/health`, { signal: ctrl.signal })
     clearTimeout(t)
-    return r.status === 200
+    if (r.status !== 200) return false
+    if (!expectedSig) return true
+    // Confirm this is the backend WE spawned (its /health echoes sha256(token)), not a foreign process that
+    // grabbed the free port between our probe and uvicorn's bind — otherwise it'd receive our auth cookie.
+    const body = await r.json().catch(() => ({}))
+    return body.sig === expectedSig
   } catch { return false }
 }
 
@@ -48,8 +54,9 @@ function spawnApi (port, token) {
 }
 
 async function waitHealthy (started, tries = 40) {
+  const expected = sigOf(started.token) // verify identity, not just liveness
   for (let i = 0; i < tries; i++) {           // ~20s to boot
-    if (await healthOk(started.baseUrl)) return started
+    if (await healthOk(started.baseUrl, expected)) return started
     if (started.proc && started.proc.exitCode !== null) break
     await new Promise((r) => setTimeout(r, 500))
   }
