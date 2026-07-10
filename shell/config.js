@@ -32,9 +32,11 @@ function get (name, def) {
 }
 
 const host = get('NAI_API__HOST', '127.0.0.1')
-const port = get('NAI_API__PORT', '8787')
-const clientBaseUrl = `http://${host}:${port}`.replace(/\/+$/, '')
-const u = new URL(clientBaseUrl)
-const isLocal = ['127.0.0.1', 'localhost', '::1'].includes(u.hostname)
+// No hardcoded port: the shell picks a FREE loopback port per launch (see api.js) so it can never bind a
+// port a foreign process holds, nor load that process's /app/. An explicit NAI_API__PORT is a dev override
+// (and the only case where an already-running backend is reused).
+const explicitPort = get('NAI_API__PORT', '') || null
+const isLocal = ['127.0.0.1', 'localhost', '::1'].includes(host)
+const baseUrl = (port) => `http://${host}:${port}`
 
-module.exports = { repoRoot, host, port, clientBaseUrl, apiOrigin: u.origin, isLocal }
+module.exports = { repoRoot, host, explicitPort, isLocal, baseUrl }

@@ -1,7 +1,8 @@
-// novelai-desktop Electron shell — bring the sidecar up, open the window on the local web UI at
-// /app/, and tear the sidecar down on quit. The window has no preload and no node integration; the
-// web UI talks to the backend over plain HTTP on the single loopback origin.
+// novelai-desktop Electron shell — bring the sidecar up on a free loopback port, open the window on the
+// local web UI at /app/, and tear the sidecar down on quit. The window uses a minimal contextBridge
+// preload (no node integration); the web UI talks to the backend over plain HTTP on the single origin.
 const { app, BrowserWindow, session, dialog, Menu, ipcMain, shell } = require('electron')
+const fs = require('fs')
 const path = require('path')
 const cfg = require('./config')
 const { ensureApi } = require('./api')
@@ -15,11 +16,17 @@ ipcMain.handle('dialog:pickFolder', async () => {
   return (res.canceled || !res.filePaths.length) ? null : res.filePaths[0]
 })
 ipcMain.handle('shell:openPath', async (_e, target) => {
-  if (typeof target === 'string' && target) await shell.openPath(target)
-  return true
+  // Only ever open an existing DIRECTORY (the vault folder) — never a file/executable the renderer names.
+  try {
+    if (typeof target === 'string' && target && fs.statSync(target).isDirectory()) {
+      await shell.openPath(target)
+      return true
+    }
+  } catch { /* missing / not a directory */ }
+  return false
 })
 
-function createWindow () {
+function createWindow (apiOrigin) {
   Menu.setApplicationMenu(null)
   win = new BrowserWindow({
     width: 1280,
@@ -32,7 +39,16 @@ function createWindow () {
       preload: path.join(__dirname, 'preload.js'),
     },
   })
-  win.loadURL(`${cfg.clientBaseUrl}/app/`)
+  // Lock the window to the sidecar origin: any off-origin navigation is refused and external links open in
+  // the OS browser — the preload bridge (folder picker, openPath, quit hook) must never reach remote content.
+  win.webContents.on('will-navigate', (e, url) => {
+    if (new URL(url).origin !== apiOrigin) e.preventDefault()
+  })
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try { if (/^https?:/.test(url)) shell.openExternal(url) } catch { /* ignore */ }
+    return { action: 'deny' }
+  })
+  win.loadURL(`${apiOrigin}/app/`)
 
   // Give the renderer a chance to flush unsaved work before the window closes.
   let quitting = false
@@ -49,18 +65,26 @@ function createWindow () {
 
 app.whenReady().then(async () => {
   console.log(`[shell] electron=${process.versions.electron} chromium=${process.versions.chrome}`)
-  console.log(`[shell] api=${cfg.clientBaseUrl}`)
+  let api
   try {
-    apiProc = await ensureApi()
+    api = await ensureApi()
   } catch (e) {
     dialog.showErrorBox('NovelAI Desktop', String((e && e.message) || e))
     app.quit()
     return
   }
+  apiProc = api.proc
+  console.log(`[shell] api=${api.baseUrl}`)
   // The shell loads its OWN local web UI — never serve a stale cached bundle during dev.
   await session.defaultSession.clearCache()
-  createWindow()
+  createWindow(api.origin)
 })
 
+// Tear the sidecar down on normal quit AND on crash/signal, so a spawned python is never orphaned holding
+// its port. (Kept out of before-quit so the close-time renderer flush still reaches a live backend.)
+function killApi () { if (apiProc) { try { apiProc.kill() } catch { /* gone */ } apiProc = null } }
 app.on('window-all-closed', () => app.quit())
-app.on('quit', () => { if (apiProc) { try { apiProc.kill() } catch { /* gone */ } } })
+app.on('quit', killApi)
+process.on('exit', killApi)
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { killApi(); process.exit(0) })
+process.on('uncaughtException', (err) => { console.error('[shell] uncaught', err); killApi(); process.exit(1) })
