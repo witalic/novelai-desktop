@@ -26,7 +26,7 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
     images_dir.mkdir(parents=True, exist_ok=True)
     for im in doc.images:
         if im.image_b64:
-            (images_dir / f"{im.id}.png").write_bytes(base64.b64decode(im.image_b64))
+            (images_dir / f"{im.id}.png").write_bytes(base64.b64decode(im.image_b64, validate=True))
             im.file = f"images/{im.id}.png"
             im.image_b64 = None
         sidecar = {
@@ -37,7 +37,7 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
     # Draft-stack images live alongside gallery images (served by the same /images/{id} route).
     for st in doc.stack:
         if st.image_b64:
-            (images_dir / f"{st.id}.png").write_bytes(base64.b64decode(st.image_b64))
+            (images_dir / f"{st.id}.png").write_bytes(base64.b64decode(st.image_b64, validate=True))
             st.file = f"images/{st.id}.png"
             st.image_b64 = None
     _gc_orphans(work_dir, {im.id for im in doc.images} | {st.id for st in doc.stack})

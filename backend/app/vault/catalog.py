@@ -8,9 +8,12 @@ this vault's ``hidden`` list so the code defaults don't just re-seed it.
 On-disk shape: ``{"overrides": [{slug,name,color}, ...], "hidden": ["<slug>", ...]}``.
 """
 import json
+import logging
 from pathlib import Path
 
 from app.vault.models import CategoryDoc
+
+log = logging.getLogger(__name__)
 
 # Built-in categories (slug → name/color). Colors mirror the canvas block palette.
 DEFAULTS: list[CategoryDoc] = [
@@ -54,7 +57,11 @@ def read_all(vault: Path) -> list[CategoryDoc]:
     overrides, hidden = _read_raw(vault)
     by_slug: dict[str, CategoryDoc] = {c.slug: c.model_copy() for c in DEFAULTS if c.slug not in hidden}
     for raw in overrides:
-        cat = CategoryDoc.model_validate(raw)
+        try:
+            cat = CategoryDoc.model_validate(raw)
+        except Exception:  # noqa: BLE001 — one malformed override must not 500 the whole category list
+            log.warning("Skipping malformed category override: %r", raw)
+            continue
         if cat.slug in hidden:
             continue
         by_slug[cat.slug] = cat

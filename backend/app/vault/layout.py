@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # \Z (not $) so a trailing newline can't sneak through
 
 
 def valid_id(value: str) -> bool:

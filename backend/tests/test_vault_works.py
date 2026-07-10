@@ -232,6 +232,17 @@ async def test_resave_gcs_removed_image_files(client):
     assert not list((imgs.parent / ".thumbs").glob("img-extra@*"))
 
 
+async def test_rejects_garbage_base64_and_traversal_image_id(client):
+    ac, _ = client
+    bad_data = _work("w1")
+    bad_data["images"][0]["image_b64"] = "!!! not base64 !!!"
+    assert (await ac.put("/api/vault/works", json=bad_data)).status_code == 400  # 400, not a 500
+
+    traversal = _work("w2")
+    traversal["images"][0]["id"] = "../escape"  # ids become filenames → must be rejected before any write
+    assert (await ac.put("/api/vault/works", json=traversal)).status_code == 400
+
+
 async def test_bad_id_and_missing_image(client):
     ac, _ = client
     await ac.put("/api/vault/works", json=_work())

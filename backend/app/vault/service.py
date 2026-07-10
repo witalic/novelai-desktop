@@ -51,12 +51,19 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
             if not snap.created_at:
                 snap.created_at = doc.updated_at
         for im in doc.images:
+            if not layout.valid_id(im.id):  # ids become filenames — reject traversal / junk before writing
+                raise HTTPException(status_code=400, detail="Invalid image id.")
             if not im.created_at:
                 im.created_at = doc.updated_at
         for st in doc.stack:
+            if not layout.valid_id(st.id):
+                raise HTTPException(status_code=400, detail="Invalid image id.")
             if not st.created_at:
                 st.created_at = doc.updated_at
-        store.write_work(work_dir, doc)
+        try:
+            store.write_work(work_dir, doc)
+        except ValueError as exc:  # bad base64 image data → client error, not a 500 (binascii.Error ⊂ ValueError)
+            raise HTTPException(status_code=400, detail="Invalid image data.") from exc
         store.write_thumbnail(work_dir, doc)
         index.upsert_work(conn, doc, dir_name)
         return {"id": doc.id, "updated_at": doc.updated_at}

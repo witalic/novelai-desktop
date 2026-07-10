@@ -175,8 +175,9 @@ def list_blocks(conn, category: str | None, tags: list[str], search: str | None,
         where.append("b.category=?")
         params.append(category)
     if search:
-        where.append("(b.name LIKE ? OR b.text LIKE ?)")
-        like = f"%{search}%"
+        where.append(r"(b.name LIKE ? ESCAPE '\' OR b.text LIKE ? ESCAPE '\')")
+        esc = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")  # literal wildcards
+        like = f"%{esc}%"
         params += [like, like]
     if tags:
         ph = ",".join("?" * len(tags))

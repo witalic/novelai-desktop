@@ -4,6 +4,7 @@
 PNG entries from NovelAI's ZIP response.
 """
 import io
+import re
 import struct
 import zipfile
 import zlib
@@ -28,11 +29,16 @@ def solid_png(width: int, height: int, rgb: tuple[int, int, int] = (44, 44, 52))
     return _SIG + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
 
 
+def _sample_index(name: str) -> tuple[int, str]:
+    m = re.search(r"(\d+)", name)  # numeric order so image_10 sorts after image_2, not before
+    return (int(m.group(1)) if m else 0, name)
+
+
 def unzip_pngs(data: bytes) -> list[bytes]:
-    """Return the PNG entries of a NovelAI ZIP response, ordered by name (image_0, image_1, ...)."""
+    """Return the PNG entries of a NovelAI ZIP response, ordered by sample index (image_0, image_1, ...)."""
     out: list[bytes] = []
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for name in sorted(zf.namelist()):
+        for name in sorted(zf.namelist(), key=_sample_index):
             if name.lower().endswith(".png"):
                 out.append(zf.read(name))
     if not out:
