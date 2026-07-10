@@ -28,12 +28,19 @@ const busy = ref(false)
 const error = ref('')
 const loadedWork = ref<WorkDoc | null>(null)
 
+// A generation token guards against a stale stream landing in the wrong work: opening another work (or
+// starting a new generation) bumps it, and the stream's callbacks / finally are ignored once superseded.
+let genToken = 0
+let genAbort: AbortController | null = null
+
 async function onGenerate(payload: { positive: string; negative: string; snapshot: SnapshotData }) {
   if (busy.value) return
   if (!payload.positive.trim()) {
     error.value = 'Add at least one positive block to the generation zone.'
     return
   }
+  const token = ++genToken
+  genAbort = new AbortController()
   busy.value = true
   error.value = ''
   preview.value = ''
@@ -42,6 +49,7 @@ async function onGenerate(payload: { positive: string; negative: string; snapsho
   const snapshot: SnapshotData = { ...payload.snapshot, params: { ...params } }
   try {
     await generateStream(full, (ev) => {
+      if (token !== genToken) return // superseded (a work was opened / another generation started) → drop it
       if (ev.type === 'intermediate') {
         if (ev.samp === 0) preview.value = `data:${ev.mime};base64,${ev.image}`
       } else if (ev.type === 'final') {
@@ -55,13 +63,20 @@ async function onGenerate(payload: { positive: string; negative: string; snapsho
       } else if (ev.type === 'error') {
         error.value = ev.message
       }
-    })
+    }, genAbort.signal)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    if (token === genToken) error.value = e instanceof Error ? e.message : String(e) // ignore a superseded/aborted run
   } finally {
-    busy.value = false
-    preview.value = ''
+    if (token === genToken) { busy.value = false; preview.value = '' }
   }
+}
+
+// Stop the in-flight generation and invalidate its stream (its callbacks/finally then no-op).
+function cancelGenerate() {
+  genToken += 1
+  genAbort?.abort()
+  busy.value = false
+  preview.value = ''
 }
 
 function onTake() {
@@ -71,6 +86,7 @@ function onTake() {
 // Open a saved work: pull its doc, restore params, hand the doc to the canvas to rebuild.
 watch(() => props.openWorkId, async (raw) => {
   if (!raw) return
+  cancelGenerate() // opening a work must not inherit an in-flight generation's output
   const id = raw.split('#')[0] // App appends '#<ts>' to force reopen of the same work
   try {
     const doc = await loadWork(id)
@@ -86,7 +102,7 @@ watch(() => props.openWorkId, async (raw) => {
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :insert-blocks="insertBlocks" @generate="onGenerate" @take="onTake" @navigate="emit('navigate', $event)" />
+      :insert-blocks="insertBlocks" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate" @navigate="emit('navigate', $event)" />
     <ParamsPanel :params="params" :open="panelOpen" @toggle="panelOpen = !panelOpen" />
   </div>
 </template>

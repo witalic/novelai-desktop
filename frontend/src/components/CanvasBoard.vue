@@ -24,6 +24,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   generate: [{ positive: string; negative: string; snapshot: SnapshotData }]
   take: []
+  cancel: []
   navigate: [string]
 }>()
 
@@ -59,7 +60,6 @@ const tokenEstimate = computed(() => Math.ceil((composed.value.positive.length +
 const orphanCount = computed(() => nodes.value.filter((n) => (n.type === 'block' || n.type === 'image') && !ANCHORS.has(n.parentNode ?? '')).length)
 const childCount = (id: string) => nodes.value.filter((n) => n.parentNode === id).length
 
-let blockSeq = 0
 const flowRef = ref<HTMLElement | null>(null)
 const topSelected = ref(false)
 
@@ -102,6 +102,7 @@ function onDraftDragStart(e: DragEvent) {
 }
 function onCanvasDrop(e: DragEvent) {
   e.preventDefault()
+  if (e.dataTransfer?.getData('text/plain') !== 'nai-draft') return // only our own draft-drag materialises (not an external file/image)
   const draft = props.drafts[0]
   if (!draft) return
   const pos = toFlow(e.clientX, e.clientY)
@@ -342,10 +343,10 @@ function settleNode(node: any) {
 // A block "used" from the Library tab lands in the canvas Library zone, keeping its vault link
 // (block_id/version/tags) so generated snapshots and inherited image tags stay traceable.
 function insertLibraryBlock(b: LibraryBlock) {
-  blockSeq += 1
   const stacked = childCount(LIBRARY)
   addNodes([{
-    id: `lib-${b.id}-${blockSeq}`, type: 'block', parentNode: LIBRARY, zIndex: 2,
+    // Unique node id (not a per-mount counter) so re-inserting a block into a reloaded work can't collide.
+    id: newId(`lib-${b.id}`), type: 'block', parentNode: LIBRARY, zIndex: 2,
     position: { x: 16, y: 52 + stacked * 46 }, style: { width: '176px' },
     data: {
       category: b.category, name: b.name, text: b.text, polarity: b.polarity, expanded: false,
@@ -561,7 +562,8 @@ function startName(data: any, e: MouseEvent) {
               <span class="sttitle">Generation</span>
               <span v-if="busy" class="chip busy"><span class="spinner"></span> Generating…</span>
               <div class="spacer"></div>
-              <button class="gzgen nodrag" :disabled="busy || !composed.positive" @pointerdown.stop @click.stop="doGenerate">Generate</button>
+              <button v-if="busy" class="gzcancel nodrag" @pointerdown.stop @click.stop="emit('cancel')">Cancel</button>
+              <button v-else class="gzgen nodrag" :disabled="!composed.positive" @pointerdown.stop @click.stop="doGenerate">Generate</button>
             </div>
             <div class="stbody">
               <div class="stoutput" :style="{ flexGrow: data.outputRatio ?? 0.3 }">
@@ -703,6 +705,8 @@ function startName(data: any, e: MouseEvent) {
 .sttitle{font-weight:600;font-size:13px}
 .gzgen{border:0;border-radius:var(--radius);background:var(--accent);color:var(--on-accent);font-weight:600;font-size:12px;padding:6px 14px;cursor:pointer}
 .gzgen:disabled{opacity:.5;cursor:default}
+.gzcancel{border:1px solid var(--border-strong);border-radius:var(--radius);background:transparent;color:var(--text);font-weight:600;font-size:12px;padding:6px 14px;cursor:pointer}
+.gzcancel:hover{border-color:var(--danger,#e2483d);color:var(--danger,#e2483d)}
 .stbody{flex:1;display:flex;min-height:0}
 .stoutput{flex-basis:0;min-width:120px;display:flex;flex-direction:column;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
 .colhd{height:26px;flex-shrink:0;display:flex;align-items:center;padding:0 12px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);border-bottom:1px solid var(--border)}
