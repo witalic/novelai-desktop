@@ -270,8 +270,7 @@ export async function generateStream(
   try {
     for (;;) {
       const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true }) // flush multibyte tail on done
       let sep: number
       while ((sep = buffer.indexOf('\n\n')) >= 0) {
         const frame = buffer.slice(0, sep)
@@ -280,6 +279,7 @@ export async function generateStream(
         // A malformed frame or a throwing handler must not kill the stream (or leak the reader).
         if (dataLine) try { onEvent(JSON.parse(dataLine.slice(5).trim())) } catch { /* skip this event */ }
       }
+      if (done) break
     }
   } finally {
     reader.releaseLock() // release even on abort / error so the connection doesn't dangle

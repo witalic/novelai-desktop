@@ -57,7 +57,7 @@ async function onGenerate(payload: { positive: string; negative: string; snapsho
         const seed = ev.seed ?? full.seed
         const withSeed: SnapshotData = { ...snapshot, params: { ...snapshot.params, seed } }
         drafts.value = [
-          { id: newId('img'), url: `data:${ev.mime};base64,${ev.image}`, params: { ...full, seed }, mock: false, snapshot: withSeed },
+          { id: newId('img'), url: `data:${ev.mime};base64,${ev.image}`, params: { ...full, seed }, mock: ev.mock ?? false, snapshot: withSeed },
           ...drafts.value,
         ].slice(0, 50)
       } else if (ev.type === 'error') {

@@ -16,15 +16,19 @@ const perPage = 24
 const loading = ref(false)
 const noVault = ref(false)
 
+let fetchReq = 0
 async function fetchPage(p = page.value) {
+  const req = ++fetchReq // rapid pagination: a slow earlier response must not overwrite a newer page
   loading.value = true
   try {
     const res = await listWorks(p, perPage)
+    if (req !== fetchReq) return
     items.value = res.items
     total.value = res.total
     page.value = res.page
     noVault.value = false
   } catch (e) {
+    if (req !== fetchReq) return
     // 409 = no vault folder chosen yet — a normal first-run state, not an error.
     if (e instanceof ApiError && e.status === 409) {
       noVault.value = true
@@ -34,7 +38,7 @@ async function fetchPage(p = page.value) {
       push(e instanceof Error ? e.message : 'Could not load works', 'err')
     }
   } finally {
-    loading.value = false
+    if (req === fetchReq) loading.value = false
   }
 }
 

@@ -200,6 +200,7 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', onDocPointer)
   if (searchTimer) clearTimeout(searchTimer) // don't let a debounced load fire after teardown
   if (exTimer) clearTimeout(exTimer)
+  activeRailCleanup?.() // tear down a splitter drag if we unmount mid-drag
 })
 
 // The tag dropdown is fixed-positioned (measured off the input) so a resizable/scrolling rail can't clip it.
@@ -221,10 +222,12 @@ function startRailDrag(e: MouseEvent) {
   const startH = catsPaneEl.value?.getBoundingClientRect().height ?? 300
   const railH = railEl.value?.clientHeight ?? 600
   const onMove = (ev: MouseEvent) => { catsH.value = Math.max(96, Math.min(railH - 110, startH + (ev.clientY - startY))) }
-  const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+  const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); activeRailCleanup = null }
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
+  activeRailCleanup = onUp // so an unmount mid-drag still tears these window listeners down
 }
+let activeRailCleanup: (() => void) | null = null
 
 // ---- block editor drawer ----
 const editor = ref<{ isNew: boolean; block: LibraryBlock } | null>(null)
