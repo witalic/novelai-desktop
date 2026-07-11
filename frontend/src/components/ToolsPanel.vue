@@ -9,6 +9,9 @@ import ParamFields from './ParamFields.vue'
 import { presetParamsDiffer } from '../presets/diff'
 import { anlasCost } from '../presets/cost'
 import { useAccount } from '../composables/useAccount'
+import { useContextMenu } from '../composables/useContextMenu'
+import { useImagePreview } from '../composables/useImagePreview'
+import { downscaleDataUrl } from '../canvas/thumb'
 import type { GenResult, PanelParams, Preset } from '../types'
 
 const props = defineProps<{
@@ -37,9 +40,36 @@ const emit = defineEmits<{
 // the source is already modest.
 const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3)
 const THUMB_W = Math.round(180 * 2 * dpr) // must be ≥ the 200% decode size so vault images don't upscale
+
+// Fresh generations are full-resolution data: URLs; many of them at once make Chromium downsample
+// decoded bitmaps (→ pixelation). Downscale each once (client-side) and render the small copy, so the
+// stack stays crisp like the vault path. Cache by draft id; prune when a draft leaves the stack.
+const thumbCache = ref<Record<string, string>>({})
+watch(() => props.drafts, (ds) => {
+  for (const d of ds) {
+    if (d.url?.startsWith('data:') && !thumbCache.value[d.id]) {
+      downscaleDataUrl(d.url, THUMB_W).then((s) => { thumbCache.value[d.id] = s }).catch(() => { /* keep source */ })
+    }
+  }
+  const live = new Set(ds.map((d) => d.id))
+  for (const id of Object.keys(thumbCache.value)) if (!live.has(id)) delete thumbCache.value[id]
+}, { immediate: true })
+
 function thumbSrc(d: GenResult): string {
-  if (!d.url || d.url.startsWith('data:')) return d.url
-  return `${d.url}?w=${THUMB_W}`
+  if (!d.url) return ''
+  if (!d.url.startsWith('data:')) return `${d.url}?w=${THUMB_W}` // vault image → server-sized thumbnail
+  return thumbCache.value[d.id] || d.url // downscaled copy once ready; full source until then
+}
+
+// Right-click a stack thumbnail → preview (full res) / keep on canvas / remove from the stack.
+const { open: openMenu } = useContextMenu()
+const { preview } = useImagePreview()
+function onThumbMenu(e: MouseEvent, d: GenResult) {
+  openMenu(e, [
+    { label: 'Preview', icon: '⤢', onClick: () => preview(d.url) },
+    { label: 'Move to canvas', icon: '⤒', onClick: () => emit('keep-many', [d.id]) },
+    { label: 'Remove from stack', icon: '🗑', danger: true, onClick: () => emit('remove-many', [d.id]) },
+  ])
 }
 
 type Tab = 'generation' | 'stack' | 'widgets'
@@ -166,7 +196,7 @@ watch(() => props.drafts, (ds) => {
 
           <div class="thumbs">
             <div v-for="(d, i) in drafts" :key="d.id" class="thumb" :class="{ top: i === 0, on: selected.has(d.id) }"
-              draggable="true" @dragstart="onThumbDragStart($event, d)" @click="toggleSelect(d.id)">
+              draggable="true" @dragstart="onThumbDragStart($event, d)" @click="toggleSelect(d.id)" @contextmenu="onThumbMenu($event, d)">
               <span class="check">{{ selected.has(d.id) ? '✓' : '' }}</span>
               <span v-if="i === 0" class="topbadge">TOP</span>
               <span v-if="d.mock" class="mockbadge">MOCK</span>
@@ -244,7 +274,6 @@ watch(() => props.drafts, (ds) => {
 .hint{font-size:10.5px;color:var(--text-faint)}
 .thumbs{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .thumb{position:relative;aspect-ratio:2/3;border-radius:8px;border:1px solid var(--border);overflow:hidden;cursor:pointer;background:var(--surface-2)}
-.thumb.top{border-color:var(--accent)}
 .thumb.on{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
 /* Decode at 2× the box, then transform back down — crisp on HiDPI for both data: and vault srcs. */
 .timg{position:absolute;top:50%;left:50%;width:200%;height:200%;object-fit:cover;display:block;

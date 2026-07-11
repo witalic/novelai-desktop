@@ -2,6 +2,8 @@
 import { computed, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import ContextMenu from './components/ContextMenu.vue'
+import ImagePreview from './components/ImagePreview.vue'
 import GenerateView from './views/GenerateView.vue'
 import WorksView from './views/WorksView.vue'
 import LibraryView from './views/LibraryView.vue'
@@ -90,6 +92,8 @@ const viewBindings = computed(() =>
     </div>
 
     <ConfirmDialog />
+    <ContextMenu />
+    <ImagePreview />
   </div>
 </template>
 

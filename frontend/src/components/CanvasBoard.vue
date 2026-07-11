@@ -14,6 +14,8 @@ import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '.
 import { useAccount } from '../composables/useAccount'
 import { useCatalog, modelSpec } from '../composables/useCatalog'
 import { useTokenCount } from '../composables/useTokenCount'
+import { useContextMenu, type MenuItem } from '../composables/useContextMenu'
+import { useImagePreview } from '../composables/useImagePreview'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
@@ -777,27 +779,25 @@ function loadDoc(doc: any) {
   resetBaseline('saved') // the loaded state is the baseline — not dirty
 }
 
-// Right-click context menu for removable nodes (images + prompt blocks): download images, arrange, delete.
-const ctx = ref<{ show: boolean; x: number; y: number; images: string[]; ids: string[] }>({ show: false, x: 0, y: 0, images: [], ids: [] })
+// Right-click menu for images + prompt blocks (shared ContextMenu): preview, arrange, download, delete.
+const { open: openMenu, close: closeMenu } = useContextMenu()
+const { preview: openPreview } = useImagePreview() // `preview` is already a prop (the live generation image)
 const REMOVABLE = new Set(['image', 'block'])
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function openCtx(event: MouseEvent, targets: any[]) {
+function openNodeMenu(event: MouseEvent, targets: any[]) {
   const nodesIn = targets.filter((t) => REMOVABLE.has(t.type))
-  if (!nodesIn.length) { ctx.value.show = false; return }
-  const images = nodesIn.filter((t) => t.type === 'image').map((t) => t.data?.url).filter(Boolean)
-  ctx.value = { show: true, x: event.clientX, y: event.clientY, images, ids: nodesIn.map((t) => t.id) }
-}
-function closeCtx() { ctx.value.show = false }
-function arrangeSelected() {
-  const list = ctx.value.ids.map((id) => findNode(id)).filter((n) => n && n.type === 'image')
-  closeCtx()
-  arrangeImages(list)
-}
-// Delete the menu's targets; anchor zones/the station are never removable.
-function deleteSelected() {
-  const ids = ctx.value.ids.filter((id) => !ANCHORS.has(id))
-  closeCtx()
-  if (ids.length) removeNodes(ids)
+  if (!nodesIn.length) { closeMenu(); return }
+  const ids = nodesIn.map((t) => t.id)
+  const imgs = nodesIn.filter((t) => t.type === 'image')
+  const urls = imgs.map((t) => t.data?.url).filter(Boolean) as string[]
+  const items: MenuItem[] = []
+  if (urls.length === 1) items.push({ label: 'Preview', icon: '⤢', onClick: () => openPreview(urls[0]) })
+  if (imgs.length > 1) items.push({ label: 'Arrange evenly', icon: '▦', onClick: () => arrangeImages(imgs.map((n) => findNode(n.id)).filter(Boolean)) })
+  if (urls.length) items.push({ label: `Download${urls.length > 1 ? ` ${urls.length} images` : ' image'}`, icon: '⤓', onClick: () => downloadImages(urls) })
+  // Anchor zones / the station are never removable — filter them from the delete set.
+  items.push({ label: `Delete${ids.length > 1 ? ` ${ids.length} items` : ' item'}`, icon: '🗑', danger: true,
+    onClick: () => { const del = ids.filter((id) => !ANCHORS.has(id)); if (del.length) removeNodes(del) } })
+  openMenu(event, items)
 }
 // Vault-stored images serve as URLs (not data: URIs); fetch and re-encode so /api/download gets raw base64.
 async function toBase64(url: string): Promise<string> {
@@ -807,10 +807,8 @@ async function toBase64(url: string): Promise<string> {
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   return btoa(bin)
 }
-async function downloadImages() {
-  const urls = ctx.value.images
+async function downloadImages(urls: string[]) {
   const n = urls.length
-  closeCtx()
   try {
     await saveDownloads(await Promise.all(urls.map(toBase64)))
     toast.push(`Saved ${n} image${n > 1 ? 's' : ''} to Downloads`, 'ok')
@@ -818,17 +816,27 @@ async function downloadImages() {
     toast.push(e instanceof Error ? e.message : 'Download failed', 'err')
   }
 }
+// Right-click the station Output image → same actions as a stack thumbnail (top draft).
+function onStationMenu(e: MouseEvent) {
+  const d = props.drafts[0]
+  if (!d) return
+  openMenu(e, [
+    { label: 'Preview', icon: '⤢', onClick: () => openPreview(d.url) },
+    { label: 'Move to canvas', icon: '⤒', onClick: () => keepDraftsBatch([d.id]) },
+    { label: 'Remove from stack', icon: '🗑', danger: true, onClick: () => emit('take', d.id) },
+  ])
+}
 onNodeContextMenu(({ event, node }) => {
   event.preventDefault()
-  if (!REMOVABLE.has(node.type)) { closeCtx(); return }
+  if (!REMOVABLE.has(node.type)) { closeMenu(); return }
   const selected = nodes.value.filter((n) => REMOVABLE.has(n.type) && n.selected)
-  openCtx(event as MouseEvent, node.selected && selected.length > 1 ? selected : [node])
+  openNodeMenu(event as MouseEvent, node.selected && selected.length > 1 ? selected : [node])
 })
 onSelectionContextMenu(({ event, nodes: sel }) => {
   event.preventDefault()
-  openCtx(event as MouseEvent, sel.filter((n) => REMOVABLE.has(n.type)))
+  openNodeMenu(event as MouseEvent, sel.filter((n) => REMOVABLE.has(n.type)))
 })
-onPaneContextMenu(() => closeCtx())
+onPaneContextMenu(() => closeMenu())
 
 // Drag an internal splitter to adjust the Output↔composition (v) or Positive↔Negative (h) ratio.
 function startSplit(kind: 'v' | 'h', e: MouseEvent) {
@@ -931,7 +939,8 @@ function startName(data: any, e: MouseEvent) {
                 <div class="outbody">
                   <img v-if="busy && preview" class="liveprev" :src="preview" alt="generating preview" />
                   <div v-else-if="drafts.length" class="topwrap nodrag" :class="{ selected: topSelected }" draggable="true"
-                    @dragstart="onDraftDragStart" @pointerdown.stop @click.stop="topSelected = !topSelected" title="Drag onto the canvas to keep">
+                    @dragstart="onDraftDragStart" @pointerdown.stop @click.stop="topSelected = !topSelected"
+                    @contextmenu.stop="onStationMenu" title="Drag onto the canvas to keep · right-click for actions">
                     <img class="topimg" :src="drafts[0].url" alt="latest generation" draggable="false" />
                     <span v-if="drafts[0].mock" class="mockbadge" title="Offline placeholder — no NovelAI token set">MOCK</span>
                     <span class="stackbadge">{{ drafts.length }} in stack</span>
@@ -1015,14 +1024,6 @@ function startName(data: any, e: MouseEvent) {
       </div>
     </div>
 
-    <template v-if="ctx.show">
-      <div class="ctxback" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
-      <div class="ctxmenu" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }">
-        <button v-if="ctx.images.length > 1" @click="arrangeSelected"><span>▦</span> Arrange evenly</button>
-        <button v-if="ctx.images.length" @click="downloadImages"><span>⤓</span> Download {{ ctx.images.length > 1 ? `${ctx.images.length} images` : 'image' }}</button>
-        <button class="danger" @click="deleteSelected"><span>🗑</span> Delete {{ ctx.ids.length > 1 ? `${ctx.ids.length} items` : 'item' }}</button>
-      </div>
-    </template>
   </section>
 </template>
 
@@ -1056,12 +1057,6 @@ function startName(data: any, e: MouseEvent) {
   display:flex;align-items:center;font-size:12px;font-weight:500;color:var(--text-dim);padding:5px 13px;border-radius:20px;
   background:color-mix(in srgb,var(--surface-1) 88%,transparent);border:1px solid var(--border);
   box-shadow:0 4px 16px rgba(0,0,0,.25)}
-.ctxback{position:fixed;inset:0;z-index:998}
-.ctxmenu{position:fixed;z-index:999;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 6px 24px rgba(0,0,0,.4);padding:4px;min-width:170px}
-.ctxmenu button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;color:var(--text);font-size:13px;padding:8px 10px;border-radius:var(--radius);cursor:pointer;text-align:left}
-.ctxmenu button:hover{background:var(--surface-3)}
-.ctxmenu button.danger{color:var(--danger,#e2483d)}
-.ctxmenu button.danger:hover{background:color-mix(in srgb,var(--danger,#e2483d) 15%,transparent)}
 .flowwrap :deep(.vue-flow__node){cursor:grab;border-radius:8px}
 .flowwrap :deep(.vue-flow__controls){box-shadow:0 2px 10px rgba(0,0,0,.3);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .flowwrap :deep(.vue-flow__controls-button){background:var(--surface-2);border-bottom:1px solid var(--border);width:26px;height:26px;padding:6px}
