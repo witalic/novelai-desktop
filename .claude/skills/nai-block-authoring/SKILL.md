@@ -84,6 +84,18 @@ A block is one of two kinds — name and tag it accordingly:
 
 When unsure: if a different style could reuse the block unchanged, it's general.
 
+## Weights (block accent)
+
+Give every block ONE weighted **anchor** — its single defining tag — at `1.3::tag::`, and leave the
+supporting tags plain. The `1.3` accent makes the block's core intent land when it is mixed with many
+other blocks on the canvas; any finer weighting is the user's job at generation time. Never weight
+every tag (nai-prompt-writing: strengthen only key elements — 1 per block here).
+
+- Multi-tag block: weight the lead/defining tag → `1.3::curvy::, hourglass figure, wide hips, large breasts`.
+- Single-tag atom (a hair color, one hairstyle): weight its one tag → `1.3::blonde hair::`, `1.3::twintails::`.
+- If the text already carries the source's own weights (e.g. an extracted style block), keep those and
+  don't add a second competing anchor.
+
 ## NSFW
 
 Most NSFW content maps to a **standard semantic category** — put it there and add an **`nsfw` tag**:
@@ -109,7 +121,7 @@ Keep it to a handful of meaningful tags per block — enough to find and group i
 ## Checklist
 
 - [ ] One focused concept per block; big scenes split into several blocks.
-- [ ] `text` follows nai-prompt-writing (visual tags, weights, no duplication).
+- [ ] `text` follows nai-prompt-writing (visual tags, no duplication); ONE `1.3::` anchor per block, rest plain.
 - [ ] Category = the block's primary role (prefixed slug); `custom` only when nothing fits; explicit request wins.
 - [ ] Style-specific blocks carry the style name + tag; general/reusable blocks have neutral names and no style tag.
 - [ ] NSFW → the semantic category (`body`/`pose`/`outfit`/…) or `nsfw`/`nsfw-act`/`nsfw-fluids`; always an `nsfw` tag.
