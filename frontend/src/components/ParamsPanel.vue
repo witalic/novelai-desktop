@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import Dropdown from './Dropdown.vue'
+import { MODELS, NOISE, SAMPLERS, SIZES, UC_PRESETS } from '../presets/options'
 import type { PanelParams } from '../types'
 
 const props = defineProps<{ params: PanelParams; open: boolean }>()
@@ -14,38 +15,6 @@ function parseSeed(v: string): number | null {
   const n = Number(s)
   return Number.isSafeInteger(n) && n <= 4294967295 ? n : null
 }
-
-const MODELS = [
-  { value: 'nai-diffusion-4-5-full', label: 'NAI Diffusion 4.5 — Full' },
-  { value: 'nai-diffusion-4-5-curated', label: 'NAI Diffusion 4.5 — Curated' },
-  { value: 'nai-diffusion-3', label: 'NAI Diffusion 3' },
-]
-// Sizes grouped by aspect ratio: portrait, then landscape, then square, then custom.
-const SIZES = [
-  { group: 'Portrait', items: [{ tier: 'Small', w: 512, h: 768 }, { tier: 'Normal', w: 832, h: 1216 }, { tier: 'Large', w: 1024, h: 1536 }, { tier: 'Wallpaper', w: 1088, h: 1920 }] },
-  { group: 'Landscape', items: [{ tier: 'Small', w: 768, h: 512 }, { tier: 'Normal', w: 1216, h: 832 }, { tier: 'Large', w: 1536, h: 1024 }, { tier: 'Wallpaper', w: 1920, h: 1088 }] },
-  { group: 'Square', items: [{ tier: 'Small', w: 640, h: 640 }, { tier: 'Normal', w: 1024, h: 1024 }, { tier: 'Large', w: 1472, h: 1472 }] },
-]
-const SAMPLERS = [
-  { value: 'k_euler_ancestral', label: 'Euler Ancestral' },
-  { value: 'k_euler', label: 'Euler' },
-  { value: 'k_dpmpp_2s_ancestral', label: 'DPM++ 2S Ancestral' },
-  { value: 'k_dpmpp_2m_sde', label: 'DPM++ 2M SDE' },
-  { value: 'k_dpmpp_2m', label: 'DPM++ 2M' },
-  { value: 'k_dpmpp_sde', label: 'DPM++ SDE' },
-]
-const UC_PRESETS = [
-  { value: 4, label: 'Heavy' },
-  { value: 5, label: 'Light' },
-  { value: 7, label: 'Furry Focus' },
-  { value: 6, label: 'Human Focus' },
-  { value: 3, label: 'None' },
-]
-const NOISE = [
-  { value: 'karras', label: 'karras (recommended)' },
-  { value: 'exponential', label: 'exponential' },
-  { value: 'polyexponential', label: 'polyexponential' },
-]
 
 const sizeOptions = computed(() => [
   ...SIZES.flatMap((g) => g.items.map((it) => ({ value: `${it.w},${it.h}`, label: `${it.tier} — ${it.w}×${it.h}`, group: g.group }))),

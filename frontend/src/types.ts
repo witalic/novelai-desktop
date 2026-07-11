@@ -17,6 +17,21 @@ export interface GenerateParams {
 
 export type PanelParams = Omit<GenerateParams, 'prompt' | 'negative_prompt'>
 
+// A preset stores generation params only — no prompt (that's the canvas), no seed (per-generation).
+// Keep in sync with backend/app/vault/models.py::PresetParams.
+export type PresetParams = Omit<PanelParams, 'seed'>
+
+export interface Preset {
+  id: string
+  name: string
+  params: PresetParams
+  builtin: boolean
+  favorite: boolean
+  is_default: boolean
+  created_at?: string
+  updated_at?: string
+}
+
 export interface GenerateResponse {
   mock: boolean
   count: number

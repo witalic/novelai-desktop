@@ -1,6 +1,6 @@
 import type {
   BlocksPage, CategoryCount, GenerateParams, GenerateResponse, LibraryBlock,
-  StreamEvent, TagCount, WorkDoc, WorksPage,
+  Preset, PresetParams, StreamEvent, TagCount, WorkDoc, WorksPage,
 } from './types'
 
 export async function saveWork(doc: WorkDoc): Promise<{ id: string; updated_at: string }> {
@@ -139,6 +139,33 @@ export async function listTags(category = ''): Promise<TagCount[]> {
   const resp = await fetch(`/api/vault/library/tags${p}`)
   if (!resp.ok) throw new ApiError(resp.status, `Failed to list tags (HTTP ${resp.status})`)
   return resp.json()
+}
+
+// ---- presets (generation-param bundles) ----
+export async function listPresets(): Promise<Preset[]> {
+  return jsonOrThrow(await fetch('/api/vault/presets'), 'Failed to list presets')
+}
+
+export async function savePreset(preset: { id: string; name: string; params: PresetParams }): Promise<{ id: string }> {
+  return jsonOrThrow(await fetch('/api/vault/presets', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(preset),
+  }), 'Failed to save preset')
+}
+
+export async function deletePreset(id: string): Promise<void> {
+  await jsonOrThrow(await fetch(`/api/vault/presets/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Failed to delete preset')
+}
+
+export async function setDefaultPreset(id: string): Promise<void> {
+  await jsonOrThrow(await fetch('/api/vault/presets/default', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+  }), 'Failed to set default preset')
+}
+
+export async function setPresetFavorite(id: string, favorite: boolean): Promise<void> {
+  await jsonOrThrow(await fetch(`/api/vault/presets/${encodeURIComponent(id)}/favorite`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ favorite }),
+  }), 'Failed to update favourite')
 }
 
 // Same-origin in production (served at /app/ by FastAPI); proxied to the backend in Vite dev.
