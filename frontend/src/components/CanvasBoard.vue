@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow, useVueFlow, type Node as FlowNode } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -13,7 +13,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
-import { insertionIndex, packColumn, packedHeight, PACK_X } from '../canvas/pack'
+import { appendX, insertionIndex, packColumn, packedHeight, PACK_X } from '../canvas/pack'
 import PromptWidget from './PromptWidget.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -34,8 +34,8 @@ const emit = defineEmits<{
 }>()
 
 const {
-  nodes, addNodes, removeNodes, findNode, onNodeDragStop, getIntersectingNodes, viewport, screenToFlowCoordinate,
-  setNodes, setViewport, onNodeContextMenu, onSelectionContextMenu, onPaneContextMenu,
+  nodes, addNodes, removeNodes, findNode, onNodeDragStart, onNodeDragStop, getIntersectingNodes, viewport,
+  screenToFlowCoordinate, setNodes, setViewport, onNodeContextMenu, onSelectionContextMenu, onPaneContextMenu,
 } = useVueFlow()
 
 // The "station" is one coupled node: [ Output | Positive / Negative lanes ] + header + meta.
@@ -308,6 +308,16 @@ onNodeDragStop(({ nodes: dragged, node }) => {
   for (const n of set) settleNode(n)
 })
 
+// Palette order at drag start — when the drag turns into a copy-out, the master snaps back into
+// its original slot instead of wherever the drag's y left it.
+let paletteDragOrder: string[] | null = null
+onNodeDragStart(({ node }) => {
+  paletteDragOrder = node.parentNode === LIBRARY
+    ? nodes.value.filter((n) => n.type === 'block' && n.parentNode === LIBRARY)
+      .sort((a, b) => a.position.y - b.position.y).map((n) => n.id)
+    : null
+})
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function settleNode(node: any) {
   const live = findNode(node.id)
@@ -321,8 +331,34 @@ function settleNode(node: any) {
   const laneBoundary = HEADER + (st?.data.posRatio ?? 0.5) * (h - HEADER - META)
 
   if (node.type === 'block') {
+    // Dragging OUT of the palette never moves the pin — it spawns an independent copy at the
+    // destination and the master snaps back into its slot (drag INTO/WITHIN the palette still
+    // reorders normally below).
+    const fromPalette = live.parentNode === LIBRARY
+    const copyOut = (make: () => void) => {
+      make()
+      repackLibrary(paletteDragOrder ?? undefined) // the master returns to its pre-drag slot
+      syncLibraryHidden()
+    }
     // Blocks belong only in the composition side (right of the Output column).
     if (overStation && rel.x >= outputW && rel.y >= HEADER && rel.y <= h - META) {
+      if (fromPalette) {
+        // Drag = place anywhere: the copy's polarity re-derives from the drop y (＋ is the strict one).
+        const polarity = rel.y < laneBoundary ? 'positive' : 'negative'
+        const lTop = polarity === 'negative' ? laneBoundary : HEADER
+        const lBot = polarity === 'negative' ? (h - META) : laneBoundary
+        const bw = 176, bh = 34
+        copyOut(() => addNodes([{
+          id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2,
+          position: rel, style: { width: `${bw}px` },
+          data: {
+            ...cloneBlockData(live.data), polarity,
+            xFrac: clamp01((rel.x - outputW) / Math.max(1, (stW - outputW) - bw)),
+            laneFrac: clamp01((rel.y - lTop) / Math.max(1, (lBot - lTop) - bh)),
+          },
+        }]))
+        return
+      }
       if (live.parentNode !== STATION) live.position = rel
       live.parentNode = STATION
       live.data.polarity = live.position.y < laneBoundary ? 'positive' : 'negative'
@@ -345,11 +381,17 @@ function settleNode(node: any) {
         const order = others.map((o) => o.id)
         order.splice(slot, 0, live.id)
         repackLibrary(order) // snaps the drop into the column — no free placement inside the widget
+      } else if (fromPalette) {
+        // Loose drop from the palette → an independent scratch copy; the pin stays.
+        copyOut(() => addNodes([{
+          id: newId('blk'), type: 'block', zIndex: 2,
+          position: { x: node.computedPosition.x, y: node.computedPosition.y },
+          style: { width: '176px' }, data: cloneBlockData(live.data),
+        }]))
+        return
       } else if (live.parentNode) {
         live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
-        const fromLibrary = live.parentNode === LIBRARY
         live.parentNode = undefined
-        if (fromLibrary) repackLibrary() // close the gap the departed block left
       }
     }
   } else if (node.type === 'image') {
@@ -416,6 +458,63 @@ function setWidgetBrowsing(active: boolean) {
 function syncLibraryHidden() {
   const hide = !!findNode(LIBRARY)?.data.collapsed || widgetBrowsing.value
   for (const n of nodes.value) if (n.parentNode === LIBRARY) n.hidden = hide
+}
+
+// ---- palette copy semantics: the pin is a palette master; every exit is an independent copy ----
+const isPaletteChild = (id: string) => findNode(id)?.parentNode === LIBRARY
+// block_ids pinned in the palette — the widget's browse pool excludes them (exclusive membership).
+const pinnedIds = computed(() => nodes.value
+  .filter((n) => n.type === 'block' && n.parentNode === LIBRARY && n.data?.block_id)
+  .map((n) => n.data.block_id as string))
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cloneBlockData(d: any) {
+  // Domain fields only — a copy is frozen content + the vault ref, never transient UI state.
+  return { category: d.category, name: d.name, text: d.text, polarity: d.polarity,
+    block_id: d.block_id, version: d.version, tags: [...(d.tags || [])], expanded: false }
+}
+
+// ✕ on a palette row: the block leaves the palette (its block_id returns to the browse pool).
+function unpinBlock(id: string) {
+  removeNodes([id])
+  nextTick(() => repackLibrary()) // close the gap once the node is gone
+}
+
+// ＋ on a palette row: an independent copy lands at the end of the station lane matching the
+// block's polarity (strict routing — drag if you want the other lane). The pin stays.
+function copyToStation(paletteId: string) {
+  const live = findNode(paletteId)
+  const st = findNode(STATION)
+  if (!live || !st) return
+  const { w: stW, h } = dims(st)
+  const outputW = (st.data.outputRatio ?? 0.3) * stW
+  const laneBoundary = HEADER + (st.data.posRatio ?? 0.5) * (h - HEADER - META)
+  const neg = live.data.polarity === 'negative'
+  const laneTop = neg ? laneBoundary : HEADER
+  const laneBot = neg ? (h - META) : laneBoundary
+  const lane = nodes.value.filter((n) => n.type === 'block' && n.parentNode === STATION
+    && (n.data.polarity === 'negative') === neg)
+  const bw = 176, bh = 34
+  const x = Math.min(appendX(lane.map((b) => ({ x: b.position.x, w: dims(b).w })), outputW), stW - bw - 8)
+  const y = Math.min(laneTop + 10, Math.max(laneTop, laneBot - bh - 4))
+  addNodes([{
+    id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2,
+    position: { x, y }, style: { width: `${bw}px` },
+    data: {
+      ...cloneBlockData(live.data),
+      xFrac: clamp01((x - outputW) / Math.max(1, (stW - outputW) - bw)),
+      laneFrac: clamp01((y - laneTop) / Math.max(1, (laneBot - laneTop) - bh)),
+    },
+  }])
+}
+
+// A "Pinned ✓" ghost clicked in the widget's search → flash the palette master.
+const flashIds = ref<Set<string>>(new Set())
+function revealPaletteBlock(blockId: string) {
+  const n = nodes.value.find((x) => x.type === 'block' && x.parentNode === LIBRARY && x.data?.block_id === blockId)
+  if (!n) return
+  flashIds.value = new Set([n.id])
+  setTimeout(() => { flashIds.value = new Set() }, 1200)
 }
 
 // A block "used" from the Library tab lands in the canvas Library zone, keeping its vault link
@@ -700,10 +799,10 @@ function startName(data: any, e: MouseEvent) {
           <template v-if="data.role === 'library'">
             <NodeResizer v-if="!data.collapsed" :min-width="220" :min-height="180" :is-visible="selected"
               color="var(--accent)" @resize="repackLibrary()" />
-            <PromptWidget :data="data" :selected="selected" :count="childCount(id)"
+            <PromptWidget :data="data" :selected="selected" :count="childCount(id)" :pinned-ids="pinnedIds"
               @toggle="toggleLibraryCollapse" @open-library="emit('navigate', 'library')"
               @open-settings="emit('navigate', 'settings')" @pin="insertLibraryBlock($event)"
-              @browse="setWidgetBrowsing" />
+              @reveal="revealPaletteBlock" @browse="setWidgetBrowsing" />
           </template>
           <template v-else>
             <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />
@@ -720,7 +819,7 @@ function startName(data: any, e: MouseEvent) {
 
         <template #node-block="{ id, data, selected }">
           <NodeResizer :min-width="150" :min-height="34" :is-visible="selected" color="var(--accent)" />
-          <div class="block" :class="{ neg: data.polarity === 'negative', expanded: data.expanded }" :style="{ '--cat': catColor(data.category) }">
+          <div class="block" :class="{ neg: data.polarity === 'negative', expanded: data.expanded, flash: flashIds.has(id) }" :style="{ '--cat': catColor(data.category) }">
             <div class="bhd">
               <span class="cdot"></span>
               <input v-if="data.editing" class="bname bname-input nodrag" v-model="data.name"
@@ -729,9 +828,14 @@ function startName(data: any, e: MouseEvent) {
               <button class="bicon nodrag" :title="data.polarity === 'negative' ? 'negative' : 'positive'"
                 @click="data.polarity = data.polarity === 'negative' ? 'positive' : 'negative'">{{ data.polarity === 'negative' ? '−' : '＋' }}</button>
               <button class="bicon nodrag" @click="toggleExpand(id)">{{ data.expanded ? '▾' : '▸' }}</button>
+              <button v-if="isPaletteChild(id)" class="bicon pal-x nodrag" title="Unpin from quick access"
+                @click="unpinBlock(id)">✕</button>
             </div>
             <textarea v-if="data.expanded" class="btext nodrag nowheel" v-model="data.text" placeholder="tags…"></textarea>
             <div v-else class="bprev">{{ data.text || 'empty' }}</div>
+            <button v-if="isPaletteChild(id)" class="palplus nodrag"
+              :title="`Copy into the ${data.polarity === 'negative' ? 'negative' : 'positive'} lane`"
+              @click="copyToStation(id)">＋</button>
           </div>
         </template>
       </VueFlow>
@@ -866,8 +970,18 @@ function startName(data: any, e: MouseEvent) {
 .zonehd .anchor-tag{margin-left:auto;font-size:10px;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:20px}
 .zhint{padding:16px;font-size:12px;color:var(--text-faint);text-align:center}
 
-.block{width:100%;height:100%;min-height:34px;display:flex;flex-direction:column;border-radius:8px;border:1px solid var(--border);border-left:3px solid var(--cat);background:var(--surface-2);box-shadow:0 1px 4px rgba(0,0,0,.2);overflow:hidden}
+.block{position:relative;width:100%;height:100%;min-height:34px;display:flex;flex-direction:column;border-radius:8px;border:1px solid var(--border);border-left:3px solid var(--cat);background:var(--surface-2);box-shadow:0 1px 4px rgba(0,0,0,.2);overflow:hidden}
 .block.neg{border-left-color:#e2483d}
+.block.flash{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
+/* palette-only affordances: ✕ unpins, ＋ copies into the station lane — both hover-revealed */
+.block .pal-x{opacity:0;transition:opacity .1s}
+.block:hover .pal-x{opacity:1}
+.block .pal-x:hover{color:var(--danger,#e2483d);border-color:var(--danger,#e2483d)}
+.palplus{position:absolute;right:5px;bottom:5px;opacity:0;border:1px solid var(--border-strong);
+  background:var(--surface-1);color:var(--text-dim);border-radius:5px;width:20px;height:20px;font-size:12px;
+  line-height:1;cursor:pointer;transition:opacity .1s;z-index:1}
+.block:hover .palplus{opacity:1}
+.palplus:hover{color:var(--accent);border-color:var(--accent)}
 .bhd{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:6px 8px}
 .cdot{width:8px;height:8px;border-radius:50%;background:var(--cat);flex-shrink:0}
 .block.neg .cdot{background:#e2483d}

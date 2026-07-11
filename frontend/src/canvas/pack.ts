@@ -34,3 +34,9 @@ export function insertionIndex(rows: { y: number; h: number }[], dropY: number):
   const i = rows.findIndex((r) => dropY < r.y + r.h / 2)
   return i === -1 ? rows.length : i
 }
+
+// X for appending a block at the end of a station lane's x-order — prompt order stays predictable
+// when the widget's ＋ copies a palette block into the lane.
+export function appendX(existing: { x: number; w: number }[], laneStartX: number, gap = 10): number {
+  return existing.length ? Math.max(...existing.map((b) => b.x + b.w)) + gap : laneStartX + 12
+}

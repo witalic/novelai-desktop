@@ -5,15 +5,16 @@
  * filters are transient by design: a reopened work always starts in Quick access. */
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { listBlocks, listCategories, listTags } from '../api'
-import { usePromptBrowse } from '../composables/usePromptBrowse'
+import { partitionPinned, usePromptBrowse } from '../composables/usePromptBrowse'
 import type { LibraryBlock, ZoneNode } from '../types'
 
-const props = defineProps<{ data: ZoneNode['data']; selected: boolean; count: number }>()
+const props = defineProps<{ data: ZoneNode['data']; selected: boolean; count: number; pinnedIds: string[] }>()
 const emit = defineEmits<{
   toggle: []
   'open-library': []
   'open-settings': []
   pin: [LibraryBlock]
+  reveal: [string] // a "Pinned ✓" ghost was clicked — flash its palette master (block_id)
   browse: [boolean] // CanvasBoard hides the palette's child nodes while browsing
 }>()
 
@@ -79,7 +80,9 @@ onUnmounted(() => {
   dispose()
 })
 
-// Pin → CanvasBoard materialises a palette node; the row flashes a ✓ meanwhile.
+// Pin → CanvasBoard materialises a palette node; the row shows its ✓ for a beat, THEN leaves the
+// pool (a just-pinned id is exempt from exclusion until the flash ends — otherwise the row would
+// vanish under the cursor with no feedback).
 const justPinned = ref<Record<string, boolean>>({})
 function pin(b: LibraryBlock) {
   emit('pin', b)
@@ -89,6 +92,22 @@ function pin(b: LibraryBlock) {
     void _
     justPinned.value = rest
   }, 900)
+}
+
+// Exclusive membership: pinned blocks leave the pool; an active search shows them as ghosts.
+const pinnedSet = computed(() => {
+  const s = new Set(props.pinnedIds)
+  for (const id of Object.keys(justPinned.value)) s.delete(id)
+  return s
+})
+const parts = computed(() => partitionPinned(items.value, pinnedSet.value, !!search.value.trim()))
+// The backend total counts the whole vault — subtract the pinned rows found in loaded pages so
+// the footer reads as "the pool" (exact once every page is loaded).
+const poolTotal = computed(() => Math.max(parts.value.visible.length, total.value - (items.value.length - parts.value.visible.length)))
+
+function revealPinned(b: LibraryBlock) {
+  mode.value = 'stash'
+  emit('reveal', b.id)
 }
 
 function onListScroll(e: Event) {
@@ -175,13 +194,13 @@ function onListScroll(e: Event) {
           <template v-else-if="loading && !items.length">
             <div v-for="i in 3" :key="i" class="skel"></div>
           </template>
-          <template v-else-if="!items.length">
+          <template v-else-if="!parts.visible.length && !parts.ghosts.length">
             <div class="pwhint">No blocks match.<br />
               <button class="plink" @click="clearFilters()">Clear filters</button>
             </div>
           </template>
           <template v-else>
-            <div v-for="b in items" :key="b.id" class="brow" :style="{ '--cat': catColor(b.category) }">
+            <div v-for="b in parts.visible" :key="b.id" class="brow" :style="{ '--cat': catColor(b.category) }">
               <div class="r1">
                 <span class="bname">{{ b.name }}</span>
                 <span class="pol" :class="{ neg: b.polarity === 'negative' }">{{ b.polarity === 'negative' ? '−' : '＋' }}</span>
@@ -190,10 +209,21 @@ function onListScroll(e: Event) {
               <button class="act" :class="{ done: justPinned[b.id] }" title="Pin into quick access"
                 @click="pin(b)">{{ justPinned[b.id] ? '✓' : 'Pin' }}</button>
             </div>
+            <!-- search never lies: pinned matches show greyed-out; click = jump to the palette master -->
+            <div v-for="b in parts.ghosts" :key="`pinned-${b.id}`" class="brow pinned"
+              :style="{ '--cat': catColor(b.category) }" title="Already in quick access — click to show it"
+              @click="revealPinned(b)">
+              <div class="r1">
+                <span class="bname">{{ b.name }}</span>
+                <span class="pol" :class="{ neg: b.polarity === 'negative' }">{{ b.polarity === 'negative' ? '−' : '＋' }}</span>
+              </div>
+              <div class="btext">{{ b.text }}</div>
+              <span class="pinchip">Pinned ✓</span>
+            </div>
           </template>
         </div>
         <div class="pwfoot">
-          <span>{{ items.length }} of {{ total }} blocks</span>
+          <span>{{ parts.visible.length }} of {{ poolTotal }} blocks</span>
           <a class="plib nodrag" @pointerdown.stop @click.stop="$emit('open-library')">Open Library ↗</a>
         </div>
       </template>
@@ -287,6 +317,9 @@ function onListScroll(e: Event) {
 .brow:hover .act{opacity:1}
 .brow .act:hover{color:var(--accent);border-color:var(--accent)}
 .brow .act.done{color:var(--ok,#3aa675);border-color:var(--ok,#3aa675);opacity:1}
+.brow.pinned{opacity:.55;cursor:pointer}
+.brow.pinned:hover{opacity:.8}
+.pinchip{position:absolute;right:8px;bottom:7px;font-size:10px;font-weight:700;color:var(--ok,#3aa675)}
 .skel{flex-shrink:0;height:40px;border-radius:8px;background:linear-gradient(90deg,var(--surface-2),var(--surface-3),var(--surface-2));
   background-size:200% 100%;animation:sh 1.4s ease infinite}
 @keyframes sh{to{background-position:-200% 0}}

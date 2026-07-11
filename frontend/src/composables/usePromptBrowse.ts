@@ -15,6 +15,15 @@ export interface BrowseDeps {
 const PER_PAGE = 48
 const DEBOUNCE_MS = 300
 
+/* Exclusive membership (pure, unit-tested): pinned blocks leave the browse pool. With an active
+ * search they return greyed-out as "Pinned ✓" ghosts — search never pretends a block the user
+ * remembers doesn't exist; without a query they are simply absent. */
+export function partitionPinned(items: LibraryBlock[], pinnedIds: ReadonlySet<string>, searchActive: boolean) {
+  const visible = items.filter((b) => !pinnedIds.has(b.id))
+  const ghosts = searchActive ? items.filter((b) => pinnedIds.has(b.id)) : []
+  return { visible, ghosts }
+}
+
 export function usePromptBrowse(deps: BrowseDeps) {
   const search = ref('')
   const category = ref('') // '' = all

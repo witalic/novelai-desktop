@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { insertionIndex, packColumn, packedHeight, PACK_GAP, PACK_TOP, PACK_X } from './pack'
+import { appendX, insertionIndex, packColumn, packedHeight, PACK_GAP, PACK_TOP, PACK_X } from './pack'
 
 describe('packColumn', () => {
   it('stacks rows top-to-bottom in palette order with a constant gap', () => {
@@ -41,5 +41,14 @@ describe('insertionIndex', () => {
   })
   it('empty palette → slot 0', () => {
     expect(insertionIndex([], 123)).toBe(0)
+  })
+})
+
+describe('appendX', () => {
+  it('appends after the rightmost block in the lane', () => {
+    expect(appendX([{ x: 250, w: 176 }, { x: 440, w: 176 }], 240)).toBe(440 + 176 + 10)
+  })
+  it('starts just inside an empty lane', () => {
+    expect(appendX([], 240)).toBe(252)
   })
 })

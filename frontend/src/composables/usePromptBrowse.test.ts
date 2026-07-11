@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
-import { usePromptBrowse, type BrowseDeps } from './usePromptBrowse'
+import { partitionPinned, usePromptBrowse, type BrowseDeps } from './usePromptBrowse'
 import type { BlocksPage, LibraryBlock } from '../types'
 
 /* The widget's browse data layer: race guard, search debounce, page-append, no-vault state. */
@@ -84,5 +84,22 @@ describe('usePromptBrowse', () => {
     await tick(); await tick()
     expect(b.noVault.value).toBe(true)
     expect(b.items.value).toEqual([])
+  })
+})
+
+describe('partitionPinned (exclusive membership + "search never lies")', () => {
+  const items = [block('a'), block('b'), block('c')]
+  const pinned = new Set(['b'])
+
+  it('default listing simply excludes pinned blocks', () => {
+    const { visible, ghosts } = partitionPinned(items, pinned, false)
+    expect(visible.map((x) => x.id)).toEqual(['a', 'c'])
+    expect(ghosts).toEqual([])
+  })
+
+  it('an active search surfaces pinned matches as ghosts instead of hiding them', () => {
+    const { visible, ghosts } = partitionPinned(items, pinned, true)
+    expect(visible.map((x) => x.id)).toEqual(['a', 'c'])
+    expect(ghosts.map((x) => x.id)).toEqual(['b'])
   })
 })
