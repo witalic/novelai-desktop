@@ -405,6 +405,17 @@ def save_category(settings: Settings, body: SaveCategory) -> CategoryDoc:
     return cat
 
 
+def default_categories() -> list[CategoryDoc]:
+    """The built-in category set — drives the 'restore defaults' picker (shows which are missing)."""
+    return [c.model_copy() for c in catalog.DEFAULTS]
+
+
+def restore_categories(settings: Settings, slugs: list[str]) -> dict:
+    """Un-tombstone deleted built-in categories the user wants back."""
+    _guard_no_move()
+    return {"restored": catalog.restore(_vault(settings), slugs)}
+
+
 def image_examples(settings: Settings, tags: list[str], limit: int) -> list[GalleryItem]:
     vault = _vault(settings)
     conn = index.open_index(vault)

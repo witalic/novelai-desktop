@@ -158,6 +158,10 @@ class SaveCategory(BaseModel):
     slug: str | None = None  # set to update an existing category (e.g. recolor) without re-deriving the slug
 
 
+class RestoreCategories(BaseModel):
+    slugs: list[str]  # built-in category slugs to un-tombstone (bring back after deletion)
+
+
 class BlocksPage(BaseModel):
     items: list[BlockDoc]
     total: int

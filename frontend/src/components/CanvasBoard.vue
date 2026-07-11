@@ -58,9 +58,16 @@ const HEADER = 44
 const META = 66
 const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
+// Offline fallback colors (vault categories override once loaded); mirror catalog.py DEFAULTS.
 const CATS: Record<string, string> = {
-  style: '#6e5dc6', character: '#0c66e4', pose: '#ae4787', environment: '#1f845a',
-  lighting: '#b65c02', camera: '#12b5a6', outfit: '#d4537e', nsfw: '#c2255c', negative: '#e2483d', custom: '#738496',
+  character: '#0c66e4',
+  body: '#c77d54', 'body-skin': '#e0a878', 'body-hair': '#9c6b3f', 'body-face': '#d99578', 'body-state': '#cf7a63',
+  outfit: '#d4537e', 'outfit-fabric': '#c06a97', 'outfit-accessory': '#b3789e',
+  pose: '#ae4787', action: '#9a5ba6', composition: '#7f5aa0',
+  'scene-environment': '#1f845a', 'scene-lighting': '#b65c02', 'scene-camera': '#12b5a6', 'scene-effects': '#2f9e8f', 'scene-color': '#3f9d6b',
+  style: '#6e5dc6',
+  nsfw: '#c2255c', 'nsfw-act': '#a61e4d', 'nsfw-fluids': '#d6499a',
+  negative: '#e2483d', custom: '#738496',
 }
 // Bumped whenever the vault's Library may have changed under the widget (returning to Generate,
 // opening a work) so the prompt widget re-reads category colors/counts and its pins' versions —

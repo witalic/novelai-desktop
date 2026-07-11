@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ApiError, deleteBlock, deleteCategory, listBlocks, listCategories, listExamples, listTags, saveBlock, saveCategory, type ExampleImage } from '../api'
+import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listExamples, listTags, restoreCategories, saveBlock, saveCategory, type ExampleImage } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
@@ -76,6 +76,33 @@ onActivated(refreshAll)
 // Bulk import (modal). On success, reload so the imported blocks + any new categories show.
 const importing = ref(false)
 async function onImportDone() { importing.value = false; await refreshAll() }
+
+// Restore built-in categories the user deleted — a dropdown listing every default, present ones disabled.
+const restoreOpen = ref(false)
+const defaults = ref<{ slug: string; name: string; color: string }[]>([])
+const restoreSel = ref<Set<string>>(new Set())
+const presentSlugs = computed(() => new Set(categories.value.map((c) => c.slug)))
+async function openRestore() {
+  restoreSel.value = new Set()
+  if (!defaults.value.length) {
+    try { defaults.value = await defaultCategories() } catch (e) { push(e instanceof Error ? e.message : 'Failed', 'err'); return }
+  }
+  restoreOpen.value = true
+}
+function toggleRestore(slug: string) {
+  const s = new Set(restoreSel.value)
+  s.has(slug) ? s.delete(slug) : s.add(slug)
+  restoreSel.value = s
+}
+async function doRestore() {
+  if (!restoreSel.value.size) return
+  try {
+    const res = await restoreCategories([...restoreSel.value])
+    restoreOpen.value = false
+    await refreshAll()
+    push(`Restored ${res.restored.length} categor${res.restored.length === 1 ? 'y' : 'ies'}`, 'ok')
+  } catch (e) { push(e instanceof Error ? e.message : 'Restore failed', 'err') }
+}
 
 function selectCategory(slug: string) {
   if (activeCategory.value === slug) return
@@ -346,7 +373,27 @@ async function removeBlock(b: LibraryBlock) {
           :style="catsH !== null ? { height: catsH + 'px' } : undefined" ref="catsPaneEl">
           <div class="railhead">
             <span>Categories</span>
+            <button class="addcat" title="Restore default categories" @click="openRestore()">⟲</button>
             <button class="addcat" title="New category" @click="openCreateCategory()">＋</button>
+            <template v-if="restoreOpen">
+              <div class="restore-back" @click="restoreOpen = false"></div>
+              <div class="restorepop" @click.stop>
+                <div class="rp-hd">Restore default categories</div>
+                <div class="rp-list">
+                  <label v-for="d in defaults" :key="d.slug" class="rp-item" :class="{ have: presentSlugs.has(d.slug) }">
+                    <input type="checkbox" :disabled="presentSlugs.has(d.slug)"
+                      :checked="presentSlugs.has(d.slug) || restoreSel.has(d.slug)" @change="toggleRestore(d.slug)" />
+                    <span class="cdot" :style="{ background: d.color }"></span>
+                    <span class="rp-name">{{ d.name }}</span>
+                    <span v-if="presentSlugs.has(d.slug)" class="rp-tag">present</span>
+                  </label>
+                </div>
+                <div class="rp-ft">
+                  <button class="rp-cancel" @click="restoreOpen = false">Cancel</button>
+                  <button class="rp-ok" :disabled="!restoreSel.size" @click="doRestore">Restore{{ restoreSel.size ? ` ${restoreSel.size}` : '' }}</button>
+                </div>
+              </div>
+            </template>
           </div>
           <div class="catrow" :class="{ on: activeCategory === '' }" @click="selectCategory('')">
             <span class="cdot" style="background:var(--text-dim)"></span><span class="cn">All blocks</span><span class="cc">{{ allCount }}</span>
@@ -550,9 +597,29 @@ async function removeBlock(b: LibraryBlock) {
 .rail-split::before{content:"";position:absolute;left:10px;right:10px;top:4px;height:1px;background:var(--border)}
 .rail-split:hover::before{background:var(--accent);height:2px;top:3px}
 .railgroup{font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:4px 8px 6px}
-.railhead{display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:4px 6px 6px 8px}
+.railhead{position:relative;display:flex;align-items:center;gap:2px;font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:4px 6px 6px 8px}
+.railhead > span:first-child{margin-right:auto}
 .railhead .addcat{border:0;background:transparent;color:var(--text-faint);font-size:15px;line-height:1;cursor:pointer;padding:0 4px;border-radius:4px}
 .railhead .addcat:hover{color:var(--accent);background:var(--surface-3)}
+.restore-back{position:fixed;inset:0;z-index:40}
+.restorepop{position:absolute;top:100%;right:6px;z-index:41;width:244px;margin-top:4px;background:var(--surface-1);
+  border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 12px 32px rgba(0,0,0,.45);
+  display:flex;flex-direction:column;text-transform:none;letter-spacing:0}
+.rp-hd{font-size:12px;font-weight:600;color:var(--text-dim);padding:10px 12px 6px}
+.rp-list{max-height:280px;overflow:auto;padding:0 6px 4px;display:flex;flex-direction:column;gap:1px}
+.rp-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;font-weight:500;color:var(--text-dim)}
+.rp-item:hover{background:var(--surface-3);color:var(--text)}
+.rp-item.have{opacity:.5;cursor:default}.rp-item.have:hover{background:transparent}
+.rp-item input{accent-color:var(--accent);cursor:inherit}
+.rp-item .cdot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+.rp-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp-tag{font-size:9px;font-weight:700;text-transform:uppercase;color:var(--text-faint)}
+.rp-ft{display:flex;gap:8px;justify-content:flex-end;padding:8px 12px;border-top:1px solid var(--border)}
+.rp-ft button{border-radius:var(--radius);font:inherit;font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer}
+.rp-cancel{border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim)}
+.rp-cancel:hover{color:var(--text)}
+.rp-ok{border:0;background:var(--accent);color:var(--on-accent)}
+.rp-ok:disabled{opacity:.5;cursor:default}
 .catrow{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--radius);color:var(--text-dim);font-size:13px;font-weight:500;margin-bottom:1px;cursor:pointer}
 .catrow .cdot{width:8px;height:8px;border-radius:2px;background:var(--cat,#738496);flex-shrink:0}
 .catrow .cn{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

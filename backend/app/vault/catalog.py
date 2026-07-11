@@ -16,16 +16,37 @@ from app.vault.models import CategoryDoc
 
 log = logging.getLogger(__name__)
 
-# Built-in categories (slug → name/color). Colors mirror the canvas block palette.
+# Built-in categories (slug → name/color), grouped by prefix so the rail clusters by axis.
+# Colors run in hue families per group (body = warm, outfit = pink, scene = cool, nsfw = crimson).
 DEFAULTS: list[CategoryDoc] = [
-    CategoryDoc(slug="style", name="Style", color="#6e5dc6"),
     CategoryDoc(slug="character", name="Character", color="#0c66e4"),
-    CategoryDoc(slug="pose", name="Pose", color="#ae4787"),
-    CategoryDoc(slug="environment", name="Environment", color="#1f845a"),
-    CategoryDoc(slug="lighting", name="Lighting", color="#b65c02"),
-    CategoryDoc(slug="camera", name="Camera", color="#12b5a6"),
+    # body / subject
+    CategoryDoc(slug="body", name="Body", color="#c77d54"),
+    CategoryDoc(slug="body-skin", name="Body - Skin", color="#e0a878"),
+    CategoryDoc(slug="body-hair", name="Body - Hair", color="#9c6b3f"),
+    CategoryDoc(slug="body-face", name="Body - Face", color="#d99578"),
+    CategoryDoc(slug="body-state", name="Body - State", color="#cf7a63"),
+    # wardrobe
     CategoryDoc(slug="outfit", name="Outfit", color="#d4537e"),
+    CategoryDoc(slug="outfit-fabric", name="Outfit - Fabric", color="#c06a97"),
+    CategoryDoc(slug="outfit-accessory", name="Outfit - Accessory", color="#b3789e"),
+    # motion / framing
+    CategoryDoc(slug="pose", name="Pose", color="#ae4787"),
+    CategoryDoc(slug="action", name="Action", color="#9a5ba6"),
+    CategoryDoc(slug="composition", name="Composition", color="#7f5aa0"),
+    # scene
+    CategoryDoc(slug="scene-environment", name="Scene - Environment", color="#1f845a"),
+    CategoryDoc(slug="scene-lighting", name="Scene - Lighting", color="#b65c02"),
+    CategoryDoc(slug="scene-camera", name="Scene - Camera", color="#12b5a6"),
+    CategoryDoc(slug="scene-effects", name="Scene - Effects", color="#2f9e8f"),
+    CategoryDoc(slug="scene-color", name="Scene - Color", color="#3f9d6b"),
+    # style
+    CategoryDoc(slug="style", name="Style", color="#6e5dc6"),
+    # nsfw (also carry an `nsfw` tag)
     CategoryDoc(slug="nsfw", name="NSFW", color="#c2255c"),
+    CategoryDoc(slug="nsfw-act", name="NSFW - Act", color="#a61e4d"),
+    CategoryDoc(slug="nsfw-fluids", name="NSFW - Fluids", color="#d6499a"),
+    # meta
     CategoryDoc(slug="negative", name="Negative", color="#e2483d"),
     CategoryDoc(slug="custom", name="Custom", color="#738496"),
 ]
@@ -82,6 +103,17 @@ def upsert(vault: Path, cat: CategoryDoc) -> None:
     overrides.append(cat.model_dump())
     hidden.discard(cat.slug)
     _write_raw(vault, overrides, hidden)
+
+
+def restore(vault: Path, slugs: list[str]) -> list[str]:
+    """Un-tombstone the given built-in categories (bring back deleted defaults). Returns those restored."""
+    overrides, hidden = _read_raw(vault)
+    restored = [s for s in slugs if s in DEFAULT_SLUGS and s in hidden]
+    if restored:
+        for s in restored:
+            hidden.discard(s)
+        _write_raw(vault, overrides, hidden)
+    return restored
 
 
 def remove(vault: Path, slug: str) -> bool:

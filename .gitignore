@@ -21,6 +21,8 @@ out/
 # User data — never versioned (root-anchored so backend/app/vault/ source is NOT ignored)
 /vault/
 /generated/
+# Subagent-generated blocks staged for import (one folder per generation session)
+/generated-blocks/
 
 # Design mockup sample images (generated art, not source)
 design/*.png

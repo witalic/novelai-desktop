@@ -226,3 +226,19 @@ async def test_blocks_survive_index_rebuild(client):
     await ac.post("/api/vault/library/blocks", json=_block())
     (vault / ".index.sqlite").unlink()
     assert (await ac.get("/api/vault/library/blocks")).json()["total"] == 1
+
+
+async def test_default_categories_and_restore(client):
+    ac, _ = client
+    # The defaults endpoint lists the whole built-in set (incl. the prefixed groups).
+    slugs = {c["slug"] for c in (await ac.get("/api/vault/library/categories/defaults")).json()}
+    assert {"body-skin", "outfit-fabric", "scene-lighting", "nsfw-act"} <= slugs
+    # Delete a built-in → it drops out of the live list…
+    await ac.delete("/api/vault/library/categories/pose")
+    present = {c["slug"] for c in (await ac.get("/api/vault/library/categories")).json()}
+    assert "pose" not in present
+    # …restoring it brings it back (and ignores non-built-in / already-present slugs).
+    res = (await ac.post("/api/vault/library/categories/restore", json={"slugs": ["pose", "style", "made-up"]})).json()
+    assert res["restored"] == ["pose"]
+    present2 = {c["slug"] for c in (await ac.get("/api/vault/library/categories")).json()}
+    assert "pose" in present2

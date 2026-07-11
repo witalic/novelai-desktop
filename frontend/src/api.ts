@@ -107,6 +107,16 @@ export async function listCategories(tags: string[] = []): Promise<CategoryCount
   return resp.json()
 }
 
+// The full built-in category set — the "restore" picker diffs it against the live categories.
+export async function defaultCategories(): Promise<{ slug: string; name: string; color: string }[]> {
+  return jsonOrThrow(await fetch('/api/vault/library/categories/defaults'), 'Failed to read default categories')
+}
+export async function restoreCategories(slugs: string[]): Promise<{ restored: string[] }> {
+  return jsonOrThrow(await fetch('/api/vault/library/categories/restore', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slugs }),
+  }), 'Restore failed')
+}
+
 export async function saveCategory(name: string, color: string, slug?: string): Promise<{ slug: string; name: string; color: string }> {
   const resp = await fetch('/api/vault/library/categories', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
