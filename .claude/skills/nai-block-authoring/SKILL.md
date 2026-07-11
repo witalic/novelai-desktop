@@ -41,32 +41,59 @@ a fresh one. Shape:
 
 ## Categories
 
-Use the **standard categories** by default; pick the one that names the block's primary role:
+Pick the slug that names the block's primary role. Slugs are prefixed by group (`body-*`, `outfit-*`,
+`scene-*`, `nsfw-*`):
 
-- `style` — art style / rendering / artist (e.g. `nixeu style, painterly, semi-realistic`).
-- `character` — a specific character or person and their defining traits.
-- `pose` — body pose / posture / gesture (`kneeling, arms crossed`).
-- `outfit` — clothing, lingerie, accessories.
-- `environment` — setting / location / background (`classroom, forest, bedroom`).
-- `lighting` — light setup (`rim lighting, backlight, soft shadows`).
-- `camera` — shot / framing / angle / lens (`from above, close-up, depth of field, bokeh`).
-- `negative` — undesired-content blocks (always `polarity: "negative"`).
+| slug | for |
+|---|---|
+| `character` | a specific character / person + defining traits |
+| `body` | body type / physique / proportions / anatomy |
+| `body-skin` | skin tone / finish / rendering (porcelain, glossy, tan, subsurface) |
+| `body-hair` | hairstyle / color / detail |
+| `body-face` | face shape, eyes, expression |
+| `body-state` | physical states — wet, blushing, sweat, steam, tears, flushed |
+| `outfit` | garments / clothing sets / lingerie |
+| `outfit-fabric` | material / texture (silk, lace, satin, wet fabric) |
+| `outfit-accessory` | jewelry, glasses, hats, worn props |
+| `pose` | body posture / gesture |
+| `action` | activity / interaction (running, embracing) |
+| `composition` | subject count / framing (1girl, solo, duo) |
+| `scene-environment` | location / background / setting |
+| `scene-lighting` | light setup / mood |
+| `scene-camera` | shot / angle / lens / framing |
+| `scene-effects` | visual effects (bokeh, chromatic aberration, depth of field, particles) |
+| `scene-color` | color palette / grading |
+| `style` | art style / rendering / artist signature |
+| `nsfw`, `nsfw-act`, `nsfw-fluids` | explicit content — see NSFW below |
+| `negative` | undesired-content blocks (always `polarity: "negative"`) |
 
 Rules:
-1. **Misfit → `custom`.** If a block is a coherent unit but none of the standard categories fit, put it
-   in `custom` (still a *logical* block, not a dumping ground — keep it focused).
-2. **Explicit request wins.** If the user asks for a specific category (even a new one), use that slug
-   verbatim — new categories are created automatically on import (`slugify(name)`).
+1. **Misfit → `custom`.** A coherent unit that fits none of the above goes in `custom` (still a focused
+   block, not a dumping ground).
+2. **Explicit request wins.** If the user asks for a specific category (even a new slug), use it verbatim —
+   new categories are created automatically on import.
+
+## Naming: style-specific vs general
+
+A block is one of two kinds — name and tag it accordingly:
+- **Style-specific** — the block belongs to / defines one particular style (its anchor, its signature
+  rendering choices). Prefix the `name` with the style and tag it: `"Nixeu — skin rendering"`, tag `nixeu`.
+- **General / reusable across styles** — a standard, swappable option (a common lighting mood like *golden
+  hour*, a generic material like *lace*, a generic body-state like *wet*, a generic effect). Give it a
+  **neutral name** (`"Golden hour"`, `"Lace & sheer fabric"`) and **do NOT** add the style name or style tag.
+
+When unsure: if a different style could reuse the block unchanged, it's general.
 
 ## NSFW
 
-NSFW blocks go in the dedicated **`nsfw` category** (not the standard semantic one), so they can be
-filtered/isolated as a group. Preserve the semantic type as a tag instead:
-- `category`: `"nsfw"`.
-- `tags`: include **`nsfw`** AND the **semantic type** the block would otherwise be (`pose`, `outfit`,
-  `character`, …) so it's still findable by kind — plus the usual descriptors.
+Most NSFW content maps to a **standard semantic category** — put it there and add an **`nsfw` tag**:
+- explicit anatomy / breasts → `body` + `nsfw`; a lewd pose → `pose` + `nsfw`; revealing lingerie →
+  `outfit` + `nsfw`.
 
-Example: an explicit pose block → `category: "nsfw"`, `tags: ["nsfw", "pose", …]`.
+Use a dedicated NSFW **category** only for content that doesn't fit a standard one:
+- `nsfw-act` — sexual acts. `nsfw-fluids` — fluids. `nsfw` — general / uncategorisable explicit.
+
+Every NSFW block — whatever its category — carries the **`nsfw` tag**.
 
 ## Tags = top-level characteristics
 
@@ -83,7 +110,8 @@ Keep it to a handful of meaningful tags per block — enough to find and group i
 
 - [ ] One focused concept per block; big scenes split into several blocks.
 - [ ] `text` follows nai-prompt-writing (visual tags, weights, no duplication).
-- [ ] Category = the block's primary role; `custom` only when nothing standard fits; honor an explicit request.
-- [ ] NSFW blocks use `category: "nsfw"` and carry `nsfw` + the semantic type in `tags`.
+- [ ] Category = the block's primary role (prefixed slug); `custom` only when nothing fits; explicit request wins.
+- [ ] Style-specific blocks carry the style name + tag; general/reusable blocks have neutral names and no style tag.
+- [ ] NSFW → the semantic category (`body`/`pose`/`outfit`/…) or `nsfw`/`nsfw-act`/`nsfw-fluids`; always an `nsfw` tag.
 - [ ] `tags` are broad top-level descriptors (character/source/setting/palette/outfit/state/pose/style).
 - [ ] `polarity` correct; no `id` field.
