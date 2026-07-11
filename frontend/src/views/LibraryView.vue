@@ -78,7 +78,10 @@ const importing = ref(false)
 async function onImportDone() { importing.value = false; await refreshAll() }
 
 // Restore built-in categories the user deleted — a dropdown listing every default, present ones disabled.
+// Teleported to <body> and fixed-positioned so the narrow rail's overflow/stacking can't clip it.
 const restoreOpen = ref(false)
+const restoreBtn = ref<HTMLElement | null>(null)
+const restorePos = ref({ top: 0, left: 0 })
 const defaults = ref<{ slug: string; name: string; color: string }[]>([])
 const restoreSel = ref<Set<string>>(new Set())
 const presentSlugs = computed(() => new Set(categories.value.map((c) => c.slug)))
@@ -86,6 +89,14 @@ async function openRestore() {
   restoreSel.value = new Set()
   if (!defaults.value.length) {
     try { defaults.value = await defaultCategories() } catch (e) { push(e instanceof Error ? e.message : 'Failed', 'err'); return }
+  }
+  const r = restoreBtn.value?.getBoundingClientRect()
+  if (r) {
+    const w = 244 // popover width
+    const navRight = document.querySelector('.sidebar')?.getBoundingClientRect().right ?? 0
+    let left = Math.max(r.right - w, navRight + 4) // right-align to the button, but never over the nav
+    left = Math.min(left, window.innerWidth - w - 8) // keep inside the viewport
+    restorePos.value = { top: r.bottom + 4, left: Math.max(8, left) }
   }
   restoreOpen.value = true
 }
@@ -373,27 +384,29 @@ async function removeBlock(b: LibraryBlock) {
           :style="catsH !== null ? { height: catsH + 'px' } : undefined" ref="catsPaneEl">
           <div class="railhead">
             <span>Categories</span>
-            <button class="addcat" title="Restore default categories" @click="openRestore()">⟲</button>
+            <button ref="restoreBtn" class="addcat" title="Restore default categories" @click="openRestore()">⟲</button>
             <button class="addcat" title="New category" @click="openCreateCategory()">＋</button>
-            <template v-if="restoreOpen">
-              <div class="restore-back" @click="restoreOpen = false"></div>
-              <div class="restorepop" @click.stop>
-                <div class="rp-hd">Restore default categories</div>
-                <div class="rp-list">
-                  <label v-for="d in defaults" :key="d.slug" class="rp-item" :class="{ have: presentSlugs.has(d.slug) }">
-                    <input type="checkbox" :disabled="presentSlugs.has(d.slug)"
-                      :checked="presentSlugs.has(d.slug) || restoreSel.has(d.slug)" @change="toggleRestore(d.slug)" />
-                    <span class="cdot" :style="{ background: d.color }"></span>
-                    <span class="rp-name">{{ d.name }}</span>
-                    <span v-if="presentSlugs.has(d.slug)" class="rp-tag">present</span>
-                  </label>
+            <Teleport to="body">
+              <template v-if="restoreOpen">
+                <div class="restore-back" @click="restoreOpen = false"></div>
+                <div class="restorepop" :style="{ top: restorePos.top + 'px', left: restorePos.left + 'px' }" @click.stop>
+                  <div class="rp-hd">Restore default categories</div>
+                  <div class="rp-list">
+                    <label v-for="d in defaults" :key="d.slug" class="rp-item" :class="{ have: presentSlugs.has(d.slug) }">
+                      <input type="checkbox" :disabled="presentSlugs.has(d.slug)"
+                        :checked="presentSlugs.has(d.slug) || restoreSel.has(d.slug)" @change="toggleRestore(d.slug)" />
+                      <span class="cdot" :style="{ background: d.color }"></span>
+                      <span class="rp-name">{{ d.name }}</span>
+                      <span v-if="presentSlugs.has(d.slug)" class="rp-tag">present</span>
+                    </label>
+                  </div>
+                  <div class="rp-ft">
+                    <button class="rp-cancel" @click="restoreOpen = false">Cancel</button>
+                    <button class="rp-ok" :disabled="!restoreSel.size" @click="doRestore">Restore{{ restoreSel.size ? ` ${restoreSel.size}` : '' }}</button>
+                  </div>
                 </div>
-                <div class="rp-ft">
-                  <button class="rp-cancel" @click="restoreOpen = false">Cancel</button>
-                  <button class="rp-ok" :disabled="!restoreSel.size" @click="doRestore">Restore{{ restoreSel.size ? ` ${restoreSel.size}` : '' }}</button>
-                </div>
-              </div>
-            </template>
+              </template>
+            </Teleport>
           </div>
           <div class="catrow" :class="{ on: activeCategory === '' }" @click="selectCategory('')">
             <span class="cdot" style="background:var(--text-dim)"></span><span class="cn">All blocks</span><span class="cc">{{ allCount }}</span>
@@ -601,9 +614,9 @@ async function removeBlock(b: LibraryBlock) {
 .railhead > span:first-child{margin-right:auto}
 .railhead .addcat{border:0;background:transparent;color:var(--text-faint);font-size:15px;line-height:1;cursor:pointer;padding:0 4px;border-radius:4px}
 .railhead .addcat:hover{color:var(--accent);background:var(--surface-3)}
-.restore-back{position:fixed;inset:0;z-index:40}
-.restorepop{position:absolute;top:100%;right:6px;z-index:41;width:244px;margin-top:4px;background:var(--surface-1);
-  border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 12px 32px rgba(0,0,0,.45);
+.restore-back{position:fixed;inset:0;z-index:2100}
+.restorepop{position:fixed;z-index:2101;width:244px;max-height:70vh;background:var(--surface-1);
+  border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 16px 40px rgba(0,0,0,.5);
   display:flex;flex-direction:column;text-transform:none;letter-spacing:0}
 .rp-hd{font-size:12px;font-weight:600;color:var(--text-dim);padding:10px 12px 6px}
 .rp-list{max-height:280px;overflow:auto;padding:0 6px 4px;display:flex;flex-direction:column;gap:1px}
