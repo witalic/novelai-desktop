@@ -4,8 +4,9 @@
  * default / duplicate / delete manage them. The New/Edit form lands in a later block. */
 import { computed, onActivated, ref } from 'vue'
 import { ApiError, deletePreset, listPresets, savePreset, setDefaultPreset, setPresetFavorite } from '../api'
-import { modelLabel, samplerLabel, sizeLabel } from '../presets/options'
+import { modelLabel, samplerLabel } from '../presets/options'
 import { filterPresets } from '../presets/list'
+import PresetEditor from '../components/PresetEditor.vue'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { newId } from '../vault/ids'
@@ -58,6 +59,24 @@ async function remove(p: Preset) {
   try { await deletePreset(p.id); await load(); push('Preset deleted', 'ok') }
   catch (e) { push(e instanceof Error ? e.message : 'Delete failed', 'err') }
 }
+
+// ---- editor drawer (new / edit) ----
+const editor = ref<{ id: string | null; name: string; params: PresetParams } | null>(null)
+function startParams(): PresetParams {
+  // A new preset starts from the current default's params (a sensible baseline).
+  const src = presets.value.find((p) => p.is_default) ?? presets.value.find((p) => p.builtin)
+  return src ? { ...src.params } : ({} as PresetParams)
+}
+function openNew() { editor.value = { id: null, name: '', params: startParams() } }
+function openEdit(p: Preset) { editor.value = { id: p.id, name: p.name, params: { ...p.params } } }
+async function onSave(payload: { id: string | null; name: string; params: PresetParams }) {
+  try {
+    await savePreset({ id: payload.id ?? newId('preset'), name: payload.name, params: payload.params })
+    editor.value = null
+    await load()
+    push(payload.id ? 'Preset saved' : 'Preset created', 'ok')
+  } catch (e) { push(e instanceof Error ? e.message : 'Save failed', 'err') }
+}
 </script>
 
 <template>
@@ -66,6 +85,7 @@ async function remove(p: Preset) {
       <h1>Presets</h1><span class="count">· {{ total }} presets</span>
       <div class="spacer"></div>
       <input class="search" v-model="search" placeholder="Search presets…" />
+      <button v-if="!noVault" class="newbtn" @click="openNew"><span>＋</span> New preset</button>
     </div>
 
     <div v-if="noVault" class="empty">
@@ -122,6 +142,7 @@ async function remove(p: Preset) {
             <div class="pacts">
               <button class="pbtn apply" @click="apply(p)">Apply</button>
               <div class="prow2">
+                <button class="pbtn2" @click="openEdit(p)">Edit</button>
                 <button class="pbtn2" @click="duplicate(p)">Duplicate</button>
                 <button class="pbtn2" :class="{ on: p.is_default }" @click="makeDefault(p)">{{ p.is_default ? '✓ Default' : 'Set default' }}</button>
                 <button class="pbtn2 del" title="Delete" @click="remove(p)">🗑</button>
@@ -135,6 +156,8 @@ async function remove(p: Preset) {
         <p>No presets match “{{ search }}”.</p>
       </div>
     </div>
+
+    <PresetEditor v-if="editor" :model="editor" @save="onSave" @close="editor = null" />
   </section>
 </template>
 
@@ -146,6 +169,8 @@ async function remove(p: Preset) {
 .spacer{flex:1}
 .search{width:240px;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;outline:none}
 .search:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+.newbtn{background:var(--accent);color:var(--on-accent);border:0;border-radius:var(--radius);font-weight:600;font-size:13px;padding:8px 14px;display:flex;align-items:center;gap:7px;cursor:pointer;flex-shrink:0}
+.newbtn:hover{opacity:.92}
 
 .empty{max-width:440px;margin:12vh auto;text-align:center;color:var(--text-dim)}
 .empty .emoji{font-size:34px;margin-bottom:10px;color:var(--text-faint)}
@@ -174,8 +199,8 @@ async function remove(p: Preset) {
 .pacts{display:flex;flex-direction:column;gap:6px;margin-top:auto;padding-top:12px}
 .pbtn.apply{width:100%;border:0;background:var(--accent);color:var(--on-accent);border-radius:var(--radius);font:inherit;font-size:12px;font-weight:600;padding:6px;cursor:pointer}
 .pbtn.apply:hover{opacity:.92}
-.prow2{display:flex;gap:6px}
-.pbtn2{flex:1;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);font:inherit;font-size:11px;font-weight:600;padding:5px 4px;cursor:pointer;white-space:nowrap}
+.prow2{display:flex;gap:6px;flex-wrap:wrap}
+.pbtn2{flex:1 1 auto;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);font:inherit;font-size:11px;font-weight:600;padding:5px 6px;cursor:pointer;white-space:nowrap}
 .pbtn2:hover{color:var(--text);border-color:var(--border-strong)}
 .pbtn2.on{background:var(--nav-active);color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
 .pbtn2.del{flex:0 0 32px}
