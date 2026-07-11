@@ -20,6 +20,9 @@ work = **Phase 2**, starting with the Prompt widget (`design/prompt-widget-mocku
 - **Language:** converse in Ukrainian; code, comments, UI copy, and docs in English. `README` may be Ukrainian.
 - **Design first:** UI features start as a mockup the owner approves. Mockups live in `design/` as
   self-contained HTML on the app's `tokens.css` palette (PNGs stay untracked — `.gitignore`).
+- **Don't repeat past UI mistakes:** before building or changing any UI, read `rules/ui-design.md` — a
+  ledger of design errors already made here (native controls, cryptic glyphs, unpinned footers,
+  Vue-Flow node hijack, deviating from the locked mockup, …). Each one cost a review round.
 - **Gates:** agree the plan before writing code. Commit only logically-complete, **tested** blocks — never a
   partial sub-step or a snapshot with dangling references — and only after the owner confirms. See `rules/git.md`.
 - **Greenfield:** grow rules as real code lands — don't invent conventions for files that don't exist yet.
@@ -42,6 +45,6 @@ Electron shell → spawns a **FastAPI** (Python) sidecar on a free loopback port
 - **Backend deps:** `.venv\Scripts\python.exe -m pip install -e backend[dev]`.
 
 ## Tooling (`.claude/`)
-- **Rules** (`.claude/rules/`): `code-style` + `security` + `git` (always) · `backend`, `frontend`, `novelai-api` (path-scoped). More added as code lands.
+- **Rules** (`.claude/rules/`): `code-style` + `security` + `git` (always) · `backend`, `frontend`, `novelai-api`, `ui-design` (path-scoped; `ui-design` = a ledger of UI mistakes not to repeat). More added as code lands.
 - **Agents:** planning → `analyst`, review → `code-reviewer`.
 - **Hooks:** `guard-bash` blocks secret leakage (note: false-positives on `vault` in a path — stage specific subpaths).

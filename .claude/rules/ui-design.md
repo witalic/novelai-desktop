@@ -1,0 +1,55 @@
+---
+paths:
+  - "frontend/**"
+  - "design/**"
+---
+
+# UI design — mistakes not to repeat
+
+A ledger of design errors made on this project. Each cost the owner a review round. **Do not repeat
+them.** When building or changing any UI, check this list first.
+
+## Process
+- **Follow the locked mockup.** If a design is "design locked" in `design/*.html`, build *that*
+  structure. Deviating (e.g. rendering a list as canvas nodes when the mockup shows a scrollable
+  HTML list) spawns a cascade of bugs and a full rewrite. Re-read the mockup before coding.
+- **Verify in the running app, not by reasoning.** For a visual/interaction bug, build + drive the
+  app and look — don't guess a fix from the code. (`python run.py --web`, or the browser preview.)
+- **Ask the data-model forks upfront.** Decide contentious model questions (what a thing stores,
+  how it's organised) with the owner *before* mocking, not after three revisions.
+
+## Controls & affordances
+- **No native form controls.** Never ship a bare `<select>` (it pops an OS-styled menu) or native
+  scrollbars. Use the token-styled dropdown pattern; scrollbars are themed globally in `tokens.css`.
+- **Labels beat cryptic glyphs for non-obvious actions.** A bare `○/◉`, a lone `+`, or two `+`
+  side-by-side don't communicate. Use a text label (or text+icon) for anything a user can't infer at
+  a glance. Reserve icon-only for universally-understood actions (✕ close, ✎ edit, 🗑 delete).
+- **Never two identical-looking controls with different meanings.** A favourite ★ and a "set
+  default" ★ in the same card is a trap — the owner will click the wrong one. Give distinct
+  meanings distinct forms.
+- **Don't remove/hide a control the owner agreed on.** Collapsing an agreed labelled dropdown down
+  to a bare caret is a regression, not a simplification.
+
+## Layout
+- **Pin action rows to a footer; don't let them shift with content.** Cards/panels with varying
+  content (e.g. different chip counts) must keep their actions in a bottom-pinned footer
+  (`display:flex;flex-direction:column` + `margin-top:auto` on the actions), always visible — not a
+  hover-reveal that reserves/varies layout height. Cards in a row should stretch to equal height so
+  footers align.
+- **Content scrolls; fixed heights must not clip.** A list/panel that can overflow gets its own
+  scroll area. A resizable element's min-size must follow its content (can't be dragged smaller than
+  what it holds).
+- **Consistent control heights in a row.** Search + dropdown + button on one line must share
+  font-size and vertical padding, or they read as misaligned.
+- **Collapse with `v-show`, not `v-if`.** `v-if` destroys DOM state (scroll position, open panels,
+  input focus) on collapse; `v-show` preserves it.
+
+## Canvas (Vue Flow) nodes
+- **Interactive elements inside a node must not select/drag the node.** Vue Flow selects a node on
+  `click` (a separate event from `mousedown`/`pointerdown`) and drags from `pointerdown`. Stop
+  propagation on all three — but **only when the event started on an interactive element** (button,
+  input, textarea, select, a, row), so empty areas of the node still behave like the node (select,
+  drag). A blanket `.stop` on the container kills the node's own affordances.
+- **Header-only vs body drag is a real choice.** `dragHandle` restricts dragging to one selector;
+  don't set it if the owner wants dragging from empty body areas too — rely on the selective
+  propagation-stop above instead.
