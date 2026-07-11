@@ -312,6 +312,20 @@ export interface CategoryCount {
   builtin: boolean
 }
 
+// ---- library import (backend/app/vault/import_blocks.py) ----
+export interface ImportCandidate {
+  name: string
+  text: string
+  polarity: 'positive' | 'negative'
+  category: string
+  tags: string[]
+  existing_id: string | null // a library block this duplicates (same polarity + text)
+  existing_name: string | null
+}
+export interface ImportSkip { source: string; error: string }
+export interface ImportParseResult { candidates: ImportCandidate[]; skipped: ImportSkip[] }
+export interface ImportSaveResult { saved: number; errors: ImportSkip[] }
+
 export interface TagCount {
   name: string
   count: number

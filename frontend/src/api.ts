@@ -1,7 +1,7 @@
 import type {
-  BlocksPage, Catalog, CategoryCount, GenerateParams, GenerateResponse, LibraryBlock,
-  Preset, PresetParams, StreamEvent, Subscription, TagCount, TokenizeRequest, TokenizeResponse,
-  WorkDoc, WorksPage,
+  BlocksPage, Catalog, CategoryCount, GenerateParams, GenerateResponse, ImportParseResult,
+  ImportSaveResult, LibraryBlock, Preset, PresetParams, StreamEvent, Subscription, TagCount,
+  TokenizeRequest, TokenizeResponse, WorkDoc, WorksPage,
 } from './types'
 
 export async function saveWork(doc: WorkDoc): Promise<{ id: string; updated_at: string }> {
@@ -84,6 +84,18 @@ export async function saveBlock(block: LibraryBlock): Promise<{ id: string }> {
 export async function deleteBlock(blockId: string): Promise<void> {
   const resp = await fetch(`/api/vault/library/blocks/${blockId}`, { method: 'DELETE' })
   if (!resp.ok) throw new ApiError(resp.status, `Delete failed (HTTP ${resp.status})`)
+}
+
+// ---- library import (bulk: parse candidates → save selected) ----
+export async function parseImport(payload: { texts?: string[]; zip_b64?: string; path?: string }): Promise<ImportParseResult> {
+  return jsonOrThrow(await fetch('/api/vault/library/import/parse', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  }), 'Could not read the import')
+}
+export async function importBlocks(blocks: LibraryBlock[]): Promise<ImportSaveResult> {
+  return jsonOrThrow(await fetch('/api/vault/library/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blocks }),
+  }), 'Import failed')
 }
 
 export async function listCategories(tags: string[] = []): Promise<CategoryCount[]> {

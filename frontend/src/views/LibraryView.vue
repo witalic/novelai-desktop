@@ -3,6 +3,7 @@ import { computed, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ApiError, deleteBlock, deleteCategory, listBlocks, listCategories, listExamples, listTags, saveBlock, saveCategory, type ExampleImage } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import LibraryImport from '../components/LibraryImport.vue'
 import { newId } from '../vault/ids'
 import type { CategoryCount, LibraryBlock, TagCount } from '../types'
 
@@ -71,6 +72,10 @@ async function refreshAll() {
 }
 // onActivated also fires on first mount under KeepAlive, so a separate setup-time call would double-load.
 onActivated(refreshAll)
+
+// Bulk import (modal). On success, reload so the imported blocks + any new categories show.
+const importing = ref(false)
+async function onImportDone() { importing.value = false; await refreshAll() }
 
 function selectCategory(slug: string) {
   if (activeCategory.value === slug) return
@@ -325,6 +330,7 @@ async function removeBlock(b: LibraryBlock) {
       <h1>Library</h1><span class="count">· {{ allCount }} blocks</span>
       <div class="spacer"></div>
       <input class="search" v-model="search" placeholder="Search name or text…" />
+      <button class="impbtn" @click="importing = true"><span>⭳</span> Import</button>
       <button class="newbtn" @click="openNew"><span>＋</span> New block</button>
     </div>
 
@@ -513,6 +519,8 @@ async function removeBlock(b: LibraryBlock) {
         <img :src="lightbox" alt="example" />
       </div>
     </Teleport>
+
+    <LibraryImport v-if="importing" :categories="categories" @close="importing = false" @done="onImportDone" />
   </section>
 </template>
 
@@ -525,6 +533,8 @@ async function removeBlock(b: LibraryBlock) {
 .search{width:230px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 10px;color:var(--text);font:inherit;font-size:13px;outline:none}
 .search:focus{border-color:var(--accent)}
 .newbtn{background:var(--accent);color:var(--on-accent);border:0;border-radius:var(--radius);font-weight:600;font-size:13px;padding:8px 14px;display:flex;align-items:center;gap:7px;cursor:pointer}
+.impbtn{background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border-strong);border-radius:var(--radius);font-weight:600;font-size:13px;padding:8px 14px;display:flex;align-items:center;gap:7px;cursor:pointer}
+.impbtn:hover{color:var(--text)}
 
 .empty{max-width:420px;margin:12vh auto;text-align:center;color:var(--text-dim)}
 .empty .emoji{font-size:34px;color:var(--text-faint);margin-bottom:12px}

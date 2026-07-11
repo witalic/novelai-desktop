@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 
 from app.settings import Settings, get_settings
-from app.vault import manager, presets as presets_svc, service
+from app.vault import import_blocks, manager, presets as presets_svc, service
+from app.vault.import_blocks import ImportParseRequest, ImportParseResult, ImportSaveRequest, ImportSaveResult
 from app.vault.models import (
     BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage, MoveStatus, MoveVault,
     Preset, PresetDoc, SaveCategory, SetDefault, SetFavorite, TagCount, VaultConfig, VaultPath,
@@ -123,6 +124,16 @@ def save_block(block: BlockDoc, settings: Settings = Depends(get_settings)) -> d
 @router.delete("/library/blocks/{block_id}")
 def delete_block(block_id: str, settings: Settings = Depends(get_settings)) -> dict:
     return service.delete_block(settings, block_id)
+
+
+@router.post("/library/import/parse", response_model=ImportParseResult)
+def import_parse(body: ImportParseRequest, settings: Settings = Depends(get_settings)) -> ImportParseResult:
+    return import_blocks.parse(settings, body)
+
+
+@router.post("/library/import", response_model=ImportSaveResult)
+def import_save(body: ImportSaveRequest, settings: Settings = Depends(get_settings)) -> ImportSaveResult:
+    return import_blocks.save(settings, body)
 
 
 # ---- presets (generation-param bundles: built-in read-only + user) ----
