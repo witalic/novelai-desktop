@@ -170,6 +170,58 @@ class TagCount(BaseModel):
     count: int
 
 
+# ---- presets (generation-param bundles) ----
+class PresetParams(BaseModel):
+    """The generation-param subset a preset stores — mirrors GenerateParams minus prompt/negative
+    (the canvas) and seed (per-generation). Keep the field set + constraints in sync with
+    ``novelai/models.py::GenerateParams`` and ``frontend/src/types.ts::PanelParams``."""
+
+    model: str = "nai-diffusion-4-5-full"
+    width: int = Field(default=832, ge=64, le=2048)
+    height: int = Field(default=1216, ge=64, le=2048)
+    steps: int = Field(default=28, ge=1, le=50)
+    scale: float = Field(default=5.0, ge=0, le=30)
+    sampler: str = "k_euler_ancestral"
+    n_samples: int = Field(default=1, ge=1, le=4)
+    noise_schedule: str = "karras"
+    cfg_rescale: float = Field(default=0.0, ge=0, le=1)
+    quality_toggle: bool = True
+    uc_preset: int = Field(default=4, ge=0, le=7)
+
+
+class PresetDoc(BaseModel):
+    """On-disk user preset (``presets/<id>.json``). Built-ins are code-shipped, never written here."""
+
+    id: str
+    name: str = ""
+    params: PresetParams = Field(default_factory=PresetParams)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class Preset(BaseModel):
+    """API view of a preset: the doc plus overlay flags (``presets/.state.json``) and the read-only
+    ``builtin`` marker. ``default``/``favorite`` live in the overlay because they also apply to
+    built-ins, which have no writable file."""
+
+    id: str
+    name: str
+    params: PresetParams
+    builtin: bool = False
+    favorite: bool = False
+    is_default: bool = False
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class SetDefault(BaseModel):
+    id: str
+
+
+class SetFavorite(BaseModel):
+    favorite: bool
+
+
 # ---- list / gallery DTOs ----
 class WorkListItem(BaseModel):
     id: str

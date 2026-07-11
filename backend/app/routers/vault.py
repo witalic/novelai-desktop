@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 
 from app.settings import Settings, get_settings
-from app.vault import manager, service
+from app.vault import manager, presets as presets_svc, service
 from app.vault.models import (
     BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage, MoveStatus, MoveVault,
-    SaveCategory, TagCount, VaultConfig, VaultPath, WorkDoc, WorksPage,
+    Preset, PresetDoc, SaveCategory, SetDefault, SetFavorite, TagCount, VaultConfig, VaultPath,
+    WorkDoc, WorksPage,
 )
 
 log = logging.getLogger(__name__)
@@ -122,6 +123,32 @@ def save_block(block: BlockDoc, settings: Settings = Depends(get_settings)) -> d
 @router.delete("/library/blocks/{block_id}")
 def delete_block(block_id: str, settings: Settings = Depends(get_settings)) -> dict:
     return service.delete_block(settings, block_id)
+
+
+# ---- presets (generation-param bundles: built-in read-only + user) ----
+@router.get("/presets", response_model=list[Preset])
+def list_presets(settings: Settings = Depends(get_settings)) -> list[Preset]:
+    return presets_svc.list_presets(settings)
+
+
+@router.post("/presets")
+def save_preset(preset: PresetDoc, settings: Settings = Depends(get_settings)) -> dict:
+    return presets_svc.save_preset(settings, preset)
+
+
+@router.put("/presets/default")
+def set_default_preset(body: SetDefault, settings: Settings = Depends(get_settings)) -> dict:
+    return presets_svc.set_default(settings, body.id)
+
+
+@router.put("/presets/{preset_id}/favorite")
+def set_preset_favorite(preset_id: str, body: SetFavorite, settings: Settings = Depends(get_settings)) -> dict:
+    return presets_svc.set_favorite(settings, preset_id, body.favorite)
+
+
+@router.delete("/presets/{preset_id}")
+def delete_preset(preset_id: str, settings: Settings = Depends(get_settings)) -> dict:
+    return presets_svc.delete_preset(settings, preset_id)
 
 
 @router.get("/library/categories", response_model=list[CategoryCount])
