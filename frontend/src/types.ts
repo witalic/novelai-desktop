@@ -29,6 +29,30 @@ export interface Subscription {
   anlas: number
 }
 
+// ---- model catalog (backend/app/novelai/catalog.py — the single source of model/sampler facts) ----
+export interface CatalogRange { min: number; max: number; step: number; default: number }
+export interface CatalogResolution { group: string; tier: string; width: number; height: number }
+export interface CatalogModel {
+  id: string
+  label: string
+  family: 'v3' | 'v4'
+  tokenizer: 't5' | 'clip'
+  token_limit: number
+  negative_token_limit: number
+  samplers: string[] // sampler ids offered for this model
+  steps: CatalogRange
+  scale: CatalogRange
+}
+export interface Catalog {
+  models: CatalogModel[]
+  samplers: { id: string; label: string }[]
+  resolutions: CatalogResolution[]
+  uc_presets: { value: number; label: string }[]
+  noise_schedules: { value: string; label: string }[]
+  dim_limits: { min: number; max: number; step: number }
+  default_model: string
+}
+
 export interface Preset {
   id: string
   name: string

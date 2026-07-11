@@ -4,7 +4,7 @@
  * default / duplicate / delete manage them. The New/Edit form lands in a later block. */
 import { computed, onActivated, ref } from 'vue'
 import { ApiError, deletePreset, listPresets, savePreset, setDefaultPreset, setPresetFavorite } from '../api'
-import { modelLabel, samplerLabel } from '../presets/options'
+import { modelLabel, samplerLabel, useCatalog } from '../composables/useCatalog'
 import { filterPresets } from '../presets/list'
 import { costPair } from '../presets/cost'
 import PresetEditor from '../components/PresetEditor.vue'
@@ -16,6 +16,8 @@ import type { Preset, PresetParams } from '../types'
 const emit = defineEmits<{ apply: [Preset]; navigate: [string] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
+
+useCatalog() // load the catalog so modelLabel/samplerLabel resolve on the preset cards
 
 const presets = ref<Preset[]>([])
 const search = ref('')

@@ -1,5 +1,5 @@
 import type {
-  BlocksPage, CategoryCount, GenerateParams, GenerateResponse, LibraryBlock,
+  BlocksPage, Catalog, CategoryCount, GenerateParams, GenerateResponse, LibraryBlock,
   Preset, PresetParams, StreamEvent, Subscription, TagCount, WorkDoc, WorksPage,
 } from './types'
 
@@ -144,6 +144,11 @@ export async function listTags(category = ''): Promise<TagCount[]> {
 // ---- account ----
 export async function getSubscription(): Promise<Subscription> {
   return jsonOrThrow(await fetch('/api/account/subscription'), 'Failed to read subscription')
+}
+
+// ---- model catalog (static; fetched once and cached by useCatalog) ----
+export async function getCatalog(): Promise<Catalog> {
+  return jsonOrThrow(await fetch('/api/catalog'), 'Failed to read model catalog')
 }
 
 // ---- presets (generation-param bundles) ----

@@ -4,10 +4,11 @@
  * `hideSeed` drops the seed field — a preset has no seed. */
 import { computed, ref } from 'vue'
 import Dropdown from './Dropdown.vue'
-import { MODELS, NOISE, SAMPLERS, SIZES, UC_PRESETS } from '../presets/options'
+import { useCatalog } from '../composables/useCatalog'
 import type { PanelParams } from '../types'
 
 const props = defineProps<{ params: PanelParams; hideSeed?: boolean }>()
+const { catalog } = useCatalog()
 
 // A seed is a non-negative 32-bit integer; anything else (letters, overflow) clears it → random, so the
 // user never silently gets a random seed from a typo they think stuck.
@@ -18,15 +19,50 @@ function parseSeed(v: string): number | null {
   return Number.isSafeInteger(n) && n <= 4294967295 ? n : null
 }
 
-const sizeOptions = computed(() => [
-  ...SIZES.flatMap((g) => g.items.map((it) => ({ value: `${it.w},${it.h}`, label: `${it.tier} — ${it.w}×${it.h}`, group: g.group }))),
-  { value: 'custom', label: 'Custom…', group: 'Other' },
-])
+// The selected model (may be absent from the catalog for an old preset/work — see the synthetic option).
+const currentModel = computed(() => catalog.value?.models.find((m) => m.id === props.params.model) ?? null)
+
+// A stored value not in the catalog gets a synthetic "(unavailable)" option so it stays selected and
+// visible — never silently reset (design-prefs). Model dropdown:
+const modelOptions = computed(() => {
+  const cat = catalog.value
+  if (!cat) return []
+  const opts = cat.models.map((m) => ({ value: m.id, label: m.label }))
+  if (!cat.models.some((m) => m.id === props.params.model)) {
+    opts.unshift({ value: props.params.model, label: `(unavailable) ${props.params.model}` })
+  }
+  return opts
+})
+
+// Sampler dropdown, filtered to the selected model's samplers (SMEA is v3-only, so v4 never lists it).
+const samplerOptions = computed(() => {
+  const cat = catalog.value
+  if (!cat) return []
+  const allowed = currentModel.value?.samplers ?? cat.samplers.map((s) => s.id)
+  const opts = cat.samplers.filter((s) => allowed.includes(s.id)).map((s) => ({ value: s.id, label: s.label }))
+  if (!opts.some((o) => o.value === props.params.sampler)) {
+    const known = cat.samplers.find((s) => s.id === props.params.sampler)
+    opts.unshift({ value: props.params.sampler, label: known ? `${known.label} (unavailable)` : `(unavailable) ${props.params.sampler}` })
+  }
+  return opts
+})
+
+const ucOptions = computed(() => catalog.value?.uc_presets.map((u) => ({ value: u.value, label: u.label })) ?? [])
+const noiseOptions = computed(() => catalog.value?.noise_schedules.map((n) => ({ value: n.value, label: n.label })) ?? [])
+
+const sizeOptions = computed(() => {
+  const cat = catalog.value
+  if (!cat) return []
+  return [
+    ...cat.resolutions.map((r) => ({ value: `${r.width},${r.height}`, label: `${r.tier} — ${r.width}×${r.height}`, group: r.group })),
+    { value: 'custom', label: 'Custom…', group: 'Other' },
+  ]
+})
 
 const customMode = ref(false)
 const matchedKey = computed(() => {
-  for (const g of SIZES) for (const it of g.items) if (it.w === props.params.width && it.h === props.params.height) return `${it.w},${it.h}`
-  return null
+  const r = catalog.value?.resolutions.find((x) => x.width === props.params.width && x.height === props.params.height)
+  return r ? `${r.width},${r.height}` : null
 })
 const sizeKey = computed<string>(() => (customMode.value || !matchedKey.value ? 'custom' : matchedKey.value))
 function onSizePick(v: string | number) {
@@ -36,14 +72,23 @@ function onSizePick(v: string | number) {
   props.params.width = w
   props.params.height = h
 }
-const clampDim = (n: number) => Math.max(64, Math.min(2048, Math.round((n || 64) / 64) * 64))
+
+// Ranges + dimension limits from the catalog (fallbacks keep the panel usable before the fetch resolves).
+const stepsRange = computed(() => currentModel.value?.steps ?? { min: 1, max: 50, step: 1, default: 28 })
+const scaleRange = computed(() => currentModel.value?.scale ?? { min: 0, max: 10, step: 0.5, default: 5 })
+const dim = computed(() => catalog.value?.dim_limits ?? { min: 64, max: 2048, step: 64 })
+const clampDim = (n: number) => {
+  const d = dim.value
+  return Math.max(d.min, Math.min(d.max, Math.round((n || d.min) / d.step) * d.step))
+}
 </script>
 
 <template>
-  <div class="fields">
+  <div v-if="!catalog" class="fields loading">Loading options…</div>
+  <div v-else class="fields">
     <div class="field">
       <span class="label">Model</span>
-      <Dropdown v-model="params.model" :options="MODELS" />
+      <Dropdown v-model="params.model" :options="modelOptions" />
     </div>
 
     <div class="field">
@@ -51,10 +96,10 @@ const clampDim = (n: number) => Math.max(64, Math.min(2048, Math.round((n || 64)
       <Dropdown :model-value="sizeKey" :options="sizeOptions" @update:model-value="onSizePick" />
       <div v-if="sizeKey === 'custom'" class="row">
         <div class="field"><span class="label">Width</span>
-          <input type="number" step="64" min="64" max="2048" :value="params.width"
+          <input type="number" :step="dim.step" :min="dim.min" :max="dim.max" :value="params.width"
             @change="params.width = clampDim(+($event.target as HTMLInputElement).value)" /></div>
         <div class="field"><span class="label">Height</span>
-          <input type="number" step="64" min="64" max="2048" :value="params.height"
+          <input type="number" :step="dim.step" :min="dim.min" :max="dim.max" :value="params.height"
             @change="params.height = clampDim(+($event.target as HTMLInputElement).value)" /></div>
       </div>
     </div>
@@ -67,19 +112,19 @@ const clampDim = (n: number) => Math.max(64, Math.min(2048, Math.round((n || 64)
 
     <div class="field">
       <span class="label">Undesired content preset</span>
-      <Dropdown :model-value="params.uc_preset" :options="UC_PRESETS" @update:model-value="params.uc_preset = Number($event)" />
+      <Dropdown :model-value="params.uc_preset" :options="ucOptions" @update:model-value="params.uc_preset = Number($event)" />
     </div>
 
     <details open>
       <summary><span class="chev">▶</span> Advanced settings</summary>
       <div class="inner">
         <div class="row">
-          <div class="field"><span class="label">Steps <span class="v">{{ params.steps }}</span></span><input type="range" min="1" max="50" v-model.number="params.steps" /></div>
-          <div class="field"><span class="label">Guidance <span class="v">{{ params.scale.toFixed(1) }}</span></span><input type="range" min="0" max="10" step="0.5" v-model.number="params.scale" /></div>
+          <div class="field"><span class="label">Steps <span class="v">{{ params.steps }}</span></span><input type="range" :min="stepsRange.min" :max="stepsRange.max" :step="stepsRange.step" v-model.number="params.steps" /></div>
+          <div class="field"><span class="label">Guidance <span class="v">{{ params.scale.toFixed(1) }}</span></span><input type="range" :min="scaleRange.min" :max="scaleRange.max" :step="scaleRange.step" v-model.number="params.scale" /></div>
         </div>
         <div class="field">
           <span class="label">Sampler</span>
-          <Dropdown v-model="params.sampler" :options="SAMPLERS" />
+          <Dropdown v-model="params.sampler" :options="samplerOptions" />
         </div>
         <div class="field">
           <span class="label">Images <span class="v">{{ params.n_samples }}</span></span>
@@ -100,7 +145,7 @@ const clampDim = (n: number) => Math.max(64, Math.min(2048, Math.round((n || 64)
         </div>
         <div class="field">
           <span class="label">Noise schedule</span>
-          <Dropdown v-model="params.noise_schedule" :options="NOISE" />
+          <Dropdown v-model="params.noise_schedule" :options="noiseOptions" />
         </div>
       </div>
     </details>
@@ -109,6 +154,7 @@ const clampDim = (n: number) => Math.max(64, Math.min(2048, Math.round((n || 64)
 
 <style scoped>
 .fields{display:flex;flex-direction:column;gap:15px}
+.fields.loading{color:var(--text-faint);font-size:12px;padding:4px 0}
 .setting{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .setting .name{font-weight:500;font-size:13px}
 .setting .desc{font-size:11px;color:var(--text-dim);margin-top:2px}
