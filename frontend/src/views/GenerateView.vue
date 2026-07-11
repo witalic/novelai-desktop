@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import ParamsPanel from '../components/ParamsPanel.vue'
 import CanvasBoard from '../components/CanvasBoard.vue'
-import { generateStream, loadWork } from '../api'
+import { generateStream, listPresets, loadWork } from '../api'
+import { resolveDefaultId } from '../presets/diff'
 import { useToast } from '../composables/useToast'
 import { newId } from '../vault/ids'
 import { workToDrafts } from '../vault/serialize'
-import type { PanelParams, GenResult, WorkDoc, SnapshotData, LibraryBlock } from '../types'
+import type { PanelParams, PresetParams, GenResult, WorkDoc, SnapshotData, LibraryBlock } from '../types'
 
 const props = defineProps<{
   openWorkId?: string | null
   insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
   linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
+  applyPreset?: { params: PresetParams; nonce: number } | null
 }>()
 const emit = defineEmits<{ navigate: [string]; 'save-block': [{ nodeId: string; block: LibraryBlock }] }>()
 const { push } = useToast()
@@ -21,6 +23,29 @@ const params = reactive<PanelParams>({
   sampler: 'k_euler_ancestral', seed: null, n_samples: 1, noise_schedule: 'karras',
   cfg_rescale: 0, quality_toggle: true, uc_preset: 4,
 })
+
+// The default preset's params seed a fresh work. Fetched once; also consulted on New-work.
+const defaultParams = ref<PresetParams | null>(null)
+async function loadDefaultPreset() {
+  try {
+    const presets = await listPresets()
+    const id = resolveDefaultId(presets)
+    defaultParams.value = presets.find((p) => p.id === id)?.params ?? null
+  } catch { /* no vault / offline — keep the hardcoded defaults */ }
+}
+// Seed the default into a brand-new session only (never clobber a work being opened).
+onMounted(async () => {
+  await loadDefaultPreset()
+  if (!props.openWorkId && defaultParams.value) Object.assign(params, defaultParams.value)
+})
+
+// Apply a preset picked in the Presets tab: overwrite params (seed absent ⇒ seed untouched).
+watch(() => props.applyPreset?.nonce, () => { if (props.applyPreset) Object.assign(params, props.applyPreset.params) })
+
+// New work (from the canvas) re-seeds params from the current default preset.
+function onNewWork() {
+  if (defaultParams.value) Object.assign(params, defaultParams.value)
+}
 
 const panelOpen = ref(false) // model/size settings start hidden — the canvas is the focus
 const drafts = ref<GenResult[]>([])
@@ -112,7 +137,7 @@ watch(() => props.openWorkId, async (raw) => {
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
       :insert-blocks="insertBlocks" :link-pin="linkPin" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
-      @saved="onWorkSaved" @navigate="emit('navigate', $event)" @save-block="emit('save-block', $event)" />
+      @saved="onWorkSaved" @navigate="emit('navigate', $event)" @save-block="emit('save-block', $event)" @new-work="onNewWork" />
     <ParamsPanel :params="params" :open="panelOpen" @toggle="panelOpen = !panelOpen" />
   </div>
 </template>

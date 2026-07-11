@@ -5,15 +5,16 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import GenerateView from './views/GenerateView.vue'
 import WorksView from './views/WorksView.vue'
 import LibraryView from './views/LibraryView.vue'
+import PresetsView from './views/PresetsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
-import type { LibraryBlock } from './types'
+import type { LibraryBlock, PresetParams } from './types'
 
 useTheme()
-export type ViewId = 'generate' | 'works' | 'library' | 'settings'
+export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
 const view = ref<ViewId>('generate')
-const views = { generate: GenerateView, works: WorksView, library: LibraryView, settings: SettingsView }
+const views = { generate: GenerateView, works: WorksView, library: LibraryView, presets: PresetsView, settings: SettingsView }
 const { toasts, push } = useToast()
 
 const activeWorkId = ref<string | null>(null)
@@ -32,6 +33,14 @@ function useBlocks(blocks: LibraryBlock[]) {
   pendingBlocks.value = { blocks, nonce: Date.now() }
   view.value = 'generate'
   push(`Added ${blocks.length} block${blocks.length > 1 ? 's' : ''} to the canvas library`, 'ok')
+}
+
+// Apply a preset: hand its params to the Generate view (nonce-bumped like the other cross-view
+// signals) and switch there. Seed is absent from PresetParams, so Object.assign leaves it alone.
+const applyPreset = ref<{ params: PresetParams; nonce: number } | null>(null)
+function onApplyPreset(params: PresetParams) {
+  applyPreset.value = { params, nonce: Date.now() }
+  view.value = 'generate'
 }
 
 // "Save to Library" from a local palette block: the Library tab opens with its editor drawer
@@ -56,12 +65,14 @@ function onDraftSaved(block: LibraryBlock) {
 const viewBindings = computed(() =>
   view.value === 'generate'
     ? { openWorkId: activeWorkId.value, insertBlocks: pendingBlocks.value, linkPin: linkPin.value,
-        onNavigate: (v: ViewId) => (view.value = v), onSaveBlock: saveBlockToLibrary }
+        applyPreset: applyPreset.value, onNavigate: (v: ViewId) => (view.value = v), onSaveBlock: saveBlockToLibrary }
     : view.value === 'works'
       ? { onOpen: openWork }
       : view.value === 'library'
         ? { onUse: useBlocks, draftBlock: libraryDraft.value, onDraftSaved }
-        : {},
+        : view.value === 'presets'
+          ? { onApply: onApplyPreset, onNavigate: (v: ViewId) => (view.value = v) }
+          : {},
 )
 </script>
 

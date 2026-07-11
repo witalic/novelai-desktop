@@ -19,7 +19,9 @@ const emit = defineEmits<{ navigate: [ViewId] }>()
     <div class="navitem" :class="{ active: current === 'library' }" @click="emit('navigate', 'library')">
       <i>❏</i> Library
     </div>
-    <div class="navitem disabled"><i>◈</i> Presets <span class="soon">soon</span></div>
+    <div class="navitem" :class="{ active: current === 'presets' }" @click="emit('navigate', 'presets')">
+      <i>◈</i> Presets
+    </div>
 
     <div class="navgroup">Account</div>
     <div class="navitem" :class="{ active: current === 'settings' }" @click="emit('navigate', 'settings')">

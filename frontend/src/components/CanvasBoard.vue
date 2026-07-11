@@ -34,6 +34,7 @@ const emit = defineEmits<{
   saved: [string]
   navigate: [string]
   'save-block': [{ nodeId: string; block: LibraryBlock }]
+  'new-work': []
 }>()
 
 const {
@@ -320,6 +321,7 @@ async function newWork() {
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries
   setViewport({ x: 40, y: 40, zoom: 0.7 })
   resetBaseline('idle')
+  emit('new-work') // GenerateView re-seeds params from the default preset
 }
 
 onMounted(async () => {
