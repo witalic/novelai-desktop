@@ -187,6 +187,9 @@ class PresetParams(BaseModel):
     cfg_rescale: float = Field(default=0.0, ge=0, le=1)
     quality_toggle: bool = True
     uc_preset: int = Field(default=4, ge=0, le=7)
+    # Frontend-only prompt optimisation (merge repeated tags), not a NovelAI field — persisted so a
+    # preset remembers the choice. See frontend/src/canvas/dedup.ts.
+    dedupe: bool = False
 
 
 class PresetDoc(BaseModel):

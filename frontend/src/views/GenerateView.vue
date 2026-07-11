@@ -24,7 +24,7 @@ const account = useAccount()
 const params = reactive<PanelParams>({
   model: 'nai-diffusion-4-5-full', width: 832, height: 1216, steps: 28, scale: 5,
   sampler: 'k_euler_ancestral', seed: null, n_samples: 1, noise_schedule: 'karras',
-  cfg_rescale: 0, quality_toggle: true, uc_preset: 4,
+  cfg_rescale: 0, quality_toggle: true, uc_preset: 4, dedupe: false,
 })
 
 // ---- presets: the Tools panel's Preset strip picks/updates; the default seeds a fresh work ----

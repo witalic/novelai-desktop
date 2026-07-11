@@ -15,7 +15,9 @@ export interface GenerateParams {
   uc_preset: number
 }
 
-export type PanelParams = Omit<GenerateParams, 'prompt' | 'negative_prompt'>
+// `dedupe` is a frontend-only prompt optimisation (merge repeated tags before generation), not a
+// NovelAI request field — hence it lives on PanelParams, not GenerateParams.
+export type PanelParams = Omit<GenerateParams, 'prompt' | 'negative_prompt'> & { dedupe: boolean }
 
 // A preset stores generation params only — no prompt (that's the canvas), no seed (per-generation).
 // Keep in sync with backend/app/vault/models.py::PresetParams.

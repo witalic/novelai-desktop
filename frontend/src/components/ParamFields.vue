@@ -110,6 +110,12 @@ const clampDim = (n: number) => {
         @click="params.quality_toggle = !params.quality_toggle"><span class="knob"></span></button>
     </div>
 
+    <div class="setting" title="On: a tag repeated across blocks becomes one, with its weights summed (capped) — fewer tokens. Off: repeats are kept, and NovelAI reads the repetition as stronger emphasis.">
+      <div class="txt"><div class="name">Unique tags</div><div class="desc">Merge repeated tags, summing weights. Off keeps repetition as emphasis.</div></div>
+      <button class="switch" :class="{ on: params.dedupe }" role="switch" :aria-checked="params.dedupe"
+        @click="params.dedupe = !params.dedupe"><span class="knob"></span></button>
+    </div>
+
     <div class="field">
       <span class="label">Undesired content preset</span>
       <Dropdown :model-value="params.uc_preset" :options="ucOptions" @update:model-value="params.uc_preset = Number($event)" />

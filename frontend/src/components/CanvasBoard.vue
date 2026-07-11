@@ -19,6 +19,7 @@ import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { appendX } from '../canvas/pack'
 import { reorderIds } from '../canvas/palette'
+import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -82,7 +83,12 @@ const composed = computed(() => {
     .filter((b) => (b.data.polarity === 'negative') === neg)
     .slice().sort((a, b) => a.position.x - b.position.x)
     .map((b) => String(b.data.text || '').trim()).filter(Boolean)
-  return { positive: pick(false).join(', '), negative: pick(true).join(', ') }
+  let positive = pick(false).join(', ')
+  let negative = pick(true).join(', ')
+  // "Unique tags" — merge repeated tags (summing weights) before this prompt drives the indicator,
+  // the meta preview, and generation, so all three agree on exactly what will be sent.
+  if (props.params.dedupe) { positive = dedupePrompt(positive); negative = dedupePrompt(negative) }
+  return { positive, negative }
 })
 // Real token usage vs the model's budget (POST /api/tokenize, debounced + stale-guarded). Positive
 // (base + character captions later) and negative are counted separately against their own limits.

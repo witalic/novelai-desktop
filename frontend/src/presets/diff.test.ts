@@ -5,12 +5,12 @@ import type { PanelParams, Preset, PresetParams } from '../types'
 const live: PanelParams = {
   model: 'nai-diffusion-4-5-full', width: 832, height: 1216, steps: 28, scale: 5.0,
   sampler: 'k_euler_ancestral', seed: 42, n_samples: 1, noise_schedule: 'karras',
-  cfg_rescale: 0.0, quality_toggle: true, uc_preset: 4,
+  cfg_rescale: 0.0, quality_toggle: true, uc_preset: 4, dedupe: false,
 }
 const preset: PresetParams = {
   model: 'nai-diffusion-4-5-full', width: 832, height: 1216, steps: 28, scale: 5.0,
   sampler: 'k_euler_ancestral', n_samples: 1, noise_schedule: 'karras',
-  cfg_rescale: 0.0, quality_toggle: true, uc_preset: 4,
+  cfg_rescale: 0.0, quality_toggle: true, uc_preset: 4, dedupe: false,
 }
 
 describe('stripSeed', () => {
