@@ -10,7 +10,7 @@ import '@vue-flow/node-resizer/dist/style.css'
 import { getVaultConfig, listCategories, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
-import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
+import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { appendX } from '../canvas/pack'
@@ -26,10 +26,11 @@ const props = defineProps<{
   drafts: GenResult[]; busy: boolean; error: string; preview: string; params: PanelParams
   openWork: WorkDoc | null; insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
   linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
+  keepDrafts?: { ids: string[]; nonce: number } | null
 }>()
 const emit = defineEmits<{
   generate: [{ positive: string; negative: string; snapshot: SnapshotData }]
-  take: []
+  take: [string]
   cancel: []
   saved: [string]
   navigate: [string]
@@ -112,6 +113,13 @@ function rewriteSavedUrls(wid: string) {
   emit('saved', wid)
 }
 
+// Size a freshly-kept image at the default spawn scale, keeping its aspect ratio. One place so
+// every spawn site (single drag, multi-keep) agrees on the default.
+function spawnSize(ar: number) {
+  const long = BASE_LONG * DEFAULT_SPAWN_SCALE
+  return { w: Math.round(ar >= 1 ? long : long * ar), h: Math.round(ar >= 1 ? long / ar : long) }
+}
+
 function toFlow(clientX: number, clientY: number) {
   if (typeof screenToFlowCoordinate === 'function') return screenToFlowCoordinate({ x: clientX, y: clientY })
   const rect = flowRef.value?.getBoundingClientRect()
@@ -140,13 +148,20 @@ function onCanvasDrop(e: DragEvent) {
     } catch { /* malformed payload — ignore */ }
     return
   }
-  if (payload !== 'nai-draft') return // only our own drags materialise (not an external file/image)
-  const draft = props.drafts[0]
+  if (payload.startsWith('nai-drafts:')) { // a multi-selected group of drafts dragged out
+    keepDraftsBatch(payload.slice('nai-drafts:'.length).split(','), toFlow(e.clientX, e.clientY))
+    return
+  }
+  // Station Output slot drags the top (`nai-draft`); a Stack-tab thumbnail drags a specific draft
+  // (`nai-draft:<id>`). Anything else is an external file — ignore.
+  let draft: GenResult | undefined
+  if (payload === 'nai-draft') draft = props.drafts[0]
+  else if (payload.startsWith('nai-draft:')) draft = props.drafts.find((d) => d.id === payload.slice('nai-draft:'.length))
+  else return
   if (!draft) return
   const pos = toFlow(e.clientX, e.clientY)
   const ar = (draft.params.width || 832) / (draft.params.height || 1216)
-  const w = ar >= 1 ? 180 : Math.round(180 * ar)
-  const h = ar >= 1 ? Math.round(180 / ar) : 180
+  const { w, h } = spawnSize(ar)
   const id = draft.id // reuse the draft's id/file so a restored draft keeps its image when kept
   // The generation recipe (prompt + params) lives in the snapshot; the node keeps only display + meta.
   // `ar` is the true source aspect ratio — resizing derives sizes from it so rounding never accumulates.
@@ -166,8 +181,46 @@ function onCanvasDrop(e: DragEvent) {
       style: { width: `${w}px`, height: `${h}px` }, data }])
   }
   seedSrc(id) // record the shown src so a later scale can swap without blanking
-  emit('take')
+  emit('take', draft.id) // remove exactly the kept draft (the top from the slot, or a specific thumb)
 }
+
+// Keep several drafts at once (Stack multi-select — button or a multi-drag): materialise each in
+// stack order, arrange without overlapping what's already there, then prune each via `take`.
+// `pos` (flow coords) is the drop point for a drag; absent = the "Keep on canvas" button → gallery.
+function keepDraftsBatch(ids: string[], pos?: { x: number; y: number }) {
+  const gal = findNode(GALLERY)
+  const gp = gal ? (gal.computedPosition || gal.position) : { x: 0, y: 0 }
+  const gd = gal ? dims(gal) : { w: 0, h: 0 }
+  const inGallery = !!gal && (!pos || (pos.x >= gp.x && pos.x <= gp.x + gd.w && pos.y >= gp.y && pos.y <= gp.y + gd.h))
+  const placed: string[] = []
+  ids.forEach((did, i) => {
+    const draft = props.drafts.find((d) => d.id === did)
+    if (!draft) return
+    const ar = (draft.params.width || 832) / (draft.params.height || 1216)
+    const { w, h } = spawnSize(ar)
+    const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: draft.created_at || new Date().toISOString() }
+    if (inGallery && gal) {
+      // Land far below existing gallery images (huge staggered y) so the re-arrange appends them
+      // after what's already kept — never on top of it.
+      addNodes([{ id: did, type: 'image', parentNode: GALLERY, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 12, y: 1e6 + i }, data }])
+    } else {
+      const base = pos ?? { x: 60, y: 60 }
+      addNodes([{ id: did, type: 'image', zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: base.x - w / 2 + i, y: base.y - h / 2 + i }, data }])
+    }
+    seedSrc(did)
+    placed.push(did)
+  })
+  if (!placed.length) return
+  nextTick(() => {
+    if (inGallery && gal) {
+      arrangeImages(nodes.value.filter((n) => n.type === 'image' && n.parentNode === GALLERY)) // pack the whole gallery
+    } else {
+      arrangeImages(placed.map((id) => findNode(id)).filter(Boolean), pos ? new Map([['', pos]]) : undefined)
+    }
+    placed.forEach((id) => emit('take', id))
+  })
+}
+watch(() => props.keepDrafts?.nonce, () => { if (props.keepDrafts?.ids.length) keepDraftsBatch(props.keepDrafts.ids) })
 
 // Shift an image right until it no longer overlaps a sibling image (same parent), using real sizes.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -465,6 +518,19 @@ function cloneBlockData(d: any) {
     block_id: d.block_id, version: d.version, tags: [...(d.tags || [])], expanded: false }
 }
 
+// A block already contributes to the prompt if the composition holds one with the same polarity +
+// text (its identity for generation). Copying an identical one adds nothing, so we warn instead of
+// duplicating — regardless of the copy method (＋, ⇢, or drag into the station).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const blockKey = (polarity: any, text: any) => `${polarity === 'negative' ? 'neg' : 'pos'}:${String(text || '').trim().toLowerCase()}`
+function stationHasBlock(polarity: string, text: string): boolean {
+  const key = blockKey(polarity, text)
+  return nodes.value.some((n) => n.type === 'block' && n.parentNode === STATION && blockKey(n.data?.polarity, n.data?.text) === key)
+}
+function warnDuplicate() {
+  toast.push('That block is already in the generation area — not duplicated', 'err')
+}
+
 // ✕ on a palette row: the block leaves the palette (its block_id returns to the browse pool).
 function unpinBlock(id: string) {
   removeNodes([id])
@@ -484,6 +550,7 @@ function dropBlockAt(data: any, pos: { x: number; y: number }) {
   const inComposition = !!st && rel.x >= outputW && rel.x <= stW && rel.y >= HEADER && rel.y <= h - META
   if (inComposition) {
     const polarity = rel.y < laneBoundary ? 'positive' : 'negative'
+    if (stationHasBlock(polarity, data.text)) { warnDuplicate(); return }
     const lTop = polarity === 'negative' ? laneBoundary : HEADER
     const lBot = polarity === 'negative' ? (h - META) : laneBoundary
     addNodes([{
@@ -516,6 +583,7 @@ function libraryBlockData(b: LibraryBlock): any {
 function appendToStationLane(data: any) {
   const st = findNode(STATION)
   if (!st) return
+  if (stationHasBlock(data.polarity, data.text)) { warnDuplicate(); return }
   const { w: stW, h } = dims(st)
   const outputW = (st.data.outputRatio ?? 0.3) * stW
   const laneBoundary = HEADER + (st.data.posRatio ?? 0.5) * (h - HEADER - META)
@@ -892,7 +960,7 @@ function startName(data: any, e: MouseEvent) {
         </template>
 
         <template #node-block="{ id, data, selected }">
-          <NodeResizer :min-width="150" :min-height="34" :is-visible="selected" color="var(--accent)" />
+          <NodeResizer :min-width="176" :min-height="46" :is-visible="selected" color="var(--accent)" />
           <div class="block" :class="{ neg: data.polarity === 'negative', expanded: data.expanded }" :style="{ '--cat': catColor(data.category) }">
             <div class="bhd">
               <span class="cdot"></span>
@@ -1039,7 +1107,7 @@ function startName(data: any, e: MouseEvent) {
 .zonehd .anchor-tag{margin-left:auto;font-size:10px;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:20px}
 .zhint{padding:16px;font-size:12px;color:var(--text-faint);text-align:center}
 
-.block{position:relative;width:100%;height:100%;min-height:34px;display:flex;flex-direction:column;border-radius:8px;border:1px solid var(--border);border-left:3px solid var(--cat);background:var(--surface-2);box-shadow:0 1px 4px rgba(0,0,0,.2);overflow:hidden}
+.block{position:relative;width:100%;height:100%;min-height:46px;display:flex;flex-direction:column;border-radius:8px;border:1px solid var(--border);border-left:3px solid var(--cat);background:var(--surface-2);box-shadow:0 1px 4px rgba(0,0,0,.2);overflow:hidden}
 .block.neg{border-left-color:#e2483d}
 .bhd{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:6px 8px}
 .cdot{width:8px;height:8px;border-radius:50%;background:var(--cat);flex-shrink:0}

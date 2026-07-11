@@ -44,6 +44,15 @@ them.** When building or changing any UI, check this list first.
 - **Collapse with `v-show`, not `v-if`.** `v-if` destroys DOM state (scroll position, open panels,
   input focus) on collapse; `v-show` preserves it.
 
+## Images
+- **Never CSS-shrink a full-res image into a small box** (thumbnails, cards, nodes). A big source
+  single-step-crushed into a ~150px `<img>` looks soft/pixelated on HiDPI. Two levers, use both:
+  - **Vault images:** request a server-sized thumbnail (`?w=<≈ box × devicePixelRatio × 2>`).
+  - **Fresh `data:` URLs** can't be server-resized, and `?w=` does nothing for them — so make the
+    `<img>` **decode at ~2× the box** (`width/height:200%`) and shrink it back with a transform;
+    the decode is high-res and the GPU downscale is crisp. This is the canvas pipeline's trick
+    (`useImagePipeline.ts` `.imgfull` + transform) — reuse it for any small image box, not just nodes.
+
 ## Canvas (Vue Flow) nodes
 - **Interactive elements inside a node must not select/drag the node.** Vue Flow selects a node on
   `click` (a separate event from `mousedown`/`pointerdown`) and drags from `pointerdown`. Stop

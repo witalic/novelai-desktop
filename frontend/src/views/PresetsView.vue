@@ -12,7 +12,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { newId } from '../vault/ids'
 import type { Preset, PresetParams } from '../types'
 
-const emit = defineEmits<{ apply: [PresetParams]; navigate: [string] }>()
+const emit = defineEmits<{ apply: [Preset]; navigate: [string] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
 
@@ -35,7 +35,7 @@ const groups = computed(() => filterPresets(presets.value, search.value))
 const total = computed(() => presets.value.length)
 
 function apply(p: Preset) {
-  emit('apply', p.params)
+  emit('apply', p)
   push(`Applied “${p.name}” — switched to Generate`, 'ok')
 }
 async function toggleFav(p: Preset) {

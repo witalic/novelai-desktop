@@ -69,6 +69,19 @@ describe('canvasToWork', () => {
     expect(saved.zIndex).toBe(2) // stacking order is layout — it persists
   })
 
+  it('persists an expanded block at its collapsed size (reopens collapsed, not stuck expanded)', () => {
+    const block = {
+      id: 'block-e', type: 'block', parentNode: STATION, position: { x: 400, y: 80 },
+      // expanded box (big) + the collapsed size captured on expand
+      style: { width: '246px', height: '320px' },
+      data: { name: 'X', text: 'long text', polarity: 'positive', category: 'style', expanded: true, _cw: '176px', _ch: '54px' },
+    }
+    const doc = canvasToWork([...anchors(), block], viewport, params, { id: 'w1', title: '' })
+    const saved = doc.canvas.nodes.find((n) => n.id === 'block-e')!
+    expect(saved.style).toEqual({ width: '176px', height: '54px' }) // collapsed, not 246×320
+    expect(saved.data).not.toHaveProperty('expanded')
+  })
+
   it('persists image nodes as pure layout (empty data) — domain lives in images[]', () => {
     const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: '' })
     const node = doc.canvas.nodes.find((n) => n.id === 'img-1')!

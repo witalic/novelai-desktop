@@ -1,19 +1,20 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
-import ParamsPanel from '../components/ParamsPanel.vue'
+import { computed, onActivated, onMounted, reactive, ref, watch } from 'vue'
+import ToolsPanel from '../components/ToolsPanel.vue'
+import PresetEditor from '../components/PresetEditor.vue'
 import CanvasBoard from '../components/CanvasBoard.vue'
-import { generateStream, listPresets, loadWork } from '../api'
-import { resolveDefaultId } from '../presets/diff'
+import { generateStream, listPresets, loadWork, savePreset } from '../api'
+import { resolveDefaultId, stripSeed } from '../presets/diff'
 import { useToast } from '../composables/useToast'
 import { newId } from '../vault/ids'
 import { workToDrafts } from '../vault/serialize'
-import type { PanelParams, PresetParams, GenResult, WorkDoc, SnapshotData, LibraryBlock } from '../types'
+import type { PanelParams, PresetParams, Preset, GenResult, WorkDoc, SnapshotData, LibraryBlock } from '../types'
 
 const props = defineProps<{
   openWorkId?: string | null
   insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
   linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
-  applyPreset?: { params: PresetParams; nonce: number } | null
+  applyPreset?: { id: string; params: PresetParams; nonce: number } | null
 }>()
 const emit = defineEmits<{ navigate: [string]; 'save-block': [{ nodeId: string; block: LibraryBlock }] }>()
 const { push } = useToast()
@@ -24,27 +25,56 @@ const params = reactive<PanelParams>({
   cfg_rescale: 0, quality_toggle: true, uc_preset: 4,
 })
 
-// The default preset's params seed a fresh work. Fetched once; also consulted on New-work.
+// ---- presets: the Tools panel's Preset strip picks/updates; the default seeds a fresh work ----
+const presets = ref<Preset[]>([])
+const activePresetId = ref<string | null>(null)
 const defaultParams = ref<PresetParams | null>(null)
-async function loadDefaultPreset() {
+async function loadPresets() {
   try {
-    const presets = await listPresets()
-    const id = resolveDefaultId(presets)
-    defaultParams.value = presets.find((p) => p.id === id)?.params ?? null
-  } catch { /* no vault / offline — keep the hardcoded defaults */ }
+    presets.value = await listPresets()
+    const id = resolveDefaultId(presets.value)
+    defaultParams.value = presets.value.find((p) => p.id === id)?.params ?? null
+    return id
+  } catch { return null /* no vault / offline — keep the hardcoded defaults */ }
 }
 // Seed the default into a brand-new session only (never clobber a work being opened).
 onMounted(async () => {
-  await loadDefaultPreset()
-  if (!props.openWorkId && defaultParams.value) Object.assign(params, defaultParams.value)
+  const defId = await loadPresets()
+  if (!props.openWorkId && defaultParams.value) { Object.assign(params, defaultParams.value); activePresetId.value = defId }
 })
+onActivated(loadPresets) // pick up presets created/edited in the Presets tab while we were away
 
-// Apply a preset picked in the Presets tab: overwrite params (seed absent ⇒ seed untouched).
-watch(() => props.applyPreset?.nonce, () => { if (props.applyPreset) Object.assign(params, props.applyPreset.params) })
+// Apply a preset (from the Presets tab): overwrite params (seed absent ⇒ seed untouched).
+watch(() => props.applyPreset?.nonce, () => {
+  if (props.applyPreset) { Object.assign(params, props.applyPreset.params); activePresetId.value = props.applyPreset.id }
+})
 
 // New work (from the canvas) re-seeds params from the current default preset.
 function onNewWork() {
   if (defaultParams.value) Object.assign(params, defaultParams.value)
+}
+
+// Preset strip: switch the active preset from the panel dropdown.
+function onPickPreset(p: Preset) { Object.assign(params, p.params); activePresetId.value = p.id }
+// Update the active (user) preset with the live params.
+async function onUpdatePreset() {
+  const p = presets.value.find((x) => x.id === activePresetId.value)
+  if (!p || p.builtin) return
+  try { await savePreset({ id: p.id, name: p.name, params: stripSeed(params) }); await loadPresets(); push('Preset updated', 'ok') }
+  catch (e) { push(e instanceof Error ? e.message : 'Update failed', 'err') }
+}
+// "Save as preset…" opens the editor prefilled from the live params.
+const presetDraft = ref<{ id: string | null; name: string; params: PresetParams } | null>(null)
+function onSaveAsPreset() { presetDraft.value = { id: null, name: '', params: stripSeed(params) } }
+async function onPresetDraftSave(payload: { id: string | null; name: string; params: PresetParams }) {
+  const id = payload.id ?? newId('preset')
+  try {
+    await savePreset({ id, name: payload.name, params: payload.params })
+    presetDraft.value = null
+    await loadPresets()
+    activePresetId.value = id // the just-saved preset is now the active one
+    push('Preset created', 'ok')
+  } catch (e) { push(e instanceof Error ? e.message : 'Save failed', 'err') }
 }
 
 const panelOpen = ref(false) // model/size settings start hidden — the canvas is the focus
@@ -105,9 +135,18 @@ function cancelGenerate() {
   preview.value = ''
 }
 
-function onTake() {
-  drafts.value.shift()
+// A draft was kept on the canvas — remove that one from the stack (id given by a panel-thumbnail
+// drag; bare = the top, from the station Output slot).
+function onTake(id?: string) {
+  drafts.value = id ? drafts.value.filter((d) => d.id !== id) : drafts.value.slice(1)
 }
+function onClearStack() { drafts.value = [] }
+function onRemoveMany(ids: string[]) { drafts.value = drafts.value.filter((d) => !ids.includes(d.id)) }
+
+// Keep several drafts on the canvas at once (ordered), driven from the Stack tab. CanvasBoard
+// materialises them into the gallery and emits `take` per id, which prunes them from the stack.
+const keepSignal = ref<{ ids: string[]; nonce: number } | null>(null)
+function onKeepMany(ids: string[]) { keepSignal.value = { ids, nonce: Date.now() } }
 
 // After a save, the draft stack is on disk under this work — repoint its data: URLs at the vault so later
 // saves don't re-serialize (up to 50) base64 images. Runs synchronously inside the save's dirty-suppression.
@@ -136,9 +175,12 @@ watch(() => props.openWorkId, async (raw) => {
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :insert-blocks="insertBlocks" :link-pin="linkPin" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
+      :insert-blocks="insertBlocks" :link-pin="linkPin" :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @save-block="emit('save-block', $event)" @new-work="onNewWork" />
-    <ParamsPanel :params="params" :open="panelOpen" @toggle="panelOpen = !panelOpen" />
+    <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
+      @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
+      @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @navigate="emit('navigate', $event)" />
+    <PresetEditor v-if="presetDraft" :model="presetDraft" @save="onPresetDraftSave" @close="presetDraft = null" />
   </div>
 </template>
 

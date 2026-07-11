@@ -48,10 +48,18 @@ function slim(n: LiveNode): CanvasNode {
     : n.type === 'station' ? STATION_FIELDS
     : n.type === 'zone' ? ZONE_FIELDS
     : []
+  const data = n.data as Record<string, unknown> | undefined
+  let style = n.style as NodeStyle | undefined
+  // An expanded block's box is transient UI (`expanded` is stripped) — persist its COLLAPSED size
+  // (`_cw`/`_ch`, captured on expand) so it reopens collapsed, not as a collapsed block stranded in
+  // an expanded-sized box.
+  if (n.type === 'block' && data?.expanded) {
+    style = { width: (data._cw as string) || style?.width || '176px', ...(data._ch ? { height: data._ch as string } : {}) }
+  }
   return {
     id: n.id, type: n.type, position: n.position, parentNode: n.parentNode,
-    style: n.style as NodeStyle | undefined, zIndex: n.zIndex,
-    data: pick(n.data as Record<string, unknown> | undefined, fields),
+    style, zIndex: n.zIndex,
+    data: pick(data, fields),
   } as CanvasNode
 }
 
@@ -169,6 +177,14 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
           tags: im?.tags || [], favorite: !!im?.favorite, group: im?.group ?? null, description: im?.description || '',
         },
       }
+    }
+    if (n.type === 'block') {
+      // A block always opens collapsed (expanded is transient). Drop any persisted height so it
+      // sizes to its collapsed content — never a collapsed block stranded in an expanded-sized box
+      // (also heals works saved before this was fixed). Width is kept (a real layout choice).
+      const style = n.style ? { ...(n.style as NodeStyle) } : undefined
+      if (style) delete style.height
+      return { ...n, style, data: { ...n.data } } as CanvasNode
     }
     return { ...n, data: { ...n.data } } as CanvasNode
   })

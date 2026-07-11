@@ -44,10 +44,13 @@ input,textarea,[contenteditable="true"]{user-select:text;-webkit-user-select:tex
 .label .v{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
 select,textarea,input[type=text],input[type=number]{width:100%;font:inherit;color:var(--text);background:var(--surface-2);
   border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;outline:none}
-select:focus,textarea:focus,input:focus{border-color:var(--accent);
+/* Focus ring for boxed fields only — never range/checkbox (the blanket input:focus put a box
+   around sliders). */
+select:focus,textarea:focus,input[type=text]:focus,input[type=number]:focus{border-color:var(--accent);
   box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
 textarea{resize:none}
 input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=range]:focus{outline:none}
 
 .seg{display:flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .seg button{flex:1;border:0;border-left:1px solid var(--border);background:var(--surface-1);color:var(--text-dim);

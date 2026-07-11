@@ -9,7 +9,7 @@ import PresetsView from './views/PresetsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
-import type { LibraryBlock, PresetParams } from './types'
+import type { LibraryBlock, Preset, PresetParams } from './types'
 
 useTheme()
 export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
@@ -35,11 +35,11 @@ function useBlocks(blocks: LibraryBlock[]) {
   push(`Added ${blocks.length} block${blocks.length > 1 ? 's' : ''} to the canvas library`, 'ok')
 }
 
-// Apply a preset: hand its params to the Generate view (nonce-bumped like the other cross-view
+// Apply a preset: hand its id + params to the Generate view (nonce-bumped like the other cross-view
 // signals) and switch there. Seed is absent from PresetParams, so Object.assign leaves it alone.
-const applyPreset = ref<{ params: PresetParams; nonce: number } | null>(null)
-function onApplyPreset(params: PresetParams) {
-  applyPreset.value = { params, nonce: Date.now() }
+const applyPreset = ref<{ id: string; params: PresetParams; nonce: number } | null>(null)
+function onApplyPreset(preset: Preset) {
+  applyPreset.value = { id: preset.id, params: preset.params, nonce: Date.now() }
   view.value = 'generate'
 }
 

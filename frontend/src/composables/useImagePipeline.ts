@@ -13,7 +13,10 @@ interface Deps {
 
 export const SCALES = [0.5, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10]
 export const PICK_SCALES = SCALES.filter((s) => s <= 5) // the picker offers up to ×5
-const BASE_LONG = 180 // the long side at scale ×1
+export const BASE_LONG = 180 // the long side at scale ×1
+// Reference scale a freshly-kept image spawns at (shared so every spawn site agrees). A candidate
+// to move into app Settings later — one constant now.
+export const DEFAULT_SPAWN_SCALE = 1.25
 const DEC_FLOOR = 480 // never fetch below this long side (crisp when scaled small)
 const DEC_CEIL = 1920 // up to the source's long side — big scales get full detail (backend never upscales)
 
