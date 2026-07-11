@@ -60,7 +60,7 @@ const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
 const CATS: Record<string, string> = {
   style: '#6e5dc6', character: '#0c66e4', pose: '#ae4787', environment: '#1f845a',
-  lighting: '#b65c02', camera: '#12b5a6', outfit: '#d4537e', negative: '#e2483d', custom: '#738496',
+  lighting: '#b65c02', camera: '#12b5a6', outfit: '#d4537e', nsfw: '#c2255c', negative: '#e2483d', custom: '#738496',
 }
 // Bumped whenever the vault's Library may have changed under the widget (returning to Generate,
 // opening a work) so the prompt widget re-reads category colors/counts and its pins' versions —

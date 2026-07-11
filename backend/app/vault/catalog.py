@@ -25,6 +25,7 @@ DEFAULTS: list[CategoryDoc] = [
     CategoryDoc(slug="lighting", name="Lighting", color="#b65c02"),
     CategoryDoc(slug="camera", name="Camera", color="#12b5a6"),
     CategoryDoc(slug="outfit", name="Outfit", color="#d4537e"),
+    CategoryDoc(slug="nsfw", name="NSFW", color="#c2255c"),
     CategoryDoc(slug="negative", name="Negative", color="#e2483d"),
     CategoryDoc(slug="custom", name="Custom", color="#738496"),
 ]
