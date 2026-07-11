@@ -51,8 +51,11 @@ watch(() => props.applyPreset?.nonce, () => {
   if (props.applyPreset) { Object.assign(params, props.applyPreset.params); activePresetId.value = props.applyPreset.id }
 })
 
-// New work (from the canvas) re-seeds params from the current default preset.
+// New work (from the canvas) starts clean: drop the previous work's generation stack (it lives here,
+// not in the canvas nodes CanvasBoard already reset) and re-seed params from the current default preset.
 function onNewWork() {
+  drafts.value = []
+  loadedWork.value = null
   if (defaultParams.value) Object.assign(params, defaultParams.value)
 }
 
