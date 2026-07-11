@@ -6,6 +6,7 @@ import { computed, onActivated, ref } from 'vue'
 import { ApiError, deletePreset, listPresets, savePreset, setDefaultPreset, setPresetFavorite } from '../api'
 import { modelLabel, samplerLabel } from '../presets/options'
 import { filterPresets } from '../presets/list'
+import { costPair } from '../presets/cost'
 import PresetEditor from '../components/PresetEditor.vue'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
@@ -20,6 +21,10 @@ const presets = ref<Preset[]>([])
 const search = ref('')
 const noVault = ref(false)
 
+// Estimated Anlas per generation, shown for any paid tier and for Opus (which gets the first sample
+// free at ≤1024²/≤28 steps). Tier-independent so a preset card is informative regardless of the viewer.
+const cost = (p: Preset) => costPair(p.params)
+
 async function load() {
   try {
     presets.value = await listPresets()
@@ -29,7 +34,7 @@ async function load() {
     else push(e instanceof Error ? e.message : 'Could not load presets', 'err')
   }
 }
-onActivated(load) // fires on first mount under KeepAlive too; re-loads after a vault switch
+onActivated(load) // fires on first mount under KeepAlive too
 
 const groups = computed(() => filterPresets(presets.value, search.value))
 const total = computed(() => presets.value.length)
@@ -111,6 +116,8 @@ async function onSave(payload: { id: string | null; name: string; params: Preset
               <span class="pchip">{{ p.params.steps }} steps</span>
               <span class="pchip">CFG {{ p.params.scale.toFixed(1) }}</span>
               <span class="pchip">{{ samplerLabel(p.params.sampler) }}</span>
+              <span class="pchip cost" title="Anlas per generation on any paid tier">◆ {{ cost(p).standard }}</span>
+              <span v-if="cost(p).opus !== cost(p).standard" class="pchip cost opus" title="Opus tier — first sample free">{{ cost(p).opus === 0 ? 'Opus free' : `Opus ◆ ${cost(p).opus}` }}</span>
             </div>
             <div class="pacts">
               <button class="pbtn apply" @click="apply(p)">Apply</button>
@@ -138,6 +145,8 @@ async function onSave(payload: { id: string | null; name: string; params: Preset
               <span class="pchip">{{ p.params.steps }} steps</span>
               <span class="pchip">CFG {{ p.params.scale.toFixed(1) }}</span>
               <span class="pchip">{{ samplerLabel(p.params.sampler) }}</span>
+              <span class="pchip cost" title="Anlas per generation on any paid tier">◆ {{ cost(p).standard }}</span>
+              <span v-if="cost(p).opus !== cost(p).standard" class="pchip cost opus" title="Opus tier — first sample free">{{ cost(p).opus === 0 ? 'Opus free' : `Opus ◆ ${cost(p).opus}` }}</span>
             </div>
             <div class="pacts">
               <button class="pbtn apply" @click="apply(p)">Apply</button>
@@ -193,6 +202,9 @@ async function onSave(payload: { id: string | null; name: string; params: Preset
 .pchip{font-size:10.5px;color:var(--text-dim);background:var(--surface-3);border:1px solid var(--border);border-radius:20px;padding:1px 8px;font-variant-numeric:tabular-nums}
 .pchip .ar{display:inline-block;width:8px;height:8px;border:1.5px solid var(--text-faint);border-radius:2px;vertical-align:-1px;margin-right:5px}
 .pchip .ar.land{width:10px;height:7px}
+.pchip.cost{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--border));font-weight:600}
+/* Opus variant: a filled tint so "what Opus pays" reads as distinct from the standard cost chip. */
+.pchip.cost.opus{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--surface-3));border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
 /* pinned footer: margin-top:auto pushes it to the card bottom, so it never shifts with chip rows
    and lines up across a row (cards stretch to equal height). Apply is primary (full width); the
    secondary actions sit in a labelled row beneath. */

@@ -18,6 +18,22 @@ log = logging.getLogger(__name__)
 
 _ENDPOINT = "/ai/generate-image"
 _STREAM_ENDPOINT = "/ai/generate-image-stream"
+_SUBSCRIPTION_ENDPOINT = "/user/subscription"  # served from the image host (api.novelai.net rejects it: "update to the image URL")
+
+_TIER_NAMES = {0: "Paper", 1: "Tablet", 2: "Scroll", 3: "Opus"}
+
+
+def parse_subscription(data: dict) -> dict:
+    """NovelAI calls Anlas 'training steps' for legacy reasons — remaining = fixed (monthly) +
+    purchased (permanent). Opus (tier 3, active) generates the first sample free under limits."""
+    tsl = data.get("trainingStepsLeft") or {}
+    tier = int(data.get("tier") or 0)
+    return {
+        "tier": tier,
+        "tier_name": _TIER_NAMES.get(tier, "Unknown"),
+        "active": bool(data.get("active")),
+        "anlas": int(tsl.get("fixedTrainingStepsLeft") or 0) + int(tsl.get("purchasedTrainingSteps") or 0),
+    }
 
 
 def build_body(params: GenerateParams) -> dict:
@@ -73,6 +89,18 @@ class NovelAIClient:
         self._base_url = base_url
         self._timeout = timeout_s
         self._transport = transport  # injected in tests (httpx.MockTransport)
+
+    async def get_subscription(self) -> dict:
+        """Subscription tier + remaining Anlas. Drives the cost estimate's Opus free tier and the
+        balance display. Note: served from the image host, not api.novelai.net."""
+        headers = {"Authorization": f"Bearer {self._token}"}
+        async with httpx.AsyncClient(
+            base_url=self._base_url, timeout=self._timeout, transport=self._transport
+        ) as http:
+            resp = await http.get(_SUBSCRIPTION_ENDPOINT, headers=headers)
+        if resp.status_code != 200:
+            raise map_response_error(resp.status_code, resp.text)
+        return parse_subscription(resp.json())
 
     async def generate(self, params: GenerateParams) -> list[bytes]:
         body = build_body(params)

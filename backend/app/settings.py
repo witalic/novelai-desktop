@@ -26,7 +26,7 @@ class LogSettings(BaseModel):
 
 
 class NovelAISettings(BaseModel):
-    base_url: str = "https://image.novelai.net"
+    base_url: str = "https://image.novelai.net"  # generation + account host (subscription/Anlas live here too)
     model: str = "nai-diffusion-4-5-full"
     timeout_s: float = 120.0
     # Force the offline mock client (no network, no Anlas). When False and no token is in the

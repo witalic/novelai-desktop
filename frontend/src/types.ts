@@ -21,6 +21,14 @@ export type PanelParams = Omit<GenerateParams, 'prompt' | 'negative_prompt'>
 // Keep in sync with backend/app/vault/models.py::PresetParams.
 export type PresetParams = Omit<PanelParams, 'seed'>
 
+// NovelAI account: subscription tier + remaining Anlas. tier 3 = Opus (free first sample under limits).
+export interface Subscription {
+  tier: number
+  tier_name: string
+  active: boolean
+  anlas: number
+}
+
 export interface Preset {
   id: string
   name: string

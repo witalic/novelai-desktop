@@ -7,6 +7,8 @@ import { computed, ref, watch } from 'vue'
 import Dropdown from './Dropdown.vue'
 import ParamFields from './ParamFields.vue'
 import { presetParamsDiffer } from '../presets/diff'
+import { anlasCost } from '../presets/cost'
+import { useAccount } from '../composables/useAccount'
 import type { GenResult, PanelParams, Preset } from '../types'
 
 const props = defineProps<{
@@ -43,6 +45,10 @@ function thumbSrc(d: GenResult): string {
 type Tab = 'generation' | 'stack' | 'widgets'
 const tab = ref<Tab>((sessionStorage.getItem('nai-tools-tab') as Tab) || 'generation')
 watch(tab, (t) => sessionStorage.setItem('nai-tools-tab', t))
+
+// ---- cost estimate: tier-aware (Opus gets the first sample free — see cost.ts), reflects the live params ----
+const { subscription } = useAccount()
+const genCost = computed(() => anlasCost(props.params, subscription.value?.tier ?? 0, !!subscription.value?.active))
 
 // ---- preset strip ----
 const activePreset = computed(() => props.presets.find((p) => p.id === props.activePresetId) ?? null)
@@ -130,6 +136,12 @@ watch(() => props.drafts, (ds) => {
           <Dropdown :model-value="activePresetId ?? ''" :options="presetOptions" @update:model-value="pick" />
         </div>
         <ParamFields :params="params" />
+        <div class="costcard">
+          <div class="crow"><span class="clbl">Estimated cost</span>
+            <span class="cval">{{ genCost === 0 ? 'Free' : `◆ ${genCost}` }}</span></div>
+          <div v-if="subscription" class="crow"><span class="clbl">Balance</span>
+            <span class="cbal"><span class="ctier">{{ subscription.tier_name }}</span>◆ {{ subscription.anlas.toLocaleString() }}</span></div>
+        </div>
       </div>
 
       <!-- ===== Stack ===== -->
@@ -206,6 +218,14 @@ watch(() => props.drafts, (ds) => {
 .modtag{font-size:9px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--warn);
   border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:10px;padding:0 6px}
 .plink{border:0;background:transparent;color:var(--accent);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:0}
+
+.costcard{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-2);padding:11px 12px;display:flex;flex-direction:column;gap:7px}
+.costcard .crow{display:flex;align-items:center;justify-content:space-between}
+.costcard .clbl{font-size:11.5px;color:var(--text-dim)}
+.costcard .cval{font-size:13px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+.costcard .cbal{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--text-dim);font-variant-numeric:tabular-nums}
+.costcard .ctier{font-size:9.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--accent);
+  background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--border));border-radius:10px;padding:1px 6px}
 
 .stackintro{font-size:11.5px;color:var(--text-faint);line-height:1.5}
 .stackintro b{color:var(--text-dim)}

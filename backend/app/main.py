@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.routers import generate, settings, system, vault
+from app.routers import account, generate, settings, system, vault
 from app.settings import get_settings
 
 _LOOPBACK = {"127.0.0.1", "localhost"}
@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
 
     app.include_router(system.router)
     app.include_router(generate.router)
+    app.include_router(account.router)
     app.include_router(vault.router)
     app.include_router(settings.router)
 

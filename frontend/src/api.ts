@@ -1,6 +1,6 @@
 import type {
   BlocksPage, CategoryCount, GenerateParams, GenerateResponse, LibraryBlock,
-  Preset, PresetParams, StreamEvent, TagCount, WorkDoc, WorksPage,
+  Preset, PresetParams, StreamEvent, Subscription, TagCount, WorkDoc, WorksPage,
 } from './types'
 
 export async function saveWork(doc: WorkDoc): Promise<{ id: string; updated_at: string }> {
@@ -139,6 +139,11 @@ export async function listTags(category = ''): Promise<TagCount[]> {
   const resp = await fetch(`/api/vault/library/tags${p}`)
   if (!resp.ok) throw new ApiError(resp.status, `Failed to list tags (HTTP ${resp.status})`)
   return resp.json()
+}
+
+// ---- account ----
+export async function getSubscription(): Promise<Subscription> {
+  return jsonOrThrow(await fetch('/api/account/subscription'), 'Failed to read subscription')
 }
 
 // ---- presets (generation-param bundles) ----

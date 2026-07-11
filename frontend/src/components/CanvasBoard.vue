@@ -11,6 +11,8 @@ import { getVaultConfig, listCategories, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
+import { useAccount } from '../composables/useAccount'
+import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { appendX } from '../canvas/pack'
@@ -67,6 +69,10 @@ async function loadCategoryColors() {
   } catch { /* backend not ready / no vault — fall back to the builtin palette */ }
 }
 const catColor = (c: string) => vaultCatColors.value[c] ?? CATS[c] ?? CATS.custom
+
+// Estimated Anlas cost of the current params (Opus tier gets the first sample free — see cost.ts).
+const { subscription } = useAccount()
+const genCost = computed(() => anlasCost(props.params, subscription.value?.tier ?? 0, !!subscription.value?.active))
 
 const compBlocks = computed(() => nodes.value.filter((n) => n.type === 'block' && n.parentNode === STATION))
 const composed = computed(() => {
@@ -891,8 +897,13 @@ function startName(data: any, e: MouseEvent) {
               <span class="sttitle">Generation</span>
               <span v-if="busy" class="chip busy"><span class="spinner"></span> Generating…</span>
               <div class="spacer"></div>
+              <span v-if="subscription" class="stbal nodrag" :title="`${subscription.tier_name} subscription — remaining Anlas`">
+                <span class="sttier">{{ subscription.tier_name }}</span>◆ {{ subscription.anlas.toLocaleString() }}
+              </span>
               <button v-if="busy" class="gzcancel nodrag" @pointerdown.stop @click.stop="emit('cancel')">Cancel</button>
-              <button v-else class="gzgen nodrag" :disabled="!composed.positive" @pointerdown.stop @click.stop="doGenerate">Generate</button>
+              <button v-else class="gzgen nodrag" :disabled="!composed.positive" @pointerdown.stop @click.stop="doGenerate">
+                Generate <span class="gcost">{{ genCost === 0 ? 'free' : `◆ ${genCost}` }}</span>
+              </button>
             </div>
             <div class="stbody">
               <div class="stoutput" :style="{ flexGrow: data.outputRatio ?? 0.3 }">
@@ -1044,8 +1055,12 @@ function startName(data: any, e: MouseEvent) {
 .station{width:100%;height:100%;display:flex;flex-direction:column;border:1.5px solid var(--border-strong);border-radius:12px;overflow:hidden;background:color-mix(in srgb,var(--surface-1) 70%,transparent)}
 .sthd{height:44px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--surface-1)}
 .sttitle{font-weight:600;font-size:13px}
-.gzgen{border:0;border-radius:var(--radius);background:var(--accent);color:var(--on-accent);font-weight:600;font-size:12px;padding:6px 14px;cursor:pointer}
+.gzgen{display:inline-flex;align-items:center;gap:8px;border:0;border-radius:var(--radius);background:var(--accent);color:var(--on-accent);font-weight:600;font-size:12px;padding:6px 14px;cursor:pointer}
 .gzgen:disabled{opacity:.5;cursor:default}
+.gzgen .gcost{font-size:11px;font-weight:700;background:color-mix(in srgb,#000 22%,transparent);color:#fff;padding:1px 7px;border-radius:20px}
+.stbal{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--text-dim);font-variant-numeric:tabular-nums}
+.stbal .sttier{font-size:9.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--accent);
+  background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--border));border-radius:10px;padding:1px 6px}
 .gzcancel{border:1px solid var(--border-strong);border-radius:var(--radius);background:transparent;color:var(--text);font-weight:600;font-size:12px;padding:6px 14px;cursor:pointer}
 .gzcancel:hover{border-color:var(--danger,#e2483d);color:var(--danger,#e2483d)}
 .stbody{flex:1;display:flex;min-height:0}

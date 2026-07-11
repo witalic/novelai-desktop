@@ -1,8 +1,13 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
+import { useAccount } from '../composables/useAccount'
 import type { ViewId } from '../App.vue'
 
 defineProps<{ current: ViewId }>()
 const emit = defineEmits<{ navigate: [ViewId] }>()
+
+const { subscription, refresh } = useAccount()
+onMounted(refresh)
 </script>
 
 <template>
@@ -28,7 +33,13 @@ const emit = defineEmits<{ navigate: [ViewId] }>()
       <i>⚙</i> Settings
     </div>
 
-    <div class="bottom"><div class="ver">v0.1 · preview</div></div>
+    <div class="bottom">
+      <div v-if="subscription" class="acct" :title="`${subscription.tier_name} subscription — remaining Anlas`">
+        <span class="tier">{{ subscription.tier_name }}</span>
+        <span class="bal"><span class="dia">◆</span><span class="amt">{{ subscription.anlas.toLocaleString() }}</span><span class="lbl">Anlas</span></span>
+      </div>
+      <div class="ver">v0.1 · preview</div>
+    </div>
   </aside>
 </template>
 
@@ -50,5 +61,13 @@ const emit = defineEmits<{ navigate: [ViewId] }>()
 .navitem .soon{margin-left:auto;font-size:10px;font-weight:600;color:var(--text-faint);
   border:1px solid var(--border-strong);padding:0 6px;border-radius:20px}
 .bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:12px}
+.acct{display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--surface-2);font-size:12px}
+.acct .tier{font-size:10px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--accent);
+  background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--border));border-radius:10px;padding:1px 7px}
+.acct .bal{margin-left:auto;display:flex;align-items:center;gap:4px}
+.acct .dia{color:var(--accent);font-size:11px}
+.acct .amt{font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.acct .lbl{color:var(--text-faint);font-size:11px}
 .ver{font-size:11px;color:var(--text-faint);padding:4px 8px}
 </style>

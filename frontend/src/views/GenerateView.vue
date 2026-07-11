@@ -5,6 +5,7 @@ import PresetEditor from '../components/PresetEditor.vue'
 import CanvasBoard from '../components/CanvasBoard.vue'
 import { generateStream, listPresets, loadWork, savePreset } from '../api'
 import { resolveDefaultId, stripSeed } from '../presets/diff'
+import { useAccount } from '../composables/useAccount'
 import { useToast } from '../composables/useToast'
 import { newId } from '../vault/ids'
 import { workToDrafts } from '../vault/serialize'
@@ -18,6 +19,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ navigate: [string]; 'save-block': [{ nodeId: string; block: LibraryBlock }] }>()
 const { push } = useToast()
+const account = useAccount()
 
 const params = reactive<PanelParams>({
   model: 'nai-diffusion-4-5-full', width: 832, height: 1216, steps: 28, scale: 5,
@@ -123,7 +125,7 @@ async function onGenerate(payload: { positive: string; negative: string; snapsho
   } catch (e) {
     if (token === genToken) error.value = e instanceof Error ? e.message : String(e) // ignore a superseded/aborted run
   } finally {
-    if (token === genToken) { busy.value = false; preview.value = '' }
+    if (token === genToken) { busy.value = false; preview.value = ''; account.refresh() } // reconcile Anlas after a real spend
   }
 }
 
