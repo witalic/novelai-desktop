@@ -12,6 +12,8 @@ import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
 import { useAccount } from '../composables/useAccount'
+import { useCatalog, modelSpec } from '../composables/useCatalog'
+import { useTokenCount } from '../composables/useTokenCount'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
@@ -82,7 +84,19 @@ const composed = computed(() => {
     .map((b) => String(b.data.text || '').trim()).filter(Boolean)
   return { positive: pick(false).join(', '), negative: pick(true).join(', ') }
 })
-const tokenEstimate = computed(() => Math.ceil((composed.value.positive.length + composed.value.negative.length) / 4))
+// Real token usage vs the model's budget (POST /api/tokenize, debounced + stale-guarded). Positive
+// (base + character captions later) and negative are counted separately against their own limits.
+useCatalog() // ensure the catalog is loaded so the per-model limits below resolve
+const { positive: posTokens, negative: negTokens } = useTokenCount(
+  () => ({
+    model: props.params.model, positive: composed.value.positive, negative: composed.value.negative,
+    // NovelAI prepends quality tags to the positive and the ucPreset undesired-content to the negative;
+    // both count against their budgets, so the indicator mirrors the web UI.
+    quality_toggle: props.params.quality_toggle, uc_preset: props.params.uc_preset,
+  }),
+)
+const posLimit = computed(() => modelSpec(props.params.model)?.token_limit ?? 512)
+const negLimit = computed(() => modelSpec(props.params.model)?.negative_token_limit ?? 512)
 // Loose blocks/images not inside any anchor zone are scratch — saved with the work, but with no
 // role in generation or galleries.
 const scratchCount = computed(() => nodes.value.filter((n) => (n.type === 'block' || n.type === 'image') && !ANCHORS.has(n.parentNode ?? '')).length)
@@ -928,9 +942,10 @@ function startName(data: any, e: MouseEvent) {
               </div>
             </div>
             <div class="stmeta nowheel">
-              <div class="mrow"><b>+</b> {{ composed.positive || '—' }}</div>
-              <div class="mrow neg"><b>−</b> {{ composed.negative || '—' }}</div>
-              <div class="mtok">≈ {{ tokenEstimate }} tokens</div>
+              <div class="mrow"><b>+</b> <span class="mtext">{{ composed.positive || '—' }}</span>
+                <span class="tok" :class="{ over: posTokens > posLimit }" :title="`Positive prompt — ${posTokens} of ${posLimit} T5 tokens`">{{ posTokens }} / {{ posLimit }} tokens</span></div>
+              <div class="mrow neg"><b>−</b> <span class="mtext">{{ composed.negative || '—' }}</span>
+                <span class="tok" :class="{ over: negTokens > negLimit }" :title="`Negative prompt — ${negTokens} of ${negLimit} T5 tokens`">{{ negTokens }} / {{ negLimit }}</span></div>
             </div>
           </div>
         </template>
@@ -1089,9 +1104,11 @@ function startName(data: any, e: MouseEvent) {
 .lane.neg{background:color-mix(in srgb,#e2483d 6%,transparent)}
 .lanelbl{position:absolute;left:10px;top:8px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint)}
 .stmeta{height:66px;flex-shrink:0;border-top:1px solid var(--border);background:var(--surface-1);padding:7px 12px;overflow:auto;font-size:11px;color:var(--text-dim)}
-.stmeta .mrow{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.stmeta .mrow b{color:var(--text-faint)}.stmeta .mrow.neg b{color:#e2483d}
-.stmeta .mtok{margin-top:2px;color:var(--text-faint)}
+.stmeta .mrow{display:flex;align-items:center;gap:8px;white-space:nowrap;margin-bottom:2px}
+.stmeta .mrow b{color:var(--text-faint);flex-shrink:0}.stmeta .mrow.neg b{color:#e2483d}
+.stmeta .mrow .mtext{overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.stmeta .tok{flex-shrink:0;color:var(--text-faint);font-weight:600;font-variant-numeric:tabular-nums}
+.stmeta .tok.over{color:#e2483d}
 
 /* The min size must stay below any legit node box (×0.5 portrait ≈ 62×90) — a larger clamp makes the
    card outgrow the node while the image inside stays transform-scaled to the node box (right/bottom gap). */

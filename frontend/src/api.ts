@@ -1,6 +1,7 @@
 import type {
   BlocksPage, Catalog, CategoryCount, GenerateParams, GenerateResponse, LibraryBlock,
-  Preset, PresetParams, StreamEvent, Subscription, TagCount, WorkDoc, WorksPage,
+  Preset, PresetParams, StreamEvent, Subscription, TagCount, TokenizeRequest, TokenizeResponse,
+  WorkDoc, WorksPage,
 } from './types'
 
 export async function saveWork(doc: WorkDoc): Promise<{ id: string; updated_at: string }> {
@@ -149,6 +150,13 @@ export async function getSubscription(): Promise<Subscription> {
 // ---- model catalog (static; fetched once and cached by useCatalog) ----
 export async function getCatalog(): Promise<Catalog> {
   return jsonOrThrow(await fetch('/api/catalog'), 'Failed to read model catalog')
+}
+
+// ---- tokenization (real per-model token counts for the usage indicator) ----
+export async function tokenize(req: TokenizeRequest): Promise<TokenizeResponse> {
+  return jsonOrThrow(await fetch('/api/tokenize', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req),
+  }), 'Failed to count tokens')
 }
 
 // ---- presets (generation-param bundles) ----

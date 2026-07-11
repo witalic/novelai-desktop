@@ -53,6 +53,11 @@ export interface Catalog {
   default_model: string
 }
 
+// Real per-model token counts (POST /api/tokenize) for the usage indicator. positive = base caption
+// (+ character captions, once they exist); negative counted separately against its own limit.
+export interface TokenizeRequest { model: string; positive: string; negative: string; quality_toggle?: boolean; uc_preset?: number }
+export interface TokenizeResponse { positive: number; negative: number; tokenizer: string }
+
 export interface Preset {
   id: string
   name: string
