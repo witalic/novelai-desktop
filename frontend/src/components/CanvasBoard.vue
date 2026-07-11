@@ -7,13 +7,13 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { getVaultConfig, saveDownloads } from '../api'
+import { getVaultConfig, listCategories, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
-import { appendX, insertionIndex, packColumn, packedHeight, PACK_X } from '../canvas/pack'
+import { appendX } from '../canvas/pack'
 import PromptWidget from './PromptWidget.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -24,6 +24,7 @@ const { confirm } = useConfirm()
 const props = defineProps<{
   drafts: GenResult[]; busy: boolean; error: string; preview: string; params: PanelParams
   openWork: WorkDoc | null; insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
+  linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
 }>()
 const emit = defineEmits<{
   generate: [{ positive: string; negative: string; snapshot: SnapshotData }]
@@ -31,10 +32,11 @@ const emit = defineEmits<{
   cancel: []
   saved: [string]
   navigate: [string]
+  'save-block': [{ nodeId: string; block: LibraryBlock }]
 }>()
 
 const {
-  nodes, addNodes, removeNodes, findNode, onNodeDragStart, onNodeDragStop, getIntersectingNodes, viewport,
+  nodes, addNodes, removeNodes, findNode, onNodeDragStop, getIntersectingNodes, viewport,
   screenToFlowCoordinate, setNodes, setViewport, onNodeContextMenu, onSelectionContextMenu, onPaneContextMenu,
 } = useVueFlow()
 
@@ -50,7 +52,14 @@ const CATS: Record<string, string> = {
   style: '#6e5dc6', character: '#0c66e4', pose: '#ae4787', environment: '#1f845a',
   lighting: '#b65c02', camera: '#12b5a6', outfit: '#d4537e', negative: '#e2483d', custom: '#738496',
 }
-const catColor = (c: string) => CATS[c] ?? CATS.custom
+// Colors come from the vault's categories (customs have their own); CATS is the offline fallback.
+const vaultCatColors = ref<Record<string, string>>({})
+async function loadCategoryColors() {
+  try {
+    vaultCatColors.value = Object.fromEntries((await listCategories()).map((c) => [c.slug, c.color]))
+  } catch { /* backend not ready / no vault — fall back to the builtin palette */ }
+}
+const catColor = (c: string) => vaultCatColors.value[c] ?? CATS[c] ?? CATS.custom
 
 const compBlocks = computed(() => nodes.value.filter((n) => n.type === 'block' && n.parentNode === STATION))
 const composed = computed(() => {
@@ -112,7 +121,20 @@ function onDraftDragStart(e: DragEvent) {
 }
 function onCanvasDrop(e: DragEvent) {
   e.preventDefault()
-  if (e.dataTransfer?.getData('text/plain') !== 'nai-draft') return // only our own draft-drag materialises (not an external file/image)
+  const payload = e.dataTransfer?.getData('text/plain') || ''
+  if (payload.startsWith('nai-palette:')) { // a palette row dragged out → independent copy at the drop point
+    const src = findNode(payload.slice('nai-palette:'.length))
+    if (src?.parentNode === LIBRARY) dropBlockAt(cloneBlockData(src.data), toFlow(e.clientX, e.clientY))
+    return
+  }
+  if (payload.startsWith('nai-libblock:')) { // a browse row dragged out → copy of the vault block
+    try {
+      const b = JSON.parse(payload.slice('nai-libblock:'.length)) as LibraryBlock
+      dropBlockAt(libraryBlockData(b), toFlow(e.clientX, e.clientY))
+    } catch { /* malformed payload — ignore */ }
+    return
+  }
+  if (payload !== 'nai-draft') return // only our own drags materialise (not an external file/image)
   const draft = props.drafts[0]
   if (!draft) return
   const pos = toFlow(e.clientX, e.clientY)
@@ -270,7 +292,7 @@ function relayoutBlocks() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function zoneNodes(): any[] {
   return [
-    { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '244px', height: '440px' } },
+    { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '260px', height: '460px' } },
     { id: STATION, type: 'station', position: { x: 316, y: 40 }, data: { outputRatio: 0.3, posRatio: 0.5 }, zIndex: 0, style: { width: '760px', height: '460px' } },
     { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, data: { role: 'gallery' }, zIndex: 0, style: { width: '320px', height: '440px' } },
   ]
@@ -308,15 +330,6 @@ onNodeDragStop(({ nodes: dragged, node }) => {
   for (const n of set) settleNode(n)
 })
 
-// Palette order at drag start — when the drag turns into a copy-out, the master snaps back into
-// its original slot instead of wherever the drag's y left it.
-let paletteDragOrder: string[] | null = null
-onNodeDragStart(({ node }) => {
-  paletteDragOrder = node.parentNode === LIBRARY
-    ? nodes.value.filter((n) => n.type === 'block' && n.parentNode === LIBRARY)
-      .sort((a, b) => a.position.y - b.position.y).map((n) => n.id)
-    : null
-})
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function settleNode(node: any) {
@@ -331,34 +344,8 @@ function settleNode(node: any) {
   const laneBoundary = HEADER + (st?.data.posRatio ?? 0.5) * (h - HEADER - META)
 
   if (node.type === 'block') {
-    // Dragging OUT of the palette never moves the pin — it spawns an independent copy at the
-    // destination and the master snaps back into its slot (drag INTO/WITHIN the palette still
-    // reorders normally below).
-    const fromPalette = live.parentNode === LIBRARY
-    const copyOut = (make: () => void) => {
-      make()
-      repackLibrary(paletteDragOrder ?? undefined) // the master returns to its pre-drag slot
-      syncLibraryHidden()
-    }
     // Blocks belong only in the composition side (right of the Output column).
     if (overStation && rel.x >= outputW && rel.y >= HEADER && rel.y <= h - META) {
-      if (fromPalette) {
-        // Drag = place anywhere: the copy's polarity re-derives from the drop y (＋ is the strict one).
-        const polarity = rel.y < laneBoundary ? 'positive' : 'negative'
-        const lTop = polarity === 'negative' ? laneBoundary : HEADER
-        const lBot = polarity === 'negative' ? (h - META) : laneBoundary
-        const bw = 176, bh = 34
-        copyOut(() => addNodes([{
-          id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2,
-          position: rel, style: { width: `${bw}px` },
-          data: {
-            ...cloneBlockData(live.data), polarity,
-            xFrac: clamp01((rel.x - outputW) / Math.max(1, (stW - outputW) - bw)),
-            laneFrac: clamp01((rel.y - lTop) / Math.max(1, (lBot - lTop) - bh)),
-          },
-        }]))
-        return
-      }
       if (live.parentNode !== STATION) live.position = rel
       live.parentNode = STATION
       live.data.polarity = live.position.y < laneBoundary ? 'positive' : 'negative'
@@ -369,26 +356,14 @@ function settleNode(node: any) {
       live.data.xFrac = clamp01((live.position.x - outputW) / Math.max(1, (stW - outputW) - bd.w))
       live.data.laneFrac = clamp01((live.position.y - lTop) / Math.max(1, (lBot - lTop) - bd.h))
     } else {
-      // Not in the composition — magnetic drop into the quick-access palette, or detach to scratch.
+      // Not in the composition — drop onto the widget pins it (appended; the widget list is the
+      // palette's home, canvas blocks never live inside the zone visually), or detach to scratch.
       const lib = getIntersectingNodes(node).find((n) => n.id === LIBRARY)
       if (lib) {
-        const dropY = node.computedPosition.y - lib.computedPosition.y
-        const others = nodes.value
-          .filter((n) => n.type === 'block' && n.parentNode === LIBRARY && n.id !== live.id)
-          .sort((a, b) => a.position.y - b.position.y)
-        const slot = insertionIndex(others.map((o) => ({ y: o.position.y, h: blockH(o) })), dropY)
         live.parentNode = LIBRARY
-        const order = others.map((o) => o.id)
-        order.splice(slot, 0, live.id)
-        repackLibrary(order) // snaps the drop into the column — no free placement inside the widget
-      } else if (fromPalette) {
-        // Loose drop from the palette → an independent scratch copy; the pin stays.
-        copyOut(() => addNodes([{
-          id: newId('blk'), type: 'block', zIndex: 2,
-          position: { x: node.computedPosition.x, y: node.computedPosition.y },
-          style: { width: '176px' }, data: cloneBlockData(live.data),
-        }]))
-        return
+        live.position = { x: 0, y: nextPaletteY() }
+        live.hidden = true
+        live.data = { ...live.data, expanded: false, editing: false }
       } else if (live.parentNode) {
         live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
         live.parentNode = undefined
@@ -408,64 +383,75 @@ function settleNode(node: any) {
   }
 }
 
-// ---- prompt widget (library zone): magnetic column packing + collapse ----
-// The palette's layout IS its order (design/prompt-widget-mockup.html): children pack into a
-// single column; a drop picks its slot by y. `order` (ids) overrides the y-derived order when the
-// caller has just computed an insertion slot.
-// Style-first (like sizeOf): authoritative right after expand/collapse/resize mutations, before
-// Vue Flow re-measures `dimensions` (which is async — packing with it would use stale heights).
-const blockH = (n: any) => Number.parseFloat(n.style?.height) || n.dimensions?.height || 34
-function repackLibrary(order?: string[]) {
-  const zone = findNode(LIBRARY)
-  if (!zone) return
-  const children = nodes.value.filter((n) => n.type === 'block' && n.parentNode === LIBRARY)
-  const sorted = order
-    ? order.map((id) => children.find((c) => c.id === id)).filter((c): c is any => !!c)
-    : children.slice().sort((a, b) => a.position.y - b.position.y)
-  const rowW = dims(zone).w - PACK_X * 2
-  const items = sorted.map((c) => ({ id: c.id, h: blockH(c) }))
-  for (const p of packColumn(items)) {
-    const live = findNode(p.id)!
-    live.position = { x: p.x, y: p.y }
-    live.style = { ...(live.style as object), width: `${rowW}px` }
-  }
-  // Auto-grow the zone so the column always fits (never shrink — the user owns the zone size).
-  const need = packedHeight(items)
-  if (!zone.data.collapsed && need > dims(zone).h) zone.style = { ...(zone.style as object), height: `${need}px` }
+// ---- prompt widget (library zone) ----
+// The palette's truth is the zone's child block nodes (persisted as before; position.y is the
+// order key), but they NEVER render on the canvas — the widget shows them as a scrollable HTML
+// list (design/prompt-widget-mockup.html). No packing geometry, native scroll, dozens of pins.
+const paletteChildren = computed(() => nodes.value.filter((n) => n.type === 'block' && n.parentNode === LIBRARY))
+const paletteRows = computed(() => paletteChildren.value
+  .slice().sort((a, b) => a.position.y - b.position.y)
+  .map((n) => ({
+    nodeId: n.id,
+    name: (n.data?.name as string) || '',
+    text: (n.data?.text as string) || '',
+    polarity: (((n.data?.polarity as string) === 'negative') ? 'negative' : 'positive') as 'positive' | 'negative',
+    category: (n.data?.category as string) || 'custom',
+    tags: (n.data?.tags as string[]) || [],
+    block_id: n.data?.block_id as string | undefined,
+    version: n.data?.version as number | undefined,
+  })))
+const nextPaletteY = () => (paletteChildren.value.length
+  ? Math.max(...paletteChildren.value.map((n) => n.position.y)) + 10 : 0)
+// A freshly authored custom block lands at the TOP of the palette (y below the current minimum).
+const prevPaletteY = () => (paletteChildren.value.length
+  ? Math.min(...paletteChildren.value.map((n) => n.position.y)) - 10 : 0)
+// Palette nodes stay hidden permanently — set on every path that parents a block to the zone.
+function hidePaletteNodes() {
+  for (const n of nodes.value) if (n.parentNode === LIBRARY) n.hidden = true
 }
 
-// Collapse persists with the work (layout layer); the runtime `hidden` flag on children does not.
+// The widget edits palette content through this single mutation point (deep watcher → autosave).
+function patchPaletteNode(p: { nodeId: string; patch: Record<string, unknown> }) {
+  const n = findNode(p.nodeId)
+  if (n && n.parentNode === LIBRARY) n.data = { ...n.data, ...p.patch }
+}
+
+// Reorder: insert nodeId before beforeId (null = end), then renumber y as 0,10,20…
+function reorderPalette(p: { nodeId: string; beforeId: string | null }) {
+  const ordered = paletteChildren.value.slice().sort((a, b) => a.position.y - b.position.y)
+  const from = ordered.findIndex((n) => n.id === p.nodeId)
+  if (from < 0) return
+  const [moved] = ordered.splice(from, 1)
+  const at = p.beforeId ? ordered.findIndex((n) => n.id === p.beforeId) : -1
+  ordered.splice(at >= 0 ? at : ordered.length, 0, moved)
+  ordered.forEach((n, i) => { n.position = { x: 0, y: i * 10 } })
+}
+
+// Collapse persists with the work (layout layer). Height must be written to BOTH the node's
+// numeric size (what NodeResizer mutates — a stale style.height would otherwise be ignored) and
+// its style, or the expanded height won't restore.
+function setZoneHeight(zone: any, h: number) {
+  zone.style = { ...(zone.style as object), height: `${h}px` }
+  zone.height = h
+  if (zone.dimensions) zone.dimensions = { ...zone.dimensions, height: h }
+}
 function toggleLibraryCollapse() {
   const zone = findNode(LIBRARY)
   if (!zone) return
-  const collapsed = !zone.data.collapsed
-  if (collapsed) {
-    zone.data.expandedH = dims(zone).h
-    zone.style = { ...(zone.style as object), height: '38px' }
+  if (!zone.data.collapsed) {
+    zone.data.expandedH = Math.max(260, Math.round(dims(zone).h)) // remember the live height
+    zone.data.collapsed = true
+    setZoneHeight(zone, 38)
   } else {
-    zone.style = { ...(zone.style as object), height: `${zone.data.expandedH || 440}px` }
+    zone.data.collapsed = false
+    setZoneHeight(zone, zone.data.expandedH || 460)
   }
-  zone.data.collapsed = collapsed
-  syncLibraryHidden()
-}
-// The palette's child nodes hide while the widget is collapsed OR browsing the Library (the
-// browse pane occupies the zone body; children would z-fight it). `hidden` is runtime-only.
-const widgetBrowsing = ref(false)
-function setWidgetBrowsing(active: boolean) {
-  widgetBrowsing.value = active
-  syncLibraryHidden()
-}
-function syncLibraryHidden() {
-  const hide = !!findNode(LIBRARY)?.data.collapsed || widgetBrowsing.value
-  for (const n of nodes.value) if (n.parentNode === LIBRARY) n.hidden = hide
 }
 
 // ---- palette copy semantics: the pin is a palette master; every exit is an independent copy ----
-const isPaletteChild = (id: string) => findNode(id)?.parentNode === LIBRARY
 // block_ids pinned in the palette — the widget's browse pool excludes them (exclusive membership).
-const pinnedIds = computed(() => nodes.value
-  .filter((n) => n.type === 'block' && n.parentNode === LIBRARY && n.data?.block_id)
-  .map((n) => n.data.block_id as string))
+const pinnedIds = computed(() => paletteChildren.value
+  .filter((n) => n.data?.block_id).map((n) => n.data.block_id as string))
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function cloneBlockData(d: any) {
@@ -477,19 +463,58 @@ function cloneBlockData(d: any) {
 // ✕ on a palette row: the block leaves the palette (its block_id returns to the browse pool).
 function unpinBlock(id: string) {
   removeNodes([id])
-  nextTick(() => repackLibrary()) // close the gap once the node is gone
 }
 
-// ＋ on a palette row: an independent copy lands at the end of the station lane matching the
-// block's polarity (strict routing — drag if you want the other lane). The pin stays.
-function copyToStation(paletteId: string) {
-  const live = findNode(paletteId)
+// Drag-out of a widget row: an independent copy lands where it was dropped — inside the station
+// composition (polarity re-derived from the drop y) or loose on the canvas as scratch.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function dropBlockAt(data: any, pos: { x: number; y: number }) {
   const st = findNode(STATION)
-  if (!live || !st) return
+  const stPos = st ? (st.computedPosition || st.position) : { x: 0, y: 0 }
+  const rel = { x: pos.x - stPos.x, y: pos.y - stPos.y }
+  const { w: stW, h } = st ? dims(st) : { w: 0, h: 0 }
+  const outputW = (st?.data.outputRatio ?? 0.3) * stW
+  const laneBoundary = HEADER + (st?.data.posRatio ?? 0.5) * (h - HEADER - META)
+  const bw = 176, bh = 34
+  const inComposition = !!st && rel.x >= outputW && rel.x <= stW && rel.y >= HEADER && rel.y <= h - META
+  if (inComposition) {
+    const polarity = rel.y < laneBoundary ? 'positive' : 'negative'
+    const lTop = polarity === 'negative' ? laneBoundary : HEADER
+    const lBot = polarity === 'negative' ? (h - META) : laneBoundary
+    addNodes([{
+      id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2,
+      position: { x: rel.x - bw / 2, y: rel.y - bh / 2 }, style: { width: `${bw}px` },
+      data: {
+        ...data, polarity,
+        xFrac: clamp01((rel.x - bw / 2 - outputW) / Math.max(1, (stW - outputW) - bw)),
+        laneFrac: clamp01((rel.y - bh / 2 - lTop) / Math.max(1, (lBot - lTop) - bh)),
+      },
+    }])
+  } else {
+    addNodes([{
+      id: newId('blk'), type: 'block', zIndex: 2,
+      position: { x: pos.x - bw / 2, y: pos.y - bh / 2 }, style: { width: `${bw}px` },
+      data,
+    }])
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function libraryBlockData(b: LibraryBlock): any {
+  return { category: b.category, name: b.name, text: b.text, polarity: b.polarity,
+    block_id: b.id, version: b.version ?? 1, tags: [...(b.tags ?? [])], expanded: false }
+}
+
+// ⇢: an independent copy lands at the end of the station lane matching the block's polarity
+// (strict routing — drag if you want the other lane). Serves both palette and browse rows.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function appendToStationLane(data: any) {
+  const st = findNode(STATION)
+  if (!st) return
   const { w: stW, h } = dims(st)
   const outputW = (st.data.outputRatio ?? 0.3) * stW
   const laneBoundary = HEADER + (st.data.posRatio ?? 0.5) * (h - HEADER - META)
-  const neg = live.data.polarity === 'negative'
+  const neg = data.polarity === 'negative'
   const laneTop = neg ? laneBoundary : HEADER
   const laneBot = neg ? (h - META) : laneBoundary
   const lane = nodes.value.filter((n) => n.type === 'block' && n.parentNode === STATION
@@ -501,36 +526,75 @@ function copyToStation(paletteId: string) {
     id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2,
     position: { x, y }, style: { width: `${bw}px` },
     data: {
-      ...cloneBlockData(live.data),
+      ...data,
       xFrac: clamp01((x - outputW) / Math.max(1, (stW - outputW) - bw)),
       laneFrac: clamp01((y - laneTop) / Math.max(1, (laneBot - laneTop) - bh)),
     },
   }])
 }
-
-// A "Pinned ✓" ghost clicked in the widget's search → flash the palette master.
-const flashIds = ref<Set<string>>(new Set())
-function revealPaletteBlock(blockId: string) {
-  const n = nodes.value.find((x) => x.type === 'block' && x.parentNode === LIBRARY && x.data?.block_id === blockId)
-  if (!n) return
-  flashIds.value = new Set([n.id])
-  setTimeout(() => { flashIds.value = new Set() }, 1200)
+function copyToStation(paletteId: string) {
+  const live = findNode(paletteId)
+  if (live?.parentNode === LIBRARY) appendToStationLane(cloneBlockData(live.data))
+}
+function useLibraryBlock(b: LibraryBlock) {
+  appendToStationLane(libraryBlockData(b))
 }
 
-// A block "used" from the Library tab lands in the canvas Library zone, keeping its vault link
-// (block_id/version/tags) so generated snapshots and inherited image tags stay traceable.
+// ＋ New custom block: a work-local block (no block_id → 'local' badge) at the top of the palette;
+// the widget expands it for editing right away.
+function addCustomBlock() {
+  addNodes([{
+    id: newId('blk'), type: 'block', parentNode: LIBRARY, zIndex: 2, hidden: true,
+    position: { x: 0, y: prevPaletteY() },
+    data: { category: 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] },
+  }])
+}
+
+// ↥ on a local palette row: author it into the vault. The Library editor drawer opens prefilled
+// (App mediates the tab switch); on save the pin links back via the linkPin prop below.
+function saveToLibrary(nodeId: string) {
+  const live = findNode(nodeId)
+  if (!live) return
+  if (!String(live.data.text || '').trim()) {
+    toast.push('Add prompt text before saving to the Library', 'err')
+    return
+  }
+  emit('save-block', {
+    nodeId,
+    block: {
+      id: newId('block'), category: live.data.category || 'custom', name: live.data.name || '',
+      text: live.data.text, polarity: live.data.polarity || 'positive', tags: [...(live.data.tags || [])],
+    },
+  })
+}
+
+// After the drawer saves: link the pin to the vault block and adopt the drawer's (possibly
+// refined) content — otherwise the pin would drift from v1 the moment it was born.
+watch(() => props.linkPin?.nonce, () => {
+  const link = props.linkPin
+  if (!link) return
+  const n = findNode(link.nodeId)
+  if (!n || n.parentNode !== LIBRARY) return
+  n.data = {
+    ...n.data, block_id: link.block.id, version: link.block.version ?? 1,
+    category: link.block.category, name: link.block.name, text: link.block.text,
+    polarity: link.block.polarity, tags: [...link.block.tags],
+  }
+})
+
+// A block "used" from the Library tab (or pinned in browse) lands in the palette, keeping its
+// vault link (block_id/version/tags) so generated snapshots and inherited image tags stay traceable.
 function insertLibraryBlock(b: LibraryBlock) {
+  if (pinnedIds.value.includes(b.id)) return // exclusive membership — never double-pin the same vault block
   addNodes([{
     // Unique node id (not a per-mount counter) so re-inserting a block into a reloaded work can't collide.
-    id: newId(`lib-${b.id}`), type: 'block', parentNode: LIBRARY, zIndex: 2,
-    position: { x: PACK_X, y: 1e6 }, style: { width: '176px' }, // y sorts it last; repack sets the real slot
+    id: newId(`lib-${b.id}`), type: 'block', parentNode: LIBRARY, zIndex: 2, hidden: true,
+    position: { x: 0, y: nextPaletteY() }, // y is the palette order key — append at the end
     data: {
-      category: b.category, name: b.name, text: b.text, polarity: b.polarity, expanded: false,
+      category: b.category, name: b.name, text: b.text, polarity: b.polarity,
       block_id: b.id, version: b.version ?? 1, tags: b.tags ?? [],
     },
   }])
-  repackLibrary()
-  syncLibraryHidden() // a pin made while browsing must stay hidden until the palette shows again
 }
 watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(insertLibraryBlock) })
 function doGenerate() {
@@ -590,8 +654,9 @@ onUnmounted(() => {
 })
 onActivated(() => {
   window.addEventListener('keydown', onKeydown)
-  checkVault()      // a vault may have been configured while we were away
-  refreshInterval() // pick up a changed autosave interval
+  checkVault()          // a vault may have been configured while we were away
+  loadCategoryColors()  // category colors may have changed in the Library tab
+  refreshInterval()     // pick up a changed autosave interval
 })
 onDeactivated(() => {
   window.removeEventListener('keydown', onKeydown)
@@ -604,7 +669,7 @@ function loadDoc(doc: any) {
   setNodes(ns as unknown as FlowNode[]) // persisted nodes are plain data; Vue Flow hydrates the runtime fields
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
-  syncLibraryHidden() // a work saved with a collapsed widget reopens with its palette hidden
+  hidePaletteNodes() // palette blocks render in the widget list, never on the canvas
   if (vp) setViewport(vp)
   workId.value = doc.id
   title.value = doc.title || ''
@@ -708,7 +773,6 @@ function toggleExpand(id: string) {
     live.style = d._ch ? { width: d._cw || '176px', height: d._ch } : { width: d._cw || '176px' }
     d.expanded = false
   }
-  if (live.parentNode === LIBRARY) repackLibrary() // the row's height changed — keep the column tight
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -797,12 +861,14 @@ function startName(data: any, e: MouseEvent) {
 
         <template #node-zone="{ id, data, selected }">
           <template v-if="data.role === 'library'">
-            <NodeResizer v-if="!data.collapsed" :min-width="220" :min-height="180" :is-visible="selected"
-              color="var(--accent)" @resize="repackLibrary()" />
-            <PromptWidget :data="data" :selected="selected" :count="childCount(id)" :pinned-ids="pinnedIds"
+            <NodeResizer v-if="!data.collapsed" :min-width="240" :min-height="260" :is-visible="selected"
+              color="var(--accent)" />
+            <PromptWidget :data="data" :selected="selected" :pins="paletteRows" :pinned-ids="pinnedIds"
               @toggle="toggleLibraryCollapse" @open-library="emit('navigate', 'library')"
               @open-settings="emit('navigate', 'settings')" @pin="insertLibraryBlock($event)"
-              @reveal="revealPaletteBlock" @browse="setWidgetBrowsing" />
+              @pin-many="$event.forEach(insertLibraryBlock)"
+              @use="useLibraryBlock" @new-block="addCustomBlock" @copy="copyToStation" @unpin="unpinBlock"
+              @save="saveToLibrary" @patch="patchPaletteNode" @reorder="reorderPalette" />
           </template>
           <template v-else>
             <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />
@@ -819,7 +885,7 @@ function startName(data: any, e: MouseEvent) {
 
         <template #node-block="{ id, data, selected }">
           <NodeResizer :min-width="150" :min-height="34" :is-visible="selected" color="var(--accent)" />
-          <div class="block" :class="{ neg: data.polarity === 'negative', expanded: data.expanded, flash: flashIds.has(id) }" :style="{ '--cat': catColor(data.category) }">
+          <div class="block" :class="{ neg: data.polarity === 'negative', expanded: data.expanded }" :style="{ '--cat': catColor(data.category) }">
             <div class="bhd">
               <span class="cdot"></span>
               <input v-if="data.editing" class="bname bname-input nodrag" v-model="data.name"
@@ -828,14 +894,9 @@ function startName(data: any, e: MouseEvent) {
               <button class="bicon nodrag" :title="data.polarity === 'negative' ? 'negative' : 'positive'"
                 @click="data.polarity = data.polarity === 'negative' ? 'positive' : 'negative'">{{ data.polarity === 'negative' ? '−' : '＋' }}</button>
               <button class="bicon nodrag" @click="toggleExpand(id)">{{ data.expanded ? '▾' : '▸' }}</button>
-              <button v-if="isPaletteChild(id)" class="bicon pal-x nodrag" title="Unpin from quick access"
-                @click="unpinBlock(id)">✕</button>
             </div>
             <textarea v-if="data.expanded" class="btext nodrag nowheel" v-model="data.text" placeholder="tags…"></textarea>
             <div v-else class="bprev">{{ data.text || 'empty' }}</div>
-            <button v-if="isPaletteChild(id)" class="palplus nodrag"
-              :title="`Copy into the ${data.polarity === 'negative' ? 'negative' : 'positive'} lane`"
-              @click="copyToStation(id)">＋</button>
           </div>
         </template>
       </VueFlow>
@@ -972,16 +1033,6 @@ function startName(data: any, e: MouseEvent) {
 
 .block{position:relative;width:100%;height:100%;min-height:34px;display:flex;flex-direction:column;border-radius:8px;border:1px solid var(--border);border-left:3px solid var(--cat);background:var(--surface-2);box-shadow:0 1px 4px rgba(0,0,0,.2);overflow:hidden}
 .block.neg{border-left-color:#e2483d}
-.block.flash{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
-/* palette-only affordances: ✕ unpins, ＋ copies into the station lane — both hover-revealed */
-.block .pal-x{opacity:0;transition:opacity .1s}
-.block:hover .pal-x{opacity:1}
-.block .pal-x:hover{color:var(--danger,#e2483d);border-color:var(--danger,#e2483d)}
-.palplus{position:absolute;right:5px;bottom:5px;opacity:0;border:1px solid var(--border-strong);
-  background:var(--surface-1);color:var(--text-dim);border-radius:5px;width:20px;height:20px;font-size:12px;
-  line-height:1;cursor:pointer;transition:opacity .1s;z-index:1}
-.block:hover .palplus{opacity:1}
-.palplus:hover{color:var(--accent);border-color:var(--accent)}
 .bhd{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:6px 8px}
 .cdot{width:8px;height:8px;border-radius:50%;background:var(--cat);flex-shrink:0}
 .block.neg .cdot{background:#e2483d}

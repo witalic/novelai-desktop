@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api'
-import { partitionPinned, usePromptBrowse, type BrowseDeps } from './usePromptBrowse'
+import { usePromptBrowse, type BrowseDeps } from './usePromptBrowse'
 import type { BlocksPage, LibraryBlock } from '../types'
 
 /* The widget's browse data layer: race guard, search debounce, page-append, no-vault state. */
@@ -42,12 +42,27 @@ describe('usePromptBrowse', () => {
       .mockReturnValueOnce(first)                       // slow request
       .mockResolvedValueOnce(pageOf(['new']))           // fast newer request
     const b = usePromptBrowse(deps({ listBlocks }))
-    b.setCategory('style')   // request 1 (hangs)
-    b.setCategory('style')   // toggles back to '' → request 2 (fast)
+    b.toggleCategory('style')   // request 1 (hangs)
+    b.toggleCategory('style')   // toggles back off → request 2 (fast)
     await tick()
     resolveFirst(pageOf(['stale']))                     // the slow one lands last…
     await tick()
     expect(b.items.value.map((i) => i.id)).toEqual(['new']) // …and is discarded
+  })
+
+  it('multi-selects categories and passes the sort through', async () => {
+    const listBlocks = vi.fn(async () => pageOf(['x']))
+    const b = usePromptBrowse(deps({ listBlocks }))
+    b.toggleCategory('style')
+    b.toggleCategory('pose')
+    await tick()
+    expect(listBlocks).toHaveBeenLastCalledWith(expect.objectContaining({ categories: ['style', 'pose'] }))
+    b.setSort('category')
+    await tick()
+    expect(listBlocks).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'category' }))
+    b.toggleCategory('') // 'All' resets
+    await tick()
+    expect(listBlocks).toHaveBeenLastCalledWith(expect.objectContaining({ categories: [] }))
   })
 
   it('debounces search input into one request', async () => {
@@ -84,22 +99,5 @@ describe('usePromptBrowse', () => {
     await tick(); await tick()
     expect(b.noVault.value).toBe(true)
     expect(b.items.value).toEqual([])
-  })
-})
-
-describe('partitionPinned (exclusive membership + "search never lies")', () => {
-  const items = [block('a'), block('b'), block('c')]
-  const pinned = new Set(['b'])
-
-  it('default listing simply excludes pinned blocks', () => {
-    const { visible, ghosts } = partitionPinned(items, pinned, false)
-    expect(visible.map((x) => x.id)).toEqual(['a', 'c'])
-    expect(ghosts).toEqual([])
-  })
-
-  it('an active search surfaces pinned matches as ghosts instead of hiding them', () => {
-    const { visible, ghosts } = partitionPinned(items, pinned, true)
-    expect(visible.map((x) => x.id)).toEqual(['a', 'c'])
-    expect(ghosts.map((x) => x.id)).toEqual(['b'])
   })
 })

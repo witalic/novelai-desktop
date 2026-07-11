@@ -100,11 +100,13 @@ def gallery(
 
 @router.get("/library/blocks", response_model=BlocksPage)
 def list_blocks(
-    category: str = "", tags: list[str] = Query(default=[]), search: str = "",
+    category: list[str] = Query(default=[]),  # repeated param — multi-select category filter
+    tags: list[str] = Query(default=[]), search: str = "",
+    sort: str = Query("updated", pattern="^(updated|created|category)$"),
     page: int = Query(1, ge=1), per_page: int = Query(48, ge=1, le=200),
     settings: Settings = Depends(get_settings),
 ) -> BlocksPage:
-    return service.list_blocks(settings, category, tags, search, page, per_page)
+    return service.list_blocks(settings, category, tags, search, sort, page, per_page)
 
 
 @router.post("/library/blocks")

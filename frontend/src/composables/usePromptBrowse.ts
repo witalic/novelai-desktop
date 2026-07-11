@@ -3,11 +3,11 @@
  * injectable so the logic is unit-testable without a network (the component passes the real
  * api.ts functions). */
 import { ref, type Ref } from 'vue'
-import { ApiError } from '../api'
+import { ApiError, type BlockSort } from '../api'
 import type { BlocksPage, CategoryCount, LibraryBlock, TagCount } from '../types'
 
 export interface BrowseDeps {
-  listBlocks: (opts: { category?: string; tags?: string[]; search?: string; page?: number; perPage?: number }) => Promise<BlocksPage>
+  listBlocks: (opts: { categories?: string[]; tags?: string[]; search?: string; sort?: BlockSort; page?: number; perPage?: number }) => Promise<BlocksPage>
   listCategories: (tags?: string[]) => Promise<CategoryCount[]>
   listTags: (category?: string) => Promise<TagCount[]>
 }
@@ -15,18 +15,10 @@ export interface BrowseDeps {
 const PER_PAGE = 48
 const DEBOUNCE_MS = 300
 
-/* Exclusive membership (pure, unit-tested): pinned blocks leave the browse pool. With an active
- * search they return greyed-out as "Pinned ✓" ghosts — search never pretends a block the user
- * remembers doesn't exist; without a query they are simply absent. */
-export function partitionPinned(items: LibraryBlock[], pinnedIds: ReadonlySet<string>, searchActive: boolean) {
-  const visible = items.filter((b) => !pinnedIds.has(b.id))
-  const ghosts = searchActive ? items.filter((b) => pinnedIds.has(b.id)) : []
-  return { visible, ghosts }
-}
-
 export function usePromptBrowse(deps: BrowseDeps) {
   const search = ref('')
-  const category = ref('') // '' = all
+  const categories_sel: Ref<string[]> = ref([]) // multi-select; [] = all
+  const sort = ref<BlockSort>('updated')
   const tags = ref<string[]>([])
   const items: Ref<LibraryBlock[]> = ref([])
   const total = ref(0)
@@ -45,7 +37,7 @@ export function usePromptBrowse(deps: BrowseDeps) {
     if (!append) page = 1
     try {
       const res = await deps.listBlocks({
-        category: category.value || undefined, tags: tags.value,
+        categories: categories_sel.value, tags: tags.value, sort: sort.value,
         search: search.value.trim() || undefined, page, perPage: PER_PAGE,
       })
       if (token !== req) return // superseded
@@ -71,7 +63,8 @@ export function usePromptBrowse(deps: BrowseDeps) {
       categories.value = []
     }
     try {
-      tagOptions.value = await deps.listTags(category.value)
+      // Tag options re-scope only when exactly one category is selected — multi keeps the full set.
+      tagOptions.value = await deps.listTags(categories_sel.value.length === 1 ? categories_sel.value[0] : '')
     } catch {
       tagOptions.value = []
     }
@@ -89,10 +82,21 @@ export function usePromptBrowse(deps: BrowseDeps) {
     debounceTimer = setTimeout(() => load(), DEBOUNCE_MS)
   }
 
-  function setCategory(slug: string) {
-    category.value = slug === category.value ? '' : slug
+  function toggleCategory(slug: string) {
+    if (!slug) categories_sel.value = [] // 'All' resets the multi-select
+    else {
+      const i = categories_sel.value.indexOf(slug)
+      if (i >= 0) categories_sel.value.splice(i, 1)
+      else categories_sel.value.push(slug)
+    }
     load()
-    refreshFilters() // tag options re-scope to the category
+    refreshFilters() // tag options re-scope to the selection
+  }
+
+  function setSort(value: BlockSort) {
+    if (sort.value === value) return
+    sort.value = value
+    load()
   }
 
   function toggleTag(name: string) {
@@ -105,7 +109,7 @@ export function usePromptBrowse(deps: BrowseDeps) {
 
   function clearFilters() {
     search.value = ''
-    category.value = ''
+    categories_sel.value = []
     tags.value = []
     activate()
   }
@@ -122,7 +126,7 @@ export function usePromptBrowse(deps: BrowseDeps) {
   }
 
   return {
-    search, category, tags, items, total, categories, tagOptions, loading, noVault,
-    activate, setSearch, setCategory, toggleTag, clearFilters, loadMore, dispose,
+    search, selectedCats: categories_sel, sort, tags, items, total, categories, tagOptions, loading, noVault,
+    activate, refreshFilters, setSearch, toggleCategory, setSort, toggleTag, clearFilters, loadMore, dispose,
   }
 }

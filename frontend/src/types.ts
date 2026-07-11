@@ -187,6 +187,19 @@ export interface ImageNode extends CanvasNodeBase {
 
 export type CanvasNode = StationNode | ZoneNode | BlockNode | ImageNode
 
+// Runtime view-model of one pinned palette row. The truth stays in the zone's child block nodes
+// (persisted as before, position.y = order key); the widget renders them as a scrollable list.
+export interface PaletteRow {
+  nodeId: string
+  name: string
+  text: string
+  polarity: 'positive' | 'negative'
+  category: string
+  tags: string[]
+  block_id?: string
+  version?: number
+}
+
 export interface WorkDoc {
   schema_version: number
   id: string

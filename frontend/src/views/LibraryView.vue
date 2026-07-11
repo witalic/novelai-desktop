@@ -6,7 +6,11 @@ import { useConfirm } from '../composables/useConfirm'
 import { newId } from '../vault/ids'
 import type { CategoryCount, LibraryBlock, TagCount } from '../types'
 
-const emit = defineEmits<{ use: [LibraryBlock[]] }>()
+const props = defineProps<{
+  // A work-local canvas block being saved to the vault: open the editor drawer prefilled.
+  draftBlock?: { block: LibraryBlock; nonce: number } | null
+}>()
+const emit = defineEmits<{ use: [LibraryBlock[]]; 'draft-saved': [LibraryBlock] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
 
@@ -48,7 +52,7 @@ async function loadBlocks() {
   const req = ++blocksReq // rapid category/tag/search changes: a slow earlier response must not overwrite a newer one
   loading.value = true
   try {
-    const res = await listBlocks({ category: activeCategory.value, tags: selectedTags.value, search: search.value, page: page.value, perPage })
+    const res = await listBlocks({ categories: activeCategory.value ? [activeCategory.value] : [], tags: selectedTags.value, search: search.value, page: page.value, perPage })
     if (req !== blocksReq) return // superseded
     blocks.value = res.items
     total.value = res.total
@@ -230,7 +234,7 @@ function startRailDrag(e: MouseEvent) {
 let activeRailCleanup: (() => void) | null = null
 
 // ---- block editor drawer ----
-const editor = ref<{ isNew: boolean; block: LibraryBlock } | null>(null)
+const editor = ref<{ isNew: boolean; fromDraft?: boolean; block: LibraryBlock } | null>(null)
 const edTagInput = ref('')
 const allTags = ref<TagCount[]>([])
 const tagFocus = ref(false)
@@ -260,6 +264,17 @@ async function openEdit(b: LibraryBlock) {
   allTags.value = await listTags('')
   loadExamples()
 }
+
+// A canvas-local block arriving to be saved: prefill the drawer. `immediate` covers the mount
+// that the App's tab switch just triggered (the nonce is already set when this view appears).
+watch(() => props.draftBlock?.nonce, async () => {
+  const d = props.draftBlock
+  if (!d) return
+  editor.value = { isNew: true, fromDraft: true, block: { ...d.block, tags: [...d.block.tags] } }
+  edTagInput.value = ''
+  allTags.value = await listTags('')
+  loadExamples()
+}, { immediate: true })
 function closeEditor() { editor.value = null; blockCatOpen.value = false; examples.value = [] }
 
 const edTagMatches = computed(() => {
@@ -283,6 +298,7 @@ const canSaveBlock = computed(() =>
 async function saveEditor() {
   if (!editor.value) return
   const b = editor.value.block // category is already a slug chosen via the selector — no rename side effects
+  const fromDraft = !!editor.value.fromDraft
   if (!b.name.trim()) { push('Block name is required', 'err'); return }
   if (!b.text.trim()) { push('Prompt text is required', 'err'); return }
   try {
@@ -290,6 +306,8 @@ async function saveEditor() {
     push(editor.value.isNew ? 'Block created' : 'Block saved', 'ok')
     closeEditor()
     await refreshAll()
+    // A saved canvas draft links its palette pin back in Generate (version 1 — a fresh vault block).
+    if (fromDraft) emit('draft-saved', { ...b, tags: [...b.tags], version: 1 })
   } catch (e) {
     push(e instanceof Error ? e.message : 'Save failed', 'err')
   }

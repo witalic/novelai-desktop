@@ -75,6 +75,21 @@ async def test_edit_bumps_version_and_never_mutates_past_snapshots(client):
     assert snap["assembled_positive"] == "1girl, silver hair"
 
 
+async def test_multi_category_filter_and_sort(client):
+    ac, _ = client
+    await ac.post("/api/vault/library/blocks", json=_block("b1", "character", name="Zed"))
+    await ac.post("/api/vault/library/blocks", json=_block("b2", "style", name="Aria", text="cinematic"))
+    await ac.post("/api/vault/library/blocks", json=_block("b3", "pose", name="Mid", text="standing"))
+
+    two = (await ac.get("/api/vault/library/blocks", params={"category": ["character", "pose"]})).json()
+    assert {i["id"] for i in two["items"]} == {"b1", "b3"}  # repeated category params = multi-select
+
+    by_cat = (await ac.get("/api/vault/library/blocks", params={"sort": "category"})).json()
+    assert [i["category"] for i in by_cat["items"]] == ["character", "pose", "style"]  # alphabetical
+
+    assert (await ac.get("/api/vault/library/blocks", params={"sort": "nope"})).status_code == 422
+
+
 async def test_filter_by_category_tags_search(client):
     ac, _ = client
     await ac.post("/api/vault/library/blocks", json=_block("b1", "character", tags=["a", "b"]))

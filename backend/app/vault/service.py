@@ -276,11 +276,12 @@ def delete_block(settings: Settings, block_id: str) -> dict:
     return {"id": block_id, "deleted": True}
 
 
-def list_blocks(settings: Settings, category: str, tags: list[str], search: str, page: int, per_page: int) -> BlocksPage:
+def list_blocks(settings: Settings, categories: list[str], tags: list[str], search: str, sort: str,
+                page: int, per_page: int) -> BlocksPage:
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:
-        total, rows = index.list_blocks(conn, category or None, tags, search or None, page, per_page)
+        total, rows = index.list_blocks(conn, categories, tags, search or None, sort, page, per_page)
     finally:
         conn.close()
     items = [

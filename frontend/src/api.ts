@@ -40,13 +40,16 @@ export async function deleteWork(workId: string): Promise<void> {
 }
 
 // ---- library ----
+export type BlockSort = 'updated' | 'created' | 'category'
+
 export async function listBlocks(
-  opts: { category?: string; tags?: string[]; search?: string; page?: number; perPage?: number } = {},
+  opts: { categories?: string[]; tags?: string[]; search?: string; sort?: BlockSort; page?: number; perPage?: number } = {},
 ): Promise<BlocksPage> {
   const p = new URLSearchParams()
-  if (opts.category) p.set('category', opts.category)
+  for (const c of opts.categories ?? []) p.append('category', c) // repeated param = multi-select
   for (const t of opts.tags ?? []) p.append('tags', t)
   if (opts.search) p.set('search', opts.search)
+  if (opts.sort && opts.sort !== 'updated') p.set('sort', opts.sort)
   p.set('page', String(opts.page ?? 1))
   p.set('per_page', String(opts.perPage ?? 48))
   const resp = await fetch(`/api/vault/library/blocks?${p}`)

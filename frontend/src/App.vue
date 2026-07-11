@@ -34,14 +34,33 @@ function useBlocks(blocks: LibraryBlock[]) {
   push(`Added ${blocks.length} block${blocks.length > 1 ? 's' : ''} to the canvas library`, 'ok')
 }
 
+// "Save to Library" from a local palette block: the Library tab opens with its editor drawer
+// prefilled; a successful save returns to Generate and links the pin (linkPin) to the vault block.
+const libraryDraft = ref<{ block: LibraryBlock; nonce: number } | null>(null)
+const linkPin = ref<{ nodeId: string; block: LibraryBlock; nonce: number } | null>(null)
+let draftNodeId: string | null = null
+function saveBlockToLibrary(payload: { nodeId: string; block: LibraryBlock }) {
+  draftNodeId = payload.nodeId
+  libraryDraft.value = { block: payload.block, nonce: Date.now() }
+  view.value = 'library'
+}
+function onDraftSaved(block: LibraryBlock) {
+  if (!draftNodeId) return
+  linkPin.value = { nodeId: draftNodeId, block, nonce: Date.now() }
+  draftNodeId = null
+  libraryDraft.value = null
+  view.value = 'generate'
+}
+
 // Props/handlers bound only to the active view (avoids attribute fallthrough onto the wrong root).
 const viewBindings = computed(() =>
   view.value === 'generate'
-    ? { openWorkId: activeWorkId.value, insertBlocks: pendingBlocks.value, onNavigate: (v: ViewId) => (view.value = v) }
+    ? { openWorkId: activeWorkId.value, insertBlocks: pendingBlocks.value, linkPin: linkPin.value,
+        onNavigate: (v: ViewId) => (view.value = v), onSaveBlock: saveBlockToLibrary }
     : view.value === 'works'
       ? { onOpen: openWork }
       : view.value === 'library'
-        ? { onUse: useBlocks }
+        ? { onUse: useBlocks, draftBlock: libraryDraft.value, onDraftSaved }
         : {},
 )
 </script>

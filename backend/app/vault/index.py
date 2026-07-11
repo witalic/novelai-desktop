@@ -171,11 +171,20 @@ def delete_block(conn: sqlite3.Connection, block_id: str) -> None:
     conn.commit()
 
 
-def list_blocks(conn, category: str | None, tags: list[str], search: str | None, page: int, per_page: int):
+_BLOCK_SORTS = {  # whitelisted ORDER BY clauses — `sort` is validated at the router, this is belt & braces
+    "updated": "b.updated_at DESC, b.name",
+    "created": "b.created_at DESC, b.name",
+    "category": "b.category ASC, b.name",
+}
+
+
+def list_blocks(conn, categories: list[str], tags: list[str], search: str | None, sort: str,
+                page: int, per_page: int):
     where, params = [], []
-    if category:
-        where.append("b.category=?")
-        params.append(category)
+    if categories:
+        ph = ",".join("?" * len(categories))
+        where.append(f"b.category IN ({ph})")
+        params += categories
     if search:
         where.append(r"(b.name LIKE ? ESCAPE '\' OR b.text LIKE ? ESCAPE '\')")
         esc = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")  # literal wildcards
@@ -189,12 +198,13 @@ def list_blocks(conn, category: str | None, tags: list[str], search: str | None,
         )
         params += tags + [len(tags)]
     clause = ("WHERE " + " AND ".join(where)) if where else ""
+    order = _BLOCK_SORTS.get(sort, _BLOCK_SORTS["updated"])
     total = conn.execute(f"SELECT COUNT(*) FROM block b {clause}", params).fetchone()[0]
     rows = conn.execute(
         f"SELECT b.id,b.category,b.name,b.text,b.polarity,b.version,b.created_at,b.updated_at, "
         f"(SELECT GROUP_CONCAT(t.name, char(31)) FROM block_tag bt JOIN tag t ON t.id=bt.tag_id "
         f"WHERE bt.block_id=b.id) AS tags FROM block b {clause} "
-        f"ORDER BY b.updated_at DESC, b.name LIMIT ? OFFSET ?",
+        f"ORDER BY {order} LIMIT ? OFFSET ?",
         params + [per_page, (page - 1) * per_page],
     ).fetchall()
     return total, rows

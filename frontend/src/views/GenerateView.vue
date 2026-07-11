@@ -11,8 +11,9 @@ import type { PanelParams, GenResult, WorkDoc, SnapshotData, LibraryBlock } from
 const props = defineProps<{
   openWorkId?: string | null
   insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
+  linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
 }>()
-const emit = defineEmits<{ navigate: [string] }>()
+const emit = defineEmits<{ navigate: [string]; 'save-block': [{ nodeId: string; block: LibraryBlock }] }>()
 const { push } = useToast()
 
 const params = reactive<PanelParams>({
@@ -110,8 +111,8 @@ watch(() => props.openWorkId, async (raw) => {
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :insert-blocks="insertBlocks" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
-      @saved="onWorkSaved" @navigate="emit('navigate', $event)" />
+      :insert-blocks="insertBlocks" :link-pin="linkPin" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
+      @saved="onWorkSaved" @navigate="emit('navigate', $event)" @save-block="emit('save-block', $event)" />
     <ParamsPanel :params="params" :open="panelOpen" @toggle="panelOpen = !panelOpen" />
   </div>
 </template>
