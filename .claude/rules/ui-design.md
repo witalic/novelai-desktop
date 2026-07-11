@@ -52,6 +52,11 @@ them.** When building or changing any UI, check this list first.
     `<img>` **decode at ~2× the box** (`width/height:200%`) and shrink it back with a transform;
     the decode is high-res and the GPU downscale is crisp. This is the canvas pipeline's trick
     (`useImagePipeline.ts` `.imgfull` + transform) — reuse it for any small image box, not just nodes.
+  - **Many fresh `data:` URLs at once** (the generation stack — up to 50): decode-at-2× is **not
+    enough**. Chromium downsamples decoded bitmaps under its decode-memory budget → pixelation
+    regardless of the CSS trick (vault `?w=` thumbnails escape it because the source is already small).
+    Downscale each source **once, client-side** (canvas → small `data:` URL, `canvas/thumb.ts`) and
+    render the small copy. Bit me twice; the CSS trick alone masked it until the stack grew.
 
 ## Canvas (Vue Flow) nodes
 - **Interactive elements inside a node must not select/drag the node.** Vue Flow selects a node on
