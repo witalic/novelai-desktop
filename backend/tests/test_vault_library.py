@@ -75,6 +75,20 @@ async def test_edit_bumps_version_and_never_mutates_past_snapshots(client):
     assert snap["assembled_positive"] == "1girl, silver hair"
 
 
+async def test_resolve_blocks_reports_current_version(client):
+    """The widget diffs a pinned copy's frozen version against the live block — resolve returns the
+    current rows for specific ids (bumped on edit), and omits ids that no longer exist."""
+    ac, _ = client
+    await ac.post("/api/vault/library/blocks", json=_block("b1", text="1girl"))
+    await ac.post("/api/vault/library/blocks", json=_block("b1", text="1girl, red eyes"))  # edit → v2
+
+    got = (await ac.get("/api/vault/library/blocks/resolve", params={"ids": ["b1", "gone"]})).json()
+    assert len(got) == 1
+    assert got[0]["id"] == "b1" and got[0]["version"] == 2 and got[0]["text"] == "1girl, red eyes"
+
+    assert (await ac.get("/api/vault/library/blocks/resolve")).json() == []  # no ids → empty
+
+
 async def test_multi_category_filter_and_sort(client):
     ac, _ = client
     await ac.post("/api/vault/library/blocks", json=_block("b1", "character", name="Zed"))

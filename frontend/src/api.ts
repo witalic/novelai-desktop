@@ -57,6 +57,17 @@ export async function listBlocks(
   return resp.json()
 }
 
+// Current rows for specific block ids (missing ones omitted) — the prompt widget diffs a pinned
+// copy's frozen version against the live block to flag drift.
+export async function resolveBlocks(ids: string[]): Promise<LibraryBlock[]> {
+  if (!ids.length) return []
+  const p = new URLSearchParams()
+  for (const id of ids) p.append('ids', id)
+  const resp = await fetch(`/api/vault/library/blocks/resolve?${p}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to resolve blocks (HTTP ${resp.status})`)
+  return resp.json()
+}
+
 export async function saveBlock(block: LibraryBlock): Promise<{ id: string }> {
   const resp = await fetch('/api/vault/library/blocks', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(block),

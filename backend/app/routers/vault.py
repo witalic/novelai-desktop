@@ -109,6 +109,11 @@ def list_blocks(
     return service.list_blocks(settings, category, tags, search, sort, page, per_page)
 
 
+@router.get("/library/blocks/resolve", response_model=list[BlockDoc])
+def resolve_blocks(ids: list[str] = Query(default=[]), settings: Settings = Depends(get_settings)) -> list[BlockDoc]:
+    return service.resolve_blocks(settings, ids)
+
+
 @router.post("/library/blocks")
 def save_block(block: BlockDoc, settings: Settings = Depends(get_settings)) -> dict:
     return service.save_block(settings, block)

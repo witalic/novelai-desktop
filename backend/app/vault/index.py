@@ -210,6 +210,20 @@ def list_blocks(conn, categories: list[str], tags: list[str], search: str | None
     return total, rows
 
 
+def blocks_by_ids(conn, ids: list[str]):
+    """Current rows for specific block ids — the prompt widget uses this to detect version drift
+    on its pinned (frozen) copies."""
+    if not ids:
+        return []
+    ph = ",".join("?" * len(ids))
+    return conn.execute(
+        f"SELECT b.id,b.category,b.name,b.text,b.polarity,b.version,b.created_at,b.updated_at, "
+        f"(SELECT GROUP_CONCAT(t.name, char(31)) FROM block_tag bt JOIN tag t ON t.id=bt.tag_id "
+        f"WHERE bt.block_id=b.id) AS tags FROM block b WHERE b.id IN ({ph})",
+        ids,
+    ).fetchall()
+
+
 def category_counts(conn, tags: list[str] | None = None) -> dict[str, int]:
     if tags:
         ph = ",".join("?" * len(tags))

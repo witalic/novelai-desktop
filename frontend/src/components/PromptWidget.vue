@@ -5,8 +5,9 @@
  * showing ALL blocks (pinned ones greyed out). Filters/sort are transient; every palette
  * mutation goes back to CanvasBoard by nodeId. The zone drags by the header only (dragHandle). */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { listBlocks, listCategories, listTags, type BlockSort } from '../api'
+import { listBlocks, listCategories, listTags, resolveBlocks, type BlockSort } from '../api'
 import { usePromptBrowse } from '../composables/usePromptBrowse'
+import { isStale } from '../canvas/palette'
 import type { LibraryBlock, PaletteRow, ZoneNode } from '../types'
 
 const props = defineProps<{
@@ -14,6 +15,7 @@ const props = defineProps<{
   selected: boolean
   pins: PaletteRow[] // palette rows in order (view-model over the zone's child nodes)
   pinnedIds: string[]
+  revalidate: number // bumped by CanvasBoard when the Library may have changed (re-check versions)
 }>()
 const emit = defineEmits<{
   toggle: []
@@ -39,7 +41,36 @@ const {
 watch(mode, (m) => { if (m === 'browse') activate() })
 // Vault categories load on mount so both modes can show real names/colors (custom categories
 // have opaque cat-<uuid> slugs — never surface those raw).
-onMounted(() => refreshFilters())
+onMounted(() => { refreshFilters(); refreshDrift() })
+
+// ---- version drift: a pinned copy is frozen; its Library block may have moved on ----
+const latestById = ref<Record<string, LibraryBlock>>({})
+async function refreshDrift() {
+  const ids = [...new Set(props.pins.map((p) => p.block_id).filter((x): x is string => !!x))]
+  if (!ids.length) { latestById.value = {}; return }
+  try {
+    latestById.value = Object.fromEntries((await resolveBlocks(ids)).map((b) => [b.id, b]))
+  } catch { /* keep the last known versions */ }
+}
+// Re-check when the set of linked pins changes (a new pin, an unpin, a save-to-library link) and
+// when CanvasBoard signals the Library may have changed (returning to Generate, opening a work) —
+// the widget stays mounted under KeepAlive, so it can't wait for onMounted to fire again.
+watch(() => props.pins.map((p) => p.block_id || '').join(','), refreshDrift)
+watch(() => props.revalidate, () => { refreshFilters(); refreshDrift() })
+function driftVersion(p: PaletteRow): number | null {
+  if (!p.block_id) return null
+  const latest = latestById.value[p.block_id]
+  return latest && isStale(p.version, latest.version) ? (latest.version ?? 1) : null
+}
+// Explicit re-freeze: adopt the Library block's current content + version into the pin.
+function updatePin(p: PaletteRow) {
+  const latest = p.block_id ? latestById.value[p.block_id] : undefined
+  if (!latest) return
+  emit('patch', { nodeId: p.nodeId, patch: {
+    name: latest.name, text: latest.text, polarity: latest.polarity,
+    category: latest.category, tags: [...latest.tags], version: latest.version ?? 1,
+  } })
+}
 const catColor = (slug: string) => categories.value.find((c) => c.slug === slug)?.color || '#738496'
 const catName = (slug: string) => categories.value.find((c) => c.slug === slug)?.name
   || (slug.startsWith('cat-') ? 'custom' : slug)
@@ -429,6 +460,8 @@ async function pinAll() {
                 <span v-else class="bname" title="Double-click to rename"
                   @dblclick.stop="startRename(p.nodeId)">{{ p.name || 'Untitled' }}</span>
                 <span v-if="!p.block_id" class="lbadge" title="Lives in this work only — save it to the Library to reuse elsewhere">local</span>
+                <button v-if="driftVersion(p)" class="updbadge" :title="`Library block is at v${driftVersion(p)} — click to update this pin (re-freeze)`"
+                  @click="updatePin(p)">↻ v{{ driftVersion(p) }}</button>
                 <span class="pol" :class="{ neg: p.polarity === 'negative' }">{{ p.polarity === 'negative' ? '−' : '＋' }}</span>
                 <button class="ricon act" :title="`Copy into the ${p.polarity === 'negative' ? 'negative' : 'positive'} lane`"
                   @click="$emit('copy', p.nodeId)">⇢</button>
@@ -437,10 +470,17 @@ async function pinAll() {
                 <button v-if="!p.block_id" class="ricon act save" title="Save to Library…" @click="$emit('save', p.nodeId)">↥</button>
                 <button class="ricon act x" title="Unpin from quick access" @click="$emit('unpin', p.nodeId)">✕</button>
               </div>
-              <!-- The palette pin is a decoupled working copy — editing its text/name never touches
-                   the vault block or past snapshots, so every pin (linked or local) edits inline. -->
-              <textarea v-if="expandedIds.has(p.nodeId)" class="btextarea nowheel" :value="p.text" placeholder="tags…"
-                @input="$emit('patch', { nodeId: p.nodeId, patch: { text: ($event.target as HTMLTextAreaElement).value } })"></textarea>
+              <!-- Prompt and tags are separate: the prompt is the generative payload (editable — a
+                   pin is a decoupled copy, so this never touches the vault block or past snapshots);
+                   the tags are curation metadata that flows to generated images and gallery filters. -->
+              <template v-if="expandedIds.has(p.nodeId)">
+                <div class="explbl">Prompt</div>
+                <textarea class="btextarea nowheel" :value="p.text" placeholder="tags…"
+                  @input="$emit('patch', { nodeId: p.nodeId, patch: { text: ($event.target as HTMLTextAreaElement).value } })"></textarea>
+                <div class="explbl">Gallery tags</div>
+                <div v-if="p.tags.length" class="exptags"><span v-for="t in p.tags" :key="t">{{ t }}</span></div>
+                <div v-else class="exphint">No tags — add some in the Library editor.</div>
+              </template>
               <div v-else class="btext">{{ p.text || 'empty' }}</div>
             </div>
           </template>
@@ -543,7 +583,14 @@ async function pinAll() {
                     @click="toggleLib(b.id)">{{ expandedLib.has(b.id) ? '▾' : '▸' }}</button>
                 </template>
               </div>
-              <div v-if="expandedLib.has(b.id)" class="btextview">{{ b.text }}</div>
+              <template v-if="expandedLib.has(b.id)">
+                <div class="explbl">Prompt</div>
+                <div class="btextview">{{ b.text }}</div>
+                <template v-if="b.tags.length">
+                  <div class="explbl">Gallery tags</div>
+                  <div class="exptags"><span v-for="t in b.tags" :key="t">{{ t }}</span></div>
+                </template>
+              </template>
               <div v-else class="btext">{{ b.text }}</div>
             </div>
           </template>
@@ -671,9 +718,18 @@ async function pinAll() {
 .brow:hover .ricon.act,.ricon.act.done{opacity:1}
 .ricon.done{color:var(--ok,#3aa675);border-color:var(--ok,#3aa675)}
 .pinbtn{padding:0 6px}
+.updbadge{flex-shrink:0;border:1px solid color-mix(in srgb,var(--warn,#b65c02) 50%,var(--border));
+  background:color-mix(in srgb,var(--warn,#b65c02) 12%,transparent);color:var(--warn,#b65c02);
+  border-radius:10px;padding:0 6px;font:inherit;font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap}
+.updbadge:hover{background:color-mix(in srgb,var(--warn,#b65c02) 22%,transparent)}
+.explbl{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint);margin:6px 0 3px}
+.exptags{display:flex;flex-wrap:wrap;gap:4px}
+.exptags span{font-size:10.5px;background:var(--surface-3);border:1px solid var(--border);border-radius:20px;
+  padding:1px 8px;color:var(--text-dim)}
+.exphint{font-size:11px;color:var(--text-faint)}
 .btext{font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
 .btextview{font-size:11.5px;color:var(--text);background:var(--surface-1);border:1px solid var(--border);
-  border-radius:5px;padding:6px;margin-top:5px;line-height:1.5;user-select:text;white-space:pre-wrap;word-break:break-word}
+  border-radius:5px;padding:6px;line-height:1.5;user-select:text;white-space:pre-wrap;word-break:break-word}
 .btextarea{width:100%;min-height:64px;margin-top:5px;resize:vertical;font:inherit;font-size:11.5px;color:var(--text);
   background:var(--surface-1);border:1px solid var(--border);border-radius:5px;padding:6px;outline:none}
 .btextarea:focus{border-color:var(--accent)}

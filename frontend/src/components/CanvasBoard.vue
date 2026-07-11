@@ -14,6 +14,7 @@ import { useImagePipeline, PICK_SCALES } from '../composables/useImagePipeline'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { appendX } from '../canvas/pack'
+import { reorderIds } from '../canvas/palette'
 import PromptWidget from './PromptWidget.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -52,6 +53,10 @@ const CATS: Record<string, string> = {
   style: '#6e5dc6', character: '#0c66e4', pose: '#ae4787', environment: '#1f845a',
   lighting: '#b65c02', camera: '#12b5a6', outfit: '#d4537e', negative: '#e2483d', custom: '#738496',
 }
+// Bumped whenever the vault's Library may have changed under the widget (returning to Generate,
+// opening a work) so the prompt widget re-reads category colors/counts and its pins' versions —
+// KeepAlive keeps the widget mounted, so it can't rely on its own onMounted firing again.
+const widgetRevalidate = ref(0)
 // Colors come from the vault's categories (customs have their own); CATS is the offline fallback.
 const vaultCatColors = ref<Record<string, string>>({})
 async function loadCategoryColors() {
@@ -416,15 +421,13 @@ function patchPaletteNode(p: { nodeId: string; patch: Record<string, unknown> })
   if (n && n.parentNode === LIBRARY) n.data = { ...n.data, ...p.patch }
 }
 
-// Reorder: insert nodeId before beforeId (null = end), then renumber y as 0,10,20…
+// Reorder via the pure helper, then renumber y as 0,10,20… (y is the palette order key).
 function reorderPalette(p: { nodeId: string; beforeId: string | null }) {
   const ordered = paletteChildren.value.slice().sort((a, b) => a.position.y - b.position.y)
-  const from = ordered.findIndex((n) => n.id === p.nodeId)
-  if (from < 0) return
-  const [moved] = ordered.splice(from, 1)
-  const at = p.beforeId ? ordered.findIndex((n) => n.id === p.beforeId) : -1
-  ordered.splice(at >= 0 ? at : ordered.length, 0, moved)
-  ordered.forEach((n, i) => { n.position = { x: 0, y: i * 10 } })
+  reorderIds(ordered.map((n) => n.id), p.nodeId, p.beforeId).forEach((id, i) => {
+    const n = findNode(id)
+    if (n) n.position = { x: 0, y: i * 10 }
+  })
 }
 
 // Collapse persists with the work (layout layer). Height must be written to BOTH the node's
@@ -656,6 +659,7 @@ onActivated(() => {
   window.addEventListener('keydown', onKeydown)
   checkVault()          // a vault may have been configured while we were away
   loadCategoryColors()  // category colors may have changed in the Library tab
+  widgetRevalidate.value++ // the widget re-checks pin versions + categories (Library edits land here)
   refreshInterval()     // pick up a changed autosave interval
 })
 onDeactivated(() => {
@@ -670,6 +674,7 @@ function loadDoc(doc: any) {
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
   hidePaletteNodes() // palette blocks render in the widget list, never on the canvas
+  widgetRevalidate.value++ // a freshly opened work re-checks its pins' versions
   if (vp) setViewport(vp)
   workId.value = doc.id
   title.value = doc.title || ''
@@ -864,6 +869,7 @@ function startName(data: any, e: MouseEvent) {
             <NodeResizer v-if="!data.collapsed" :min-width="240" :min-height="260" :is-visible="selected"
               color="var(--accent)" />
             <PromptWidget :data="data" :selected="selected" :pins="paletteRows" :pinned-ids="pinnedIds"
+              :revalidate="widgetRevalidate"
               @toggle="toggleLibraryCollapse" @open-library="emit('navigate', 'library')"
               @open-settings="emit('navigate', 'settings')" @pin="insertLibraryBlock($event)"
               @pin-many="$event.forEach(insertLibraryBlock)"

@@ -296,6 +296,26 @@ def list_blocks(settings: Settings, categories: list[str], tags: list[str], sear
     return BlocksPage(items=items, total=total, page=page, per_page=per_page)
 
 
+def resolve_blocks(settings: Settings, ids: list[str]) -> list[BlockDoc]:
+    """Current BlockDocs for the given ids (missing ids are simply omitted) — the widget diffs a
+    pinned copy's frozen version against the live one to flag drift."""
+    vault = _vault(settings)
+    conn = index.open_index(vault)
+    try:
+        rows = index.blocks_by_ids(conn, ids)
+    finally:
+        conn.close()
+    return [
+        BlockDoc(
+            id=r["id"], category=r["category"] or "custom", name=r["name"] or "", text=r["text"] or "",
+            polarity=r["polarity"] or "positive", version=r["version"] or 1,
+            created_at=r["created_at"] or "", updated_at=r["updated_at"] or "",
+            tags=r["tags"].split(chr(31)) if r["tags"] else [],
+        )
+        for r in rows
+    ]
+
+
 def list_categories(settings: Settings, tags: list[str] | None = None) -> list[CategoryCount]:
     vault = _vault(settings)
     conn = index.open_index(vault)
