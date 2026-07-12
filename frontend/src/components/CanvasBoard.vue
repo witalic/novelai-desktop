@@ -21,6 +21,7 @@ import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
+import BlockEditorModal from './BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
 import type { GenResult, LibraryBlock, PanelParams, PersistedComponent, SnapshotData, WorkDoc } from '../types'
@@ -30,7 +31,6 @@ const { confirm } = useConfirm()
 const props = defineProps<{
   drafts: GenResult[]; busy: boolean; error: string; preview: string; params: PanelParams
   openWork: WorkDoc | null
-  linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
   keepDrafts?: { ids: string[]; nonce: number } | null
 }>()
 const emit = defineEmits<{
@@ -40,7 +40,6 @@ const emit = defineEmits<{
   saved: [string]
   navigate: [string]
   'open-library': [{ category: string; tags: string[] }] // widget footer → Library, pre-filtered
-  'save-block': [{ nodeId: string; block: LibraryBlock }]
   'new-work': []
 }>()
 
@@ -660,8 +659,9 @@ function newCompBlock(category: string) {
   appendToComp({ category: category || 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] })
 }
 
-// ↥ Save a station block to the vault. The Library editor drawer opens prefilled (App mediates the
-// tab switch); on save the block adopts the returned vault ref via the linkPin prop below.
+// ↥ Save a station block to the vault. The shared editor opens in-place (no tab switch); on save
+// the block adopts the returned vault ref (block_id/version/tags) so a later re-save carries it.
+const editingDraft = ref<{ nodeId: string; block: LibraryBlock } | null>(null)
 function saveToLibrary(nodeId: string) {
   const live = findNode(nodeId)
   if (!live || live.type !== 'block') return
@@ -669,28 +669,26 @@ function saveToLibrary(nodeId: string) {
     toast.push('Add prompt text before saving to the Library', 'err')
     return
   }
-  emit('save-block', {
+  editingDraft.value = {
     nodeId,
     block: {
       id: newId('block'), category: live.data.category || 'custom', name: live.data.name || '',
       text: live.data.text, polarity: live.data.polarity || 'positive', tags: [...(live.data.tags || [])],
     },
-  })
+  }
 }
-
-// After the drawer saves: link the station block to the vault block and adopt the drawer's
-// (possibly refined) content, so a later re-save carries the vault ref (block_id/version/tags).
-watch(() => props.linkPin?.nonce, () => {
-  const link = props.linkPin
+function onDraftSaved(block: LibraryBlock) {
+  const link = editingDraft.value
+  editingDraft.value = null
   if (!link) return
   const n = findNode(link.nodeId)
   if (!n || n.type !== 'block') return
   n.data = {
-    ...n.data, block_id: link.block.id, version: link.block.version ?? 1,
-    category: link.block.category, name: link.block.name, text: link.block.text,
-    polarity: link.block.polarity, tags: [...link.block.tags],
+    ...n.data, block_id: block.id, version: block.version ?? 1,
+    category: block.category, name: block.name, text: block.text,
+    polarity: block.polarity, tags: [...block.tags],
   }
-})
+}
 
 function doGenerate() {
   const components = compBlocks.value.map((b): PersistedComponent => ({ // compBlocks is already in list order (position.y)
@@ -1069,6 +1067,9 @@ function startName(data: any, e: MouseEvent) {
       </div>
     </div>
 
+    <!-- Save-to-Library opens the shared editor in-place (no tab switch). -->
+    <BlockEditorModal v-if="editingDraft" :block="editingDraft.block" :is-new="true"
+      @close="editingDraft = null" @saved="onDraftSaved" />
   </section>
 </template>
 

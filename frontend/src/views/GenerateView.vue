@@ -9,14 +9,13 @@ import { useAccount } from '../composables/useAccount'
 import { useToast } from '../composables/useToast'
 import { newId } from '../vault/ids'
 import { workToDrafts } from '../vault/serialize'
-import type { PanelParams, PresetParams, Preset, GenResult, WorkDoc, SnapshotData, LibraryBlock } from '../types'
+import type { PanelParams, PresetParams, Preset, GenResult, WorkDoc, SnapshotData } from '../types'
 
 const props = defineProps<{
   openWorkId?: string | null
-  linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
   applyPreset?: { id: string; params: PresetParams; nonce: number } | null
 }>()
-const emit = defineEmits<{ navigate: [string]; 'open-library': [{ category: string; tags: string[] }]; 'save-block': [{ nodeId: string; block: LibraryBlock }] }>()
+const emit = defineEmits<{ navigate: [string]; 'open-library': [{ category: string; tags: string[] }] }>()
 const { push } = useToast()
 const account = useAccount()
 
@@ -179,9 +178,9 @@ watch(() => props.openWorkId, async (raw) => {
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :link-pin="linkPin" :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
+      :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
-      @save-block="emit('save-block', $event)" @new-work="onNewWork" />
+      @new-work="onNewWork" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
       @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
       @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @navigate="emit('navigate', $event)" />

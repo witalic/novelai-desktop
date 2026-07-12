@@ -10,12 +10,9 @@ import { groupByCategory } from './librarySections'
 import type { CategoryCount, LibraryBlock, TagCount } from '../types'
 
 const props = defineProps<{
-  // A work-local canvas block being saved to the vault: open the editor drawer prefilled.
-  draftBlock?: { block: LibraryBlock; nonce: number } | null
   // Deep-link filter from the prompt widget's "Open in Library ↗": pre-select category + tags.
   filter?: { category: string; tags: string[]; nonce: number } | null
 }>()
-const emit = defineEmits<{ 'draft-saved': [LibraryBlock] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
 
@@ -341,24 +338,12 @@ onUnmounted(() => {
 })
 
 // ---- block editor (shared BlockEditorModal) ----
-const editing = ref<{ block: LibraryBlock; isNew: boolean; fromDraft?: boolean } | null>(null)
+const editing = ref<{ block: LibraryBlock; isNew: boolean } | null>(null)
 function openNew() {
   editing.value = { isNew: true, block: { id: newId('block'), category: activeCategory.value || 'custom', name: '', text: '', polarity: 'positive', tags: [] } }
 }
 function openEdit(b: LibraryBlock) { editing.value = { isNew: false, block: b } }
-// A canvas-local block arriving to be saved: open the editor prefilled. `immediate` covers the mount
-// the App's tab switch just triggered (the nonce is already set when this view appears).
-watch(() => props.draftBlock?.nonce, () => {
-  const d = props.draftBlock
-  if (!d) return
-  editing.value = { isNew: true, fromDraft: true, block: d.block }
-}, { immediate: true })
-function onEditorSaved(saved: LibraryBlock) {
-  const fromDraft = editing.value?.fromDraft
-  editing.value = null
-  refreshAll()
-  if (fromDraft) emit('draft-saved', saved) // a saved canvas draft links its palette pin back in Generate
-}
+function onEditorSaved() { editing.value = null; refreshAll() }
 function onEditorDeleted() { editing.value = null; refreshAll() }
 
 // Grid tile 🗑 (delete without opening the editor).

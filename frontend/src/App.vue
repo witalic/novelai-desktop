@@ -11,7 +11,7 @@ import PresetsView from './views/PresetsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
-import type { LibraryBlock, Preset, PresetParams } from './types'
+import type { Preset, PresetParams } from './types'
 
 useTheme()
 export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
@@ -36,24 +36,6 @@ function onApplyPreset(preset: Preset) {
   view.value = 'generate'
 }
 
-// "Save to Library" from a local palette block: the Library tab opens with its editor drawer
-// prefilled; a successful save returns to Generate and links the pin (linkPin) to the vault block.
-const libraryDraft = ref<{ block: LibraryBlock; nonce: number } | null>(null)
-const linkPin = ref<{ nodeId: string; block: LibraryBlock; nonce: number } | null>(null)
-let draftNodeId: string | null = null
-function saveBlockToLibrary(payload: { nodeId: string; block: LibraryBlock }) {
-  draftNodeId = payload.nodeId
-  libraryDraft.value = { block: payload.block, nonce: Date.now() }
-  view.value = 'library'
-}
-function onDraftSaved(block: LibraryBlock) {
-  if (!draftNodeId) return
-  linkPin.value = { nodeId: draftNodeId, block, nonce: Date.now() }
-  draftNodeId = null
-  libraryDraft.value = null
-  view.value = 'generate'
-}
-
 // "Open in Library ↗" from the prompt widget: switch to Library pre-filtered by the widget's
 // category + tags (favorites are work-local and don't exist there, so they're dropped).
 const libraryFilter = ref<{ category: string; tags: string[]; nonce: number } | null>(null)
@@ -65,13 +47,13 @@ function openLibraryWithFilter(f: { category: string; tags: string[] }) {
 // Props/handlers bound only to the active view (avoids attribute fallthrough onto the wrong root).
 const viewBindings = computed(() =>
   view.value === 'generate'
-    ? { openWorkId: activeWorkId.value, linkPin: linkPin.value,
+    ? { openWorkId: activeWorkId.value,
         applyPreset: applyPreset.value, onNavigate: (v: ViewId) => (view.value = v),
-        onOpenLibrary: openLibraryWithFilter, onSaveBlock: saveBlockToLibrary }
+        onOpenLibrary: openLibraryWithFilter }
     : view.value === 'works'
       ? { onOpen: openWork }
       : view.value === 'library'
-        ? { draftBlock: libraryDraft.value, filter: libraryFilter.value, onDraftSaved }
+        ? { filter: libraryFilter.value }
         : view.value === 'presets'
           ? { onApply: onApplyPreset, onNavigate: (v: ViewId) => (view.value = v) }
           : {},
