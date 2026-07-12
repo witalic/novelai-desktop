@@ -14,7 +14,7 @@ from app.vault.models import WorkDoc
 
 log = logging.getLogger(__name__)
 
-CURRENT = 2
+CURRENT = 3
 
 
 def _migrate_1_to_2(raw: dict) -> dict:
@@ -36,7 +36,28 @@ def _migrate_1_to_2(raw: dict) -> dict:
     return raw
 
 
-_MIGRATIONS: dict[int, Callable[[dict], dict]] = {1: _migrate_1_to_2}
+def _migrate_2_to_3(raw: dict) -> dict:
+    """v3: the prompt widget drops its pinned-palette child nodes in favour of a per-work
+    ``favorites`` list (Library block ids). Convert any library-zone pin that links a vault
+    block into a favorite, then remove the now-defunct palette nodes from the canvas. Local
+    palette customs (no ``block_id``) can't be favorited — they're dropped with the pins."""
+    favs: list[str] = list(dict.fromkeys(raw.get("favorites") or []))
+    canvas = raw.get("canvas") or {}
+    kept = []
+    for node in canvas.get("nodes", []):
+        if node.get("type") == "block" and node.get("parentNode") == "library":
+            bid = (node.get("data") or {}).get("block_id")
+            if bid and bid not in favs:
+                favs.append(bid)
+            continue  # drop the palette node — the widget no longer renders pins
+        kept.append(node)
+    canvas["nodes"] = kept
+    raw["canvas"] = canvas
+    raw["favorites"] = favs
+    return raw
+
+
+_MIGRATIONS: dict[int, Callable[[dict], dict]] = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
 
 
 def load_doc(text: str) -> WorkDoc:

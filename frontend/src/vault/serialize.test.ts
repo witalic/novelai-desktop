@@ -29,7 +29,7 @@ const viewport = { x: 40, y: 40, zoom: 0.7 }
 describe('canvasToWork', () => {
   it('splits a vault-path image into a file ref (no base64) and keeps its recipe', () => {
     const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'Test' })
-    expect(doc.schema_version).toBe(2)
+    expect(doc.schema_version).toBe(3)
     expect(doc.id).toBe('w1')
     expect(doc.title).toBe('Test')
     expect(doc.images).toHaveLength(1)
@@ -127,6 +127,12 @@ describe('canvasToWork', () => {
     const doc = canvasToWork([...anchors(), scratch, galleryImage('img-g', 8)], viewport, params, { id: 'w1', title: '' })
     expect(doc.images.map((i) => i.role)).toEqual(['scratch', 'gallery'])
     expect(doc.preview_image_id).toBe('img-g')
+  })
+
+  it('carries the per-work favorites set (deduped), defaulting to empty', () => {
+    expect(canvasToWork([...anchors()], viewport, params, { id: 'w1', title: '' }).favorites).toEqual([])
+    const doc = canvasToWork([...anchors()], viewport, params, { id: 'w1', title: '' }, [], ['b1', 'b2', 'b1'])
+    expect(doc.favorites).toEqual(['b1', 'b2'])
   })
 })
 

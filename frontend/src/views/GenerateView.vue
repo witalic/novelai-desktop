@@ -17,7 +17,7 @@ const props = defineProps<{
   linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
   applyPreset?: { id: string; params: PresetParams; nonce: number } | null
 }>()
-const emit = defineEmits<{ navigate: [string]; 'save-block': [{ nodeId: string; block: LibraryBlock }] }>()
+const emit = defineEmits<{ navigate: [string]; 'open-library': [{ category: string; tags: string[] }]; 'save-block': [{ nodeId: string; block: LibraryBlock }] }>()
 const { push } = useToast()
 const account = useAccount()
 
@@ -181,7 +181,8 @@ watch(() => props.openWorkId, async (raw) => {
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
       :insert-blocks="insertBlocks" :link-pin="linkPin" :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
-      @saved="onWorkSaved" @navigate="emit('navigate', $event)" @save-block="emit('save-block', $event)" @new-work="onNewWork" />
+      @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
+      @save-block="emit('save-block', $event)" @new-work="onNewWork" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
       @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
       @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @navigate="emit('navigate', $event)" />

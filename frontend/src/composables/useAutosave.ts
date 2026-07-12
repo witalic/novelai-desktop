@@ -16,11 +16,12 @@ interface Deps {
   viewport: Ref<any>
   params: () => PanelParams
   drafts: () => GenResult[]
+  favorites: () => string[] // per-work quick-access set (Library block ids) — persisted with the work
   onNoVault: () => void // no vault configured → route the user to Settings
   onSaved?: (workId: string) => void // after a successful save: swap just-persisted data: URLs for vault URLs
 }
 
-export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSaved }: Deps) {
+export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVault, onSaved }: Deps) {
   const toast = useToast()
   const title = ref('')
   const vaultReady = ref(false)
@@ -50,7 +51,7 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
       x: Math.round(n.position?.x ?? 0), y: Math.round(n.position?.y ?? 0),
       s: n.style, d: n.type === 'image' ? (n.data?.url ? 1 : 0) : n.data,
     }))
-    return JSON.stringify({ t: title.value, params: params(), nodes: sig, stack: drafts().map((d) => d.id) })
+    return JSON.stringify({ t: title.value, params: params(), nodes: sig, stack: drafts().map((d) => d.id), favs: favorites() })
   }
 
   function markDirty() {
@@ -66,7 +67,7 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
     if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return true }
     saveState.value = 'saving'
     try {
-      await saveWork(canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts()) as WorkDoc)
+      await saveWork(canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites()) as WorkDoc)
       lastSig = key
       dirty = false
       saveState.value = 'saved'
@@ -114,7 +115,7 @@ export function useAutosave({ nodes, viewport, params, drafts, onNoVault, onSave
   // Browser fallback for window close (Electron uses onBeforeQuit); best-effort, size-limited.
   function onBeforeUnload() {
     if (!vaultReady.value || !dirty || inflight || !isMeaningful() || changeKey() === lastSig) return
-    const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts())
+    const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites())
     try { navigator.sendBeacon('/api/vault/works', new Blob([JSON.stringify(doc)], { type: 'application/json' })) } catch { /* best-effort */ }
   }
 

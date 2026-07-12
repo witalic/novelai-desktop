@@ -63,15 +63,24 @@ function onDraftSaved(block: LibraryBlock) {
   view.value = 'generate'
 }
 
+// "Open in Library ↗" from the prompt widget: switch to Library pre-filtered by the widget's
+// category + tags (favorites are work-local and don't exist there, so they're dropped).
+const libraryFilter = ref<{ category: string; tags: string[]; nonce: number } | null>(null)
+function openLibraryWithFilter(f: { category: string; tags: string[] }) {
+  libraryFilter.value = { category: f.category, tags: [...f.tags], nonce: Date.now() }
+  view.value = 'library'
+}
+
 // Props/handlers bound only to the active view (avoids attribute fallthrough onto the wrong root).
 const viewBindings = computed(() =>
   view.value === 'generate'
     ? { openWorkId: activeWorkId.value, insertBlocks: pendingBlocks.value, linkPin: linkPin.value,
-        applyPreset: applyPreset.value, onNavigate: (v: ViewId) => (view.value = v), onSaveBlock: saveBlockToLibrary }
+        applyPreset: applyPreset.value, onNavigate: (v: ViewId) => (view.value = v),
+        onOpenLibrary: openLibraryWithFilter, onSaveBlock: saveBlockToLibrary }
     : view.value === 'works'
       ? { onOpen: openWork }
       : view.value === 'library'
-        ? { onUse: useBlocks, draftBlock: libraryDraft.value, onDraftSaved }
+        ? { onUse: useBlocks, draftBlock: libraryDraft.value, filter: libraryFilter.value, onDraftSaved }
         : view.value === 'presets'
           ? { onApply: onApplyPreset, onNavigate: (v: ViewId) => (view.value = v) }
           : {},

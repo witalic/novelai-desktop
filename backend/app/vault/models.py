@@ -115,7 +115,7 @@ class StackItem(BaseModel):
 
 
 class WorkDoc(BaseModel):
-    schema_version: int = 2  # bump together with a migrate.py step + frontend serialize.ts
+    schema_version: int = 3  # bump together with a migrate.py step + frontend serialize.ts
     id: str
     title: str = ""
     slug: str = ""
@@ -126,6 +126,7 @@ class WorkDoc(BaseModel):
     snapshots: list[Snapshot] = Field(default_factory=list)
     images: list[Image] = Field(default_factory=list)
     stack: list[StackItem] = Field(default_factory=list)   # the generation output pile (drafts)
+    favorites: list[str] = Field(default_factory=list)     # Library block ids starred for quick access in this work
     preview_image_id: str | None = None
 
 

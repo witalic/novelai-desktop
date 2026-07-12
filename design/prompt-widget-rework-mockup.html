@@ -1,0 +1,511 @@
+<meta charset="utf-8">
+<title>Prompt widget — rework mockup</title>
+<style>
+  /* ---- app tokens, verbatim from frontend/src/styles/tokens.css ---- */
+  :root{
+    --accent:#0c66e4; --accent-strong:#0055cc; --on-accent:#ffffff;
+    --radius:6px; --radius-lg:8px;
+    --font: ui-sans-serif, system-ui, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+    --bg:#101214; --surface-1:#1d2125; --surface-2:#22272b; --surface-3:#282e33;
+    --border:#2c333a; --border-strong:#454f59;
+    --text:#c7d1db; --text-dim:#9fadbc; --text-faint:#738496; --nav-active:#1c3049;
+    --ok:#3aa675; --warn:#b65c02; --danger:#e2483d; --star:#e0a534;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f7f8f9; --surface-1:#ffffff; --surface-2:#f7f8f9; --surface-3:#f1f2f4;
+      --border:#dfe1e6; --border-strong:#c1c7d0;
+      --text:#172b4d; --text-dim:#44546f; --text-faint:#626f86; --nav-active:#e9f2ff;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#101214; --surface-1:#1d2125; --surface-2:#22272b; --surface-3:#282e33;
+    --border:#2c333a; --border-strong:#454f59;
+    --text:#c7d1db; --text-dim:#9fadbc; --text-faint:#738496; --nav-active:#1c3049;
+  }
+  :root[data-theme="light"]{
+    --bg:#f7f8f9; --surface-1:#ffffff; --surface-2:#f7f8f9; --surface-3:#f1f2f4;
+    --border:#dfe1e6; --border-strong:#c1c7d0;
+    --text:#172b4d; --text-dim:#44546f; --text-faint:#626f86; --nav-active:#e9f2ff;
+  }
+
+  *{box-sizing:border-box}
+  /* themed thin scrollbars everywhere (tokens.css does this globally in the app) —
+     an overlay-style thumb that does NOT reserve layout width */
+  *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:9px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--text-faint);background-clip:content-box}
+
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);
+    font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .page{max-width:1120px;margin:0 auto;padding:40px 28px 80px;display:flex;flex-direction:column;gap:36px}
+
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--text-faint)}
+  h1{font-size:24px;font-weight:700;margin:6px 0 8px;text-wrap:balance}
+  .lede{color:var(--text-dim);max-width:70ch;margin:0}
+  h2{font-size:15px;font-weight:700;margin:0 0 4px}
+  .sec{display:flex;flex-direction:column;gap:14px}
+  .sechd{display:flex;flex-direction:column;gap:2px}
+  .sechd .sub{font-size:12.5px;color:var(--text-faint)}
+
+  /* ---- canvas demo ---- */
+  .canvasdemo{position:relative;height:680px;border:1px solid var(--border);border-radius:var(--radius-lg);
+    overflow:hidden;background:var(--bg);
+    background-image:radial-gradient(var(--border-strong) 1.2px, transparent 1.2px);background-size:18px 18px}
+  .hintbar{position:absolute;left:14px;bottom:12px;font-size:11px;color:var(--text-faint);
+    background:color-mix(in srgb,var(--surface-1) 85%,transparent);border:1px solid var(--border);
+    border-radius:20px;padding:4px 12px;pointer-events:none;max-width:58%}
+  .co{position:absolute;z-index:20;width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--on-accent);
+    font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent);pointer-events:none}
+
+  /* ---- the widget ---- */
+  .widget{position:absolute;left:34px;top:26px;width:392px;height:624px;display:flex;flex-direction:column;
+    border:1.5px solid var(--border-strong);border-radius:12px;overflow:hidden;
+    background:color-mix(in srgb,var(--surface-1) 92%,transparent);box-shadow:0 6px 28px rgba(0,0,0,.28)}
+  .whd{display:flex;align-items:center;gap:8px;height:38px;flex-shrink:0;padding:0 8px 0 12px;
+    border-bottom:1px solid var(--border);background:var(--surface-1);font-weight:600;font-size:13px;cursor:grab}
+  .whd .anchor-tag{font-size:10px;font-weight:600;color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:20px}
+  .whd .sp{margin-left:auto}
+  .whd .collapse{border:0;background:transparent;color:var(--text-faint);cursor:pointer;font-size:11px;padding:2px 4px}
+  .whd .collapse:hover{color:var(--text)}
+
+  /* body = rail | content */
+  .wbody{display:flex;flex:1;min-height:0}
+  .wrail{width:138px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;
+    background:color-mix(in srgb,var(--surface-1) 60%,transparent)}
+  .railscroll{flex:1;min-height:0;overflow-y:auto;padding:6px 6px 8px}
+  .railgroup{font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);
+    padding:8px 8px 4px}
+  .catnav{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;color:var(--text-dim);
+    font:inherit;font-size:11.5px;font-weight:600;padding:6px 7px;border-radius:var(--radius);cursor:pointer;text-align:left}
+  .catnav:hover{background:var(--surface-3);color:var(--text)}
+  .catnav.on{background:var(--nav-active);color:var(--accent)}
+  .catnav .cdot{width:8px;height:8px;border-radius:50%;background:var(--cat,var(--text-faint));flex-shrink:0}
+  .catnav .gl{width:8px;text-align:center;flex-shrink:0;font-size:11px;line-height:1}
+  .catnav .cn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .catnav .cc{margin-left:auto;color:var(--text-faint);font-weight:500;font-variant-numeric:tabular-nums;font-size:10.5px}
+  .catnav.on .cc{color:var(--accent)}
+  /* the ★ Favorites view sits above All blocks — a gold accent, its own selected state */
+  .catnav.fav .gl{color:var(--star)}
+  .catnav.fav.on{background:color-mix(in srgb,var(--star) 15%,transparent);color:var(--star)}
+  .catnav.fav.on .cc{color:var(--star)}
+  .railsep{height:1px;background:var(--border);margin:6px 8px 2px}
+
+  /* one shared horizontal gutter so the tag-scroll and the list-scroll line up on the same inset */
+  .wcontent{display:flex;flex-direction:column;flex:1;min-width:0;padding:0 8px}
+  .whead{display:flex;flex-direction:column;gap:8px;padding:9px 0 9px;border-bottom:1px solid var(--border);flex-shrink:0}
+  .wsearch{position:relative}
+  .wsearch input{width:100%;font:inherit;font-size:12px;color:var(--text);background:var(--surface-2);
+    border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px 7px 28px;outline:none}
+  .wsearch input:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+  .wsearch .ic{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text-faint);font-size:12px;pointer-events:none}
+
+  /* tag pins — scoped to the current view, multi-select, own scroll (no tag search: main search covers it) */
+  .tagsec{display:flex;flex-direction:column;gap:5px}
+  .tl{font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint)}
+  .tagwrap{display:flex;flex-wrap:wrap;gap:5px;max-height:64px;overflow-y:auto}
+  .tchip{flex-shrink:0;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);
+    background:var(--surface-2);color:var(--text-dim);border-radius:20px;padding:2px 9px;font-size:11px;
+    font-weight:600;cursor:pointer;white-space:nowrap}
+  .tchip .n{color:var(--text-faint);font-weight:500;font-variant-numeric:tabular-nums;font-size:10px}
+  .tchip:hover{border-color:var(--border-strong);color:var(--text)}
+  .tchip.on{background:var(--nav-active);border-color:color-mix(in srgb,var(--accent) 45%,var(--border));color:var(--accent)}
+  .tchip.on .n{color:var(--accent)}
+  .tagempty{font-size:11px;color:var(--text-faint);padding:2px}
+
+  /* blocks list */
+  .wlist{flex:1;min-height:0;overflow-y:auto;padding:8px 0;display:flex;flex-direction:column;gap:6px}
+  .newrow{flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:6px;width:100%;
+    border:1px dashed var(--border-strong);border-radius:8px;background:transparent;color:var(--text-dim);
+    font:inherit;font-size:11.5px;font-weight:600;padding:8px;cursor:pointer}
+  .newrow:hover{color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 6%,transparent)}
+  .newrow b{color:var(--text)}
+
+  /* left border = POLARITY (green positive / red negative); category = a dot before the name */
+  .brow{position:relative;flex-shrink:0;border:1px solid var(--border);border-left:4px solid var(--pol);
+    border-radius:8px;background:var(--surface-2);padding:6px 8px 7px;cursor:grab;transition:border-color .1s}
+  .brow.pos{--pol:var(--ok)}
+  .brow.neg{--pol:var(--danger);background:color-mix(in srgb,var(--danger) 7%,var(--surface-2))}
+  .brow:hover{border-color:var(--border-strong);border-left-color:var(--pol)}
+  .brow .r1{display:flex;align-items:center;gap:6px;min-height:22px}
+  .grip{color:var(--text-faint);font-size:10px;cursor:grab;flex-shrink:0}
+  .catdot{width:9px;height:9px;border-radius:50%;background:var(--cat,#738496);flex-shrink:0}
+  .bname{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .negtag{flex-shrink:0;font-size:8.5px;font-weight:800;letter-spacing:.4px;color:var(--danger);
+    border:1px solid color-mix(in srgb,var(--danger) 50%,var(--border));background:color-mix(in srgb,var(--danger) 12%,transparent);
+    border-radius:9px;padding:0 6px;line-height:15px}
+  .spacer{margin-left:auto}
+  .ricon{flex-shrink:0;border:1px solid var(--border-strong);background:var(--surface-1);color:var(--text-dim);
+    border-radius:5px;height:22px;min-width:22px;font-size:12px;font-weight:600;line-height:1;cursor:pointer;padding:0 5px;
+    display:inline-flex;align-items:center;justify-content:center}
+  .ricon:hover{color:var(--accent);border-color:var(--accent)}
+  .ricon.move.done{color:var(--ok);border-color:var(--ok)}
+  .fav{color:var(--text-faint)}
+  .fav.on{color:var(--star);border-color:color-mix(in srgb,var(--star) 55%,var(--border));
+    background:color-mix(in srgb,var(--star) 12%,transparent)}
+  .fav:hover{color:var(--star);border-color:var(--star)}
+  .btext{font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+
+  .wempty{padding:26px 14px;text-align:center;font-size:12px;color:var(--text-faint)}
+  .wempty button{border:0;background:transparent;color:var(--accent);cursor:pointer;font-size:12px;padding:0}
+  .skel{flex-shrink:0;height:42px;border-radius:8px;background:linear-gradient(90deg,var(--surface-2),var(--surface-3),var(--surface-2));
+    background-size:200% 100%;animation:sh 1.4s ease infinite}
+  @keyframes sh{to{background-position:-200% 0}}
+  @media (prefers-reduced-motion: reduce){.skel{animation:none;background:var(--surface-2)}}
+
+  .wfoot{flex-shrink:0;display:flex;align-items:center;gap:8px;border-top:1px solid var(--border);
+    background:var(--surface-1);padding:7px 12px;font-size:11px;color:var(--text-faint)}
+  .wfoot .lib{margin-left:auto;color:var(--accent);cursor:pointer;font-weight:600;text-decoration:none;white-space:nowrap}
+
+  /* collapsed */
+  .widget.collapsed{height:38px}
+  .widget.collapsed .wbody,.widget.collapsed .wfoot{display:none}
+  .widget.collapsed .whd{border-bottom:0}
+
+  /* ---- hover details popover ---- */
+  .pop{position:absolute;z-index:19;width:288px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);
+    background:var(--surface-1);box-shadow:0 8px 30px rgba(0,0,0,.4);padding:12px 14px;display:none}
+  .pop.show{display:block}
+  .pop .ph{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+  .pop .cdot{width:9px;height:9px;border-radius:50%;background:var(--cat,#738496);flex-shrink:0}
+  .pop .pname{font-size:12.5px;font-weight:700}
+  .pop .negtag{margin-left:auto}
+  .pop .plbl{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint);margin:0 0 3px}
+  .pop .ptext{font-size:12px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);
+    border-radius:var(--radius);padding:7px 9px;margin:0 0 8px;line-height:1.5;user-select:text;white-space:pre-wrap}
+  .pop .pmeta{font-size:10.5px;color:var(--text-faint);margin:0 0 8px}
+  .pop .ptags{display:flex;flex-wrap:wrap;gap:4px}
+  .pop .ptags span{font-size:10.5px;background:var(--surface-3);border:1px solid var(--border);border-radius:20px;
+    padding:1px 8px;color:var(--text-dim)}
+
+  /* ---- station hint ---- */
+  .stationhint{position:absolute;right:-140px;top:150px;width:400px;height:360px;border:1.5px solid var(--border-strong);
+    border-radius:12px;overflow:hidden;background:color-mix(in srgb,var(--surface-1) 70%,transparent);opacity:.9;pointer-events:none}
+  .stationhint .shd{height:38px;display:flex;align-items:center;padding:0 12px;font-weight:600;font-size:13px;
+    border-bottom:1px solid var(--border);background:var(--surface-1)}
+  .stationhint .lane{height:161px;position:relative}
+  .stationhint .lane.pos{background:color-mix(in srgb,var(--ok) 6%,transparent)}
+  .stationhint .lane.neg{background:color-mix(in srgb,var(--danger) 6%,transparent);border-top:1px solid var(--border)}
+  .stationhint .lanelbl{position:absolute;left:10px;top:8px;font-size:10px;font-weight:700;letter-spacing:.4px;
+    text-transform:uppercase;color:var(--text-faint)}
+  .placed{position:absolute;left:16px;top:30px;width:180px;border:1px solid var(--border-strong);border-left:4px solid var(--pol);
+    border-radius:8px;padding:6px 9px;background:var(--surface-2);font-size:12px;font-weight:600}
+  .placed.pos{--pol:var(--ok)} .placed.neg{--pol:var(--danger)}
+  .placed .pt{font-size:10.5px;font-weight:500;color:var(--text-faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ghost{position:absolute;z-index:18;width:180px;border:1px dashed var(--accent);border-radius:8px;padding:7px 9px;
+    background:color-mix(in srgb,var(--accent) 8%,transparent);font-size:12px;font-weight:600;color:var(--text-dim);pointer-events:none}
+  .droparrow{position:absolute;z-index:18;pointer-events:none;color:var(--text-faint)}
+
+  /* ---- anatomy / decisions / behavior ---- */
+  .decide{border-left:3px solid var(--accent);background:color-mix(in srgb,var(--accent) 7%,var(--surface-1));
+    border-radius:var(--radius);padding:12px 16px;font-size:12.5px;color:var(--text-dim)}
+  .decide b{color:var(--text)}
+  .decide ul{margin:6px 0 0;padding-left:18px}.decide li{margin:4px 0}
+  .anatomy{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
+  .apoint{display:flex;gap:10px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-1);padding:12px 14px}
+  .apoint .num{flex-shrink:0;width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--on-accent);
+    font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px}
+  .apoint b{display:block;font-size:12.5px;margin-bottom:2px}.apoint p{margin:0;font-size:12px;color:var(--text-dim)}
+  .states{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .statecard{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-1);overflow:hidden}
+  .statecard .schd{padding:8px 12px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;
+    letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint)}
+  .statecard .scbody{padding:14px 12px;min-height:120px;display:flex;flex-direction:column;gap:8px;justify-content:center}
+  .scmsg{text-align:center;font-size:12px;color:var(--text-faint)}
+  .scmsg .cta{display:inline-block;margin-top:8px;border:1px solid var(--border-strong);border-radius:var(--radius);
+    background:var(--surface-2);color:var(--text);font-size:12px;font-weight:600;padding:5px 12px;cursor:pointer}
+  .rules{border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+  .rule{display:grid;grid-template-columns:190px 1fr;gap:14px;padding:11px 14px;background:var(--surface-1);font-size:12.5px}
+  .rule + .rule{border-top:1px solid var(--border)}
+  .rule .k{font-weight:600;color:var(--text)}.rule .v{color:var(--text-dim)}
+  .rule .v code{font-size:11px;background:var(--surface-3);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-dim);border:1px solid var(--border);
+    border-radius:var(--radius-lg);background:var(--surface-1);padding:10px 14px}
+  .legend .li{display:flex;align-items:center;gap:7px}
+  .swatch{width:22px;height:16px;border-radius:4px;border:1px solid var(--border);border-left:4px solid var(--pol)}
+  kbd{font-family:inherit;font-size:11px;border:1px solid var(--border-strong);border-bottom-width:2px;
+    border-radius:4px;padding:0 5px;background:var(--surface-2)}
+</style>
+
+<div class="page">
+  <header>
+    <div class="eyebrow">novelai-desktop · Phase 2 UI · prompt widget · rework rev 3 — for approval</div>
+    <h1>Prompt widget — direct Library browser with a left rail</h1>
+    <p class="lede">The two-mode widget (Quick access palette + Find in Library) collapses into <b>one direct browser
+    over the whole Library</b>, laid out like the full Library view: a category <b>rail on the left</b> (with a
+    <b>★ Favorites</b> view on top), a search + per-view <b>tag pins</b> in the header, and the blocks below.
+    Favorites replace Quick access — a per-work star set. A block never lives in the widget; <b>★ favorites it,
+    ⇢ / drag drops an independent copy into the work area</b>, and <b>＋ New block</b> spawns one there too.</p>
+  </header>
+
+  <section class="sec">
+    <div class="decide">
+      <b>Rev 3 — addressed from your review</b>
+      <ul>
+        <li><b>★ Favorites is now a toggle that composes with category navigation</b> — it sits at the top of the rail and <b>ANDs with the selected category</b> (Body + ★ = favorited Body blocks; All + ★ = every favorite). It no longer replaces the category selection.</li>
+        <li><b>Polarity = the block’s left border color</b> — green positive, red negative (+ faint red wash &amp; <code>NEG</code> tag on negatives). <b>Category</b> is a dot before the name (the odd circle by the star is gone).</li>
+        <li><b>Tag search removed</b> — the main search already matches tags. <b>★ and ⇢ always visible.</b> <b>Scrollbars themed</b> (thin overlay thumbs, no reserved width) — matches the app’s global <code>tokens.css</code>.</li>
+      </ul>
+    </div>
+    <div class="legend">
+      <div class="li"><span class="swatch pos" style="--pol:var(--ok)"></span> Positive block — feeds the Positive lane</div>
+      <div class="li"><span class="swatch neg" style="--pol:var(--danger)"></span> Negative block — red wash + <span class="negtag">NEG</span>, feeds the Negative lane</div>
+      <div class="li"><span class="catdot" style="--cat:#0c66e4"></span> Category dot (matches the rail color)</div>
+    </div>
+  </section>
+
+  <!-- ============ live demo ============ -->
+  <section class="sec">
+    <div class="sechd">
+      <h2>Canvas context (interactive)</h2>
+      <div class="sub">Try: ★ Favorites &amp; a category in the rail · toggle tag pins · type in search · hover a row for the details card · star / ⇢ a block · ＋ New block.</div>
+    </div>
+    <div class="canvasdemo">
+      <span class="co" style="left:22px;top:70px">2</span>
+      <span class="co" style="left:22px;top:98px">1</span>
+      <span class="co" style="left:160px;top:70px">3</span>
+      <span class="co" style="left:160px;top:150px">4</span>
+      <span class="co" style="left:160px;top:222px">5</span>
+      <span class="co" style="left:300px;top:626px">6</span>
+
+      <div class="widget" id="widget">
+        <div class="whd">
+          <span>✦</span><span>Prompt blocks</span>
+          <span class="anchor-tag">anchor</span>
+          <span class="sp"></span>
+          <button class="collapse" id="collapse" title="Collapse to header (persisted with the work)">▾</button>
+        </div>
+
+        <div class="wbody">
+          <!-- left rail: ★ Favorites + All + categories (single-select) -->
+          <div class="wrail">
+            <div class="railscroll" id="rail"></div>
+          </div>
+
+          <!-- content: header (search + tags) → list -->
+          <div class="wcontent">
+            <div class="whead">
+              <div class="wsearch">
+                <span class="ic">⌕</span>
+                <input id="q" type="text" placeholder="Search name, prompt, tags…  ( / )" />
+              </div>
+              <div class="tagsec">
+                <span class="tl" id="taglbl">Tags</span>
+                <div class="tagwrap" id="tagwrap"></div>
+              </div>
+            </div>
+            <div class="wlist" id="list"></div>
+          </div>
+        </div>
+
+        <div class="wfoot"><span id="count"></span><a class="lib" id="footlink">Open in Library ↗</a></div>
+      </div>
+
+      <div class="pop" id="pop"></div>
+
+      <!-- station preview + a copy being dragged out -->
+      <div class="stationhint">
+        <div class="shd">Generation</div>
+        <div class="lane pos"><span class="lanelbl">Positive</span>
+          <div class="placed pos"><div>Curvy figure</div><div class="pt">1.3::curvy::, hourglass figure, wide hips</div></div>
+        </div>
+        <div class="lane neg"><span class="lanelbl">Negative</span>
+          <div class="placed neg" style="top:22px"><div>Anatomy guard</div><div class="pt">bad anatomy, extra digits, low quality</div></div>
+        </div>
+      </div>
+      <div class="ghost" id="ghost" style="left:250px;top:470px">⠿ Golden hour <span style="font-weight:500;color:var(--text-faint)">(copy)</span></div>
+      <svg class="droparrow" style="left:200px;top:452px" width="70" height="70" viewBox="0 0 70 70" fill="none" aria-hidden="true">
+        <path d="M4 40 C 24 20, 44 14, 64 24" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <path d="M56 20 l9 4 -4 9" stroke="currentColor" stroke-width="1.5" fill="none"/>
+      </svg>
+
+      <div class="hintbar">One list, the whole Library · ★ = this work’s favorites (quick access) · ⇢ / drag = an independent copy in the work area · ＋ New block spawns one in the current category</div>
+    </div>
+  </section>
+
+  <!-- ============ anatomy ============ -->
+  <section class="sec">
+    <div class="sechd"><h2>Anatomy</h2><div class="sub">Numbered against the callouts above.</div></div>
+    <div class="anatomy">
+      <div class="apoint"><span class="num">1</span><div><b>Rail — ★ Favorites toggle</b>
+        <p>Top of the rail, above <code>All blocks</code>. A <b>toggle</b>, not a view: it stays lit while you also pick a category, and <b>ANDs</b> with it (Body + ★ = favorited Body blocks). Favorites persist with the work; they’re the replacement for Quick access.</p></div></div>
+      <div class="apoint"><span class="num">2</span><div><b>Category rail (single-select)</b>
+        <p>The full Library’s left rail, compacted: <code>All blocks</code> + every category with its color dot and count, its own themed scroll for 20+ categories. Selecting one scopes everything to its right — the “current category”.</p></div></div>
+      <div class="apoint"><span class="num">3</span><div><b>Search</b>
+        <p>Debounced, matches <b>name + prompt + tags</b> via <code>GET /library/blocks?search=</code>. <kbd>/</kbd> on the canvas focuses it. Combines with the rail view + tags (AND).</p></div></div>
+      <div class="apoint"><span class="num">4</span><div><b>Tag pins (per view)</b>
+        <p>Tags for the current rail view, as multi-select chips (<code>GET /library/tags?category=</code>) in a self-scrolling area — a 40-tag category never blows out the header. AND-semantics. No separate tag search: the main search already matches tags.</p></div></div>
+      <div class="apoint"><span class="num">5</span><div><b>Blocks + ＋ New block</b>
+        <p>First item is <b>＋ New block in «Category»</b> — spawns a fresh block <b>in the work area</b> in the current category (<code>All / Favorites → custom</code>), ready to edit there. Each row: category dot, name, the polarity edge, and the two always-visible actions. Hover ~250 ms → details card.</p></div></div>
+      <div class="apoint"><span class="num">6</span><div><b>Footer</b>
+        <p>Count of matches + <b>Open in Library ↗</b>, which <b>carries the category + tag filters</b> (opens the Library pre-filtered) but <b>ignores Favorites</b> — favorites are a work-local concept the shared Library doesn’t have.</p></div></div>
+    </div>
+  </section>
+
+  <!-- ============ states ============ -->
+  <section class="sec">
+    <div class="sechd"><h2>States</h2></div>
+    <div class="states">
+      <div class="statecard"><div class="schd">Loading</div><div class="scbody"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div></div>
+      <div class="statecard"><div class="schd">Empty result</div><div class="scbody"><div class="scmsg">No blocks match “cyberpunk” in <b>Scene · Lighting</b>.<br/><button class="cta">Clear filters</button></div></div></div>
+      <div class="statecard"><div class="schd">Favorites empty</div><div class="scbody"><div class="scmsg">No favorites in this work yet.<br/>Star blocks to build your quick-access set.<br/><button class="cta">Show all blocks</button></div></div></div>
+      <div class="statecard"><div class="schd">No vault</div><div class="scbody"><div class="scmsg">Connect a vault to browse your prompt blocks.<br/><button class="cta">Open Settings</button></div></div></div>
+    </div>
+  </section>
+
+  <!-- ============ behavior ============ -->
+  <section class="sec">
+    <div class="sechd"><h2>Behavior rules</h2></div>
+    <div class="rules">
+      <div class="rule"><span class="k">One pool</span><span class="v">No modes, no palette. The list is always the whole Library narrowed by rail view → tags → search (all AND). Blocks never move “out of” the pool.</span></div>
+      <div class="rule"><span class="k">Favorites = quick access</span><span class="v">The ★ on a row toggles a <b>per-work favorite</b> (a Library block id kept on the <code>WorkDoc</code>). The rail’s <b>★ Favorites toggle</b> filters to that set and <b>ANDs with the selected category</b> + tags + search. Nothing is copied — a favorite is a bookmark into the Library, persisted with the work.</span></div>
+      <div class="rule"><span class="k">Polarity legibility</span><span class="v"><b>Left border color = polarity</b>: green (<code>--ok</code>) positive, red (<code>--danger</code>) negative; negatives also get a faint red wash + a <code>NEG</code> tag. <b>Category = a dot before the name</b> (matches the rail). The two channels never collide.</span></div>
+      <div class="rule"><span class="k">Move to work area</span><span class="v"><b>⇢</b> and <b>drag-out</b> both drop an <b>independent copy</b> into the station — strict polarity routing (positive → Positive lane, negative → Negative). Editing that copy never touches the Library block.</span></div>
+      <div class="rule"><span class="k">＋ New block</span><span class="v">Creates a fresh block <b>directly in the work area</b> with the current rail category — or <code>custom</code> under <code>All</code> / <code>Favorites</code> — then focuses it for editing there. Custom blocks graduate to the vault via the Library editor’s <b>Save to Library</b>.</span></div>
+      <div class="rule"><span class="k">Actions always shown</span><span class="v">Both row actions are always visible: <b>★</b> (filled = favorited, its state) and <b>⇢</b>. No hover-reveal.</span></div>
+      <div class="rule"><span class="k">Footer link</span><span class="v"><b>Open in Library ↗</b> hands the current category + selected tags to the Library view (deep-link filter); it drops the Favorites view — favorites don’t exist outside this work.</span></div>
+      <div class="rule"><span class="k">Persistence</span><span class="v">Favorites + collapse persist with the work. Rail view, tags, search, scroll — transient (a reopened work starts at All / no filters).</span></div>
+      <div class="rule"><span class="k">Data</span><span class="v">Existing endpoints only: <code>/library/blocks</code>, <code>/library/categories</code>, <code>/library/tags</code>. New: a <code>favorites: string[]</code> field on the work recipe (schema bump + migration).</span></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const CATS = [
+    ['character','Character','#0c66e4'],['body','Body','#c77d54'],['body-anatomy','Body · Anatomy','#c0674a'],
+    ['body-skin','Body · Skin','#e0a878'],['body-hair','Body · Hair','#9c6b3f'],['body-face','Body · Face','#d99578'],
+    ['outfit','Outfit','#d4537e'],['pose','Pose','#ae4787'],['scene-lighting','Scene · Lighting','#b65c02'],
+    ['style','Style','#6e5dc6'],['negative','Negative','#e2483d'],
+  ]
+  const COLOR = Object.fromEntries(CATS.map(c=>[c[0],c[2]]))
+  const NAME = Object.fromEntries(CATS.map(c=>[c[0],c[1]]))
+  const LIB = [
+    {id:'b1',name:'Curvy figure',cat:'body',text:'1.3::curvy::, hourglass figure, wide hips, large breasts',pol:'+',tags:['figure','curvy']},
+    {id:'b2',name:'Athletic build',cat:'body',text:'1.3::athletic::, toned, abs, fit, lean muscle',pol:'+',tags:['figure','fit']},
+    {id:'b3',name:'Petite frame',cat:'body',text:'1.3::petite::, small build, slender, delicate',pol:'+',tags:['figure','slender']},
+    {id:'b4',name:'Puffy nipples',cat:'body-anatomy',text:'1.3::puffy nipples::',pol:'+',tags:['nsfw','breasts','nipples']},
+    {id:'b5',name:'Sagging breasts',cat:'body-anatomy',text:'1.3::sagging breasts::, heavy breasts',pol:'+',tags:['nsfw','breasts','shape']},
+    {id:'b6',name:'Cameltoe',cat:'body-anatomy',text:'1.3::cameltoe::, pussy',pol:'+',tags:['nsfw','pussy','clothed']},
+    {id:'b7',name:'Silver hair',cat:'body-hair',text:'1.3::silver hair::, long hair, hair between eyes',pol:'+',tags:['hair','long']},
+    {id:'b8',name:'Twin braids',cat:'body-hair',text:'1.3::twin braids::, low braids',pol:'+',tags:['hair','braids']},
+    {id:'b9',name:'Golden hour',cat:'scene-lighting',text:'1.3::golden hour::, rim light, warm lighting, long shadows',pol:'+',tags:['warm','outdoor']},
+    {id:'b10',name:'Dramatic rim',cat:'scene-lighting',text:'1.3::rim lighting::, backlight, high contrast, deep shadows',pol:'+',tags:['dramatic','contrast']},
+    {id:'b11',name:'School uniform',cat:'outfit',text:'1.3::school uniform::, pleated skirt, ribbon, knee-high socks',pol:'+',tags:['clothing','uniform']},
+    {id:'b12',name:'Hot pink babydoll',cat:'outfit',text:'1.3::babydoll::, sheer, lace, garter belt',pol:'+',tags:['nsfw','lingerie','clothing']},
+    {id:'b13',name:'Contrapposto',cat:'pose',text:'1.3::contrapposto::, standing, hand on hip',pol:'+',tags:['standing']},
+    {id:'b14',name:'Watercolor wash',cat:'style',text:'1.3::watercolor (medium)::, soft shading, pastel palette',pol:'+',tags:['painterly','soft']},
+    {id:'b15',name:'Anatomy guard',cat:'negative',text:'bad anatomy, extra digits, low quality, blurry, watermark',pol:'−',tags:['quality']},
+    {id:'b16',name:'Blur & artifacts',cat:'negative',text:'blurry, jpeg artifacts, lowres, worst quality',pol:'−',tags:['quality']},
+  ]
+  const $ = (s)=>document.querySelector(s)
+  let view='', tags=[], q='', favOnly=false   // view: '' = all or a category slug; favOnly ANDs the favorites set
+  const favs = new Set(['b9','b1'])
+
+  // when favorites is on, the rail counts (and which categories show) reflect the favorited set only
+  function counts(){ const src=favOnly?LIB.filter(b=>favs.has(b.id)):LIB; const c={}; for(const b of src) c[b.cat]=(c[b.cat]||0)+1; return c }
+  function renderRail(){
+    const c=counts()
+    // ★ Favorites is a TOGGLE (not a view) — it ANDs with whatever category is selected below
+    const fav=`<button class="catnav fav toggle${favOnly?' on':''}" data-favtoggle title="Filter to this work’s favorites — combines with the category below"><span class="gl">${favOnly?'★':'☆'}</span><span class="cn">Favorites</span><span class="cc">${favs.size}</span></button>`
+    const all=`<button class="catnav${view===''?' on':''}" data-v=""><span class="gl">▦</span><span class="cn">All blocks</span><span class="cc">${favOnly?favs.size:LIB.length}</span></button>`
+    const items=CATS.filter(x=>c[x[0]]).map(x=>`<button class="catnav${view===x[0]?' on':''}" data-v="${x[0]}"><span class="cdot" style="--cat:${x[2]}"></span><span class="cn">${x[1]}</span><span class="cc">${c[x[0]]}</span></button>`).join('')
+    $('#rail').innerHTML=fav+`<div class="railsep"></div>`+all+`<div class="railgroup">Categories</div>`+items
+  }
+  function pool(){ // blocks in the current rail view (before tags/search)
+    let base = view ? LIB.filter(b=>b.cat===view) : LIB
+    if(favOnly) base = base.filter(b=>favs.has(b.id))
+    return base
+  }
+  function viewTags(){
+    const c={}; for(const b of pool()) for(const t of b.tags) c[t]=(c[t]||0)+1
+    return Object.entries(c).sort((a,b)=>b[1]-a[1])
+  }
+  function renderTags(){
+    $('#taglbl').textContent = (view?`Tags · ${NAME[view]}`:'Tags · all')+(favOnly?' · ★':'')
+    const list=viewTags()
+    $('#tagwrap').innerHTML = list.length
+      ? list.map(([t,n])=>`<button class="tchip${tags.includes(t)?' on':''}" data-t="${t}">${t} <span class="n">${n}</span></button>`).join('')
+      : `<span class="tagempty">No tags in this view.</span>`
+  }
+  function shown(){
+    const query=q.trim().toLowerCase()
+    return pool().filter(b=>tags.every(t=>b.tags.includes(t))
+      && (!query||(b.name+' '+b.text+' '+b.tags.join(' ')).toLowerCase().includes(query)))
+  }
+  function renderList(){
+    const rows=shown()
+    const catForNew = view ? NAME[view] : 'custom'
+    const head = `<button class="newrow" id="newrow">＋ New block in <b>${catForNew}</b></button>`
+    let body
+    if(favOnly && !pool().length){
+      body=`<div class="wempty">No favorites${view?` in ${NAME[view]}`:''} yet.<br/>Star blocks to build your quick-access set.<br/><button id="showall">Turn off favorites</button></div>`
+    } else if(!rows.length){
+      body=`<div class="wempty">No blocks match.<br/><button id="clr">Clear filters</button></div>`
+    } else {
+      body=rows.map(b=>{
+        const isf=favs.has(b.id), neg=b.pol==='−'
+        return `<div class="brow ${neg?'neg':'pos'}" draggable="true" data-id="${b.id}">
+          <div class="r1">
+            <span class="grip">⠿</span>
+            <span class="catdot" style="--cat:${COLOR[b.cat]}" title="${NAME[b.cat]}"></span>
+            <span class="bname">${b.name}</span>
+            ${neg?'<span class="negtag">NEG</span>':''}
+            <span class="spacer"></span>
+            <button class="ricon fav${isf?' on':''}" data-fav="${b.id}" title="${isf?'Remove from favorites':'Add to this work’s favorites'}">${isf?'★':'☆'}</button>
+            <button class="ricon move" data-move="${b.id}" title="Move a copy into the ${neg?'negative':'positive'} lane">⇢</button>
+          </div>
+          <div class="btext">${b.text}</div>
+        </div>`
+      }).join('')
+    }
+    $('#list').innerHTML=head+body
+    const parts=[]; if(view)parts.push(NAME[view]); if(favOnly)parts.push('★ favorites')
+    if(tags.length)parts.push(tags.length+' tag'+(tags.length>1?'s':''))
+    $('#count').textContent = `${rows.length} block${rows.length===1?'':'s'}`+(parts.length?` · ${parts.join(' · ')}`:'')
+    const nr=$('#newrow'); if(nr) nr.onclick=()=>flash(nr,'＋ spawned in work area →')
+    const clr=$('#clr'); if(clr) clr.onclick=()=>{view='';tags=[];q='';favOnly=false;$('#q').value='';renderAll()}
+    const sa=$('#showall'); if(sa) sa.onclick=()=>{favOnly=false;renderAll()}
+  }
+  function flash(el,txt){const o=el.innerHTML;el.innerHTML=txt;el.style.color='var(--ok)';el.style.borderColor='var(--ok)';setTimeout(()=>{el.innerHTML=o;el.style.color='';el.style.borderColor=''},900)}
+  function renderAll(){renderRail();renderTags();renderList()}
+
+  $('#rail').addEventListener('click',e=>{
+    if(e.target.closest('[data-favtoggle]')){favOnly=!favOnly;renderAll();return}   // toggle — ANDs with the category
+    const b=e.target.closest('.catnav');if(!b)return;view=b.dataset.v;tags=[];renderAll()
+  })
+  $('#tagwrap').addEventListener('click',e=>{const b=e.target.closest('.tchip');if(!b)return;const t=b.dataset.t;const i=tags.indexOf(t);i>=0?tags.splice(i,1):tags.push(t);renderTags();renderList()})
+  $('#q').addEventListener('input',e=>{q=e.target.value;renderList()})
+  $('#collapse').addEventListener('click',()=>{const w=$('#widget');const c=w.classList.toggle('collapsed');$('#collapse').textContent=c?'▸':'▾'})
+  $('#list').addEventListener('click',e=>{
+    const f=e.target.closest('[data-fav]'); if(f){const id=f.dataset.fav;favs.has(id)?favs.delete(id):favs.add(id);renderAll();return}
+    const m=e.target.closest('[data-move]'); if(m){flash(m,'✓');return}
+  })
+
+  // hover details card
+  let popTimer=null
+  function hidePop(){$('#pop').classList.remove('show');if(popTimer){clearTimeout(popTimer);popTimer=null}}
+  $('#list').addEventListener('mouseover',e=>{
+    const row=e.target.closest('.brow');if(!row)return
+    const b=LIB.find(x=>x.id===row.dataset.id);if(!b)return
+    if(popTimer)clearTimeout(popTimer)
+    popTimer=setTimeout(()=>{
+      const neg=b.pol==='−',pop=$('#pop')
+      pop.innerHTML=`<div class="ph"><span class="cdot" style="--cat:${COLOR[b.cat]}"></span><span class="pname">${b.name}</span>${neg?'<span class="negtag">NEG</span>':''}</div>
+        <div class="pmeta">${NAME[b.cat]} · ${neg?'negative':'positive'} block</div>
+        <div class="plbl">Prompt</div><p class="ptext">${b.text}</p>
+        ${b.tags.length?`<div class="plbl">Gallery tags</div><div class="ptags">${b.tags.map(t=>`<span>${t}</span>`).join('')}</div>`:''}`
+      const wR=$('#widget').getBoundingClientRect(),rR=row.getBoundingClientRect(),cR=$('.canvasdemo').getBoundingClientRect()
+      pop.style.left=(wR.right-cR.left+10)+'px'
+      pop.style.top=Math.min(rR.top-cR.top,cR.height-210)+'px'
+      pop.classList.add('show')
+    },250)
+  })
+  $('#list').addEventListener('mouseout',e=>{if(!e.relatedTarget||!e.relatedTarget.closest('.brow, .pop'))hidePop()})
+  $('#pop').addEventListener('mouseleave',hidePop)
+
+  renderAll()
+</script>

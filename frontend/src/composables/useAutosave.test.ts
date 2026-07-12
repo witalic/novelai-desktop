@@ -14,7 +14,7 @@ function setup() {
   const nodes = ref<any[]>([])
   const a = useAutosave({
     nodes, viewport: ref({ x: 0, y: 0, zoom: 1 }),
-    params: () => ({}) as any, drafts: () => [], onNoVault: vi.fn(),
+    params: () => ({}) as any, drafts: () => [], favorites: () => [], onNoVault: vi.fn(),
   })
   a.vaultReady.value = true
   a.title.value = 'x' // makes the work "meaningful" so it saves

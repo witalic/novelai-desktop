@@ -10,6 +10,8 @@ import type { CategoryCount, LibraryBlock, TagCount } from '../types'
 const props = defineProps<{
   // A work-local canvas block being saved to the vault: open the editor drawer prefilled.
   draftBlock?: { block: LibraryBlock; nonce: number } | null
+  // Deep-link filter from the prompt widget's "Open in Library ↗": pre-select category + tags.
+  filter?: { category: string; tags: string[]; nonce: number } | null
 }>()
 const emit = defineEmits<{ use: [LibraryBlock[]]; 'draft-saved': [LibraryBlock] }>()
 const { push } = useToast()
@@ -72,6 +74,18 @@ async function refreshAll() {
 }
 // onActivated also fires on first mount under KeepAlive, so a separate setup-time call would double-load.
 onActivated(refreshAll)
+
+// Deep-link from the prompt widget's footer: adopt its category + tags, then reload. `immediate` so
+// the very first navigation applies too — under KeepAlive the prop is already set when the view first
+// mounts, so a plain watcher would miss it (no change to observe).
+watch(() => props.filter?.nonce, () => {
+  if (!props.filter) return
+  activeCategory.value = props.filter.category
+  selectedTags.value = [...props.filter.tags]
+  search.value = ''
+  page.value = 1
+  refreshAll()
+}, { immediate: true })
 
 // Bulk import (modal). On success, reload so the imported blocks + any new categories show.
 const importing = ref(false)

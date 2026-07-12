@@ -20,7 +20,6 @@ import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { appendX } from '../canvas/pack'
-import { reorderIds } from '../canvas/palette'
 import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
 import { newId } from '../vault/ids'
@@ -41,6 +40,7 @@ const emit = defineEmits<{
   cancel: []
   saved: [string]
   navigate: [string]
+  'open-library': [{ category: string; tags: string[] }] // widget footer → Library, pre-filtered
   'save-block': [{ nodeId: string; block: LibraryBlock }]
   'new-work': []
 }>()
@@ -125,11 +125,16 @@ const topSelected = ref(false)
 const { shownSrc, scaleOf, imgScale, fullStyle, imgSrc, seedSrc, swapSrc, applyScale } =
   useImagePipeline({ nodes, findNode, sizeOf, dims })
 
+// Per-work quick-access set (Library block ids), persisted on the WorkDoc. Loaded in loadDoc, toggled
+// by the widget's ★, and fed to autosave so a star change marks the work dirty. Defined before
+// useAutosave so its closure captures an initialised ref.
+const favorites = ref<string[]>([])
+
 // Vault autosave (dirty flag, flush, save state). Owns the state + logic; the lifecycle (window listeners,
 // the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
 const { title, vaultReady, workId, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
   onBeforeUnload, refreshInterval, stopAutosave, resetBaseline } = useAutosave({
-  nodes, viewport, params: () => props.params, drafts: () => props.drafts,
+  nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
   onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls,
 })
 // After a save, point kept gallery images at their on-disk vault URL so later saves don't re-serialize their
@@ -171,12 +176,7 @@ function onDraftDragStart(e: DragEvent) {
 function onCanvasDrop(e: DragEvent) {
   e.preventDefault()
   const payload = e.dataTransfer?.getData('text/plain') || ''
-  if (payload.startsWith('nai-palette:')) { // a palette row dragged out → independent copy at the drop point
-    const src = findNode(payload.slice('nai-palette:'.length))
-    if (src?.parentNode === LIBRARY) dropBlockAt(cloneBlockData(src.data), toFlow(e.clientX, e.clientY))
-    return
-  }
-  if (payload.startsWith('nai-libblock:')) { // a browse row dragged out → copy of the vault block
+  if (payload.startsWith('nai-libblock:')) { // a widget row dragged out → copy of the vault block
     try {
       const b = JSON.parse(payload.slice('nai-libblock:'.length)) as LibraryBlock
       dropBlockAt(libraryBlockData(b), toFlow(e.clientX, e.clientY))
@@ -450,19 +450,11 @@ function settleNode(node: any) {
       const bd = dims(live)
       live.data.xFrac = clamp01((live.position.x - outputW) / Math.max(1, (stW - outputW) - bd.w))
       live.data.laneFrac = clamp01((live.position.y - lTop) / Math.max(1, (lBot - lTop) - bd.h))
-    } else {
-      // Not in the composition — drop onto the widget pins it (appended; the widget list is the
-      // palette's home, canvas blocks never live inside the zone visually), or detach to scratch.
-      const lib = getIntersectingNodes(node).find((n) => n.id === LIBRARY)
-      if (lib) {
-        live.parentNode = LIBRARY
-        live.position = { x: 0, y: nextPaletteY() }
-        live.hidden = true
-        live.data = { ...live.data, expanded: false, editing: false }
-      } else if (live.parentNode) {
-        live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
-        live.parentNode = undefined
-      }
+    } else if (live.parentNode) {
+      // Not in the composition — a block dropped outside the station detaches to scratch (loose on
+      // the canvas). The widget no longer holds blocks, so it is not a drop target.
+      live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
+      live.parentNode = undefined
     }
   } else if (node.type === 'image') {
     const gal = getIntersectingNodes(node).find((n) => n.type === 'zone' && n.data.role === 'gallery')
@@ -478,46 +470,14 @@ function settleNode(node: any) {
   }
 }
 
-// ---- prompt widget (library zone) ----
-// The palette's truth is the zone's child block nodes (persisted as before; position.y is the
-// order key), but they NEVER render on the canvas — the widget shows them as a scrollable HTML
-// list (design/prompt-widget-mockup.html). No packing geometry, native scroll, dozens of pins.
-const paletteChildren = computed(() => nodes.value.filter((n) => n.type === 'block' && n.parentNode === LIBRARY))
-const paletteRows = computed(() => paletteChildren.value
-  .slice().sort((a, b) => a.position.y - b.position.y)
-  .map((n) => ({
-    nodeId: n.id,
-    name: (n.data?.name as string) || '',
-    text: (n.data?.text as string) || '',
-    polarity: (((n.data?.polarity as string) === 'negative') ? 'negative' : 'positive') as 'positive' | 'negative',
-    category: (n.data?.category as string) || 'custom',
-    tags: (n.data?.tags as string[]) || [],
-    block_id: n.data?.block_id as string | undefined,
-    version: n.data?.version as number | undefined,
-  })))
-const nextPaletteY = () => (paletteChildren.value.length
-  ? Math.max(...paletteChildren.value.map((n) => n.position.y)) + 10 : 0)
-// A freshly authored custom block lands at the TOP of the palette (y below the current minimum).
-const prevPaletteY = () => (paletteChildren.value.length
-  ? Math.min(...paletteChildren.value.map((n) => n.position.y)) - 10 : 0)
-// Palette nodes stay hidden permanently — set on every path that parents a block to the zone.
-function hidePaletteNodes() {
-  for (const n of nodes.value) if (n.parentNode === LIBRARY) n.hidden = true
-}
-
-// The widget edits palette content through this single mutation point (deep watcher → autosave).
-function patchPaletteNode(p: { nodeId: string; patch: Record<string, unknown> }) {
-  const n = findNode(p.nodeId)
-  if (n && n.parentNode === LIBRARY) n.data = { ...n.data, ...p.patch }
-}
-
-// Reorder via the pure helper, then renumber y as 0,10,20… (y is the palette order key).
-function reorderPalette(p: { nodeId: string; beforeId: string | null }) {
-  const ordered = paletteChildren.value.slice().sort((a, b) => a.position.y - b.position.y)
-  reorderIds(ordered.map((n) => n.id), p.nodeId, p.beforeId).forEach((id, i) => {
-    const n = findNode(id)
-    if (n) n.position = { x: 0, y: i * 10 }
-  })
+// ---- prompt widget (library zone): direct Library browser + per-work favorites ----
+// The widget browses the whole vault directly (no palette pins). ⇢ / drag / ＋ New block each drop an
+// independent block into the station; the only per-work state the widget owns is `favorites` (Library
+// block ids), persisted on the WorkDoc. The zone's collapse state is layout on the zone node.
+function toggleFavorite(blockId: string) {
+  const i = favorites.value.indexOf(blockId)
+  if (i >= 0) favorites.value.splice(i, 1)
+  else favorites.value.push(blockId)
 }
 
 // Collapse persists with the work (layout layer). Height must be written to BOTH the node's
@@ -541,18 +501,7 @@ function toggleLibraryCollapse() {
   }
 }
 
-// ---- palette copy semantics: the pin is a palette master; every exit is an independent copy ----
-// block_ids pinned in the palette — the widget's browse pool excludes them (exclusive membership).
-const pinnedIds = computed(() => paletteChildren.value
-  .filter((n) => n.data?.block_id).map((n) => n.data.block_id as string))
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function cloneBlockData(d: any) {
-  // Domain fields only — a copy is frozen content + the vault ref, never transient UI state.
-  return { category: d.category, name: d.name, text: d.text, polarity: d.polarity,
-    block_id: d.block_id, version: d.version, tags: [...(d.tags || [])], expanded: false }
-}
-
+// ---- copy semantics: every block that enters the work is an independent copy ----
 // A block already contributes to the prompt if the composition holds one with the same polarity +
 // text (its identity for generation). Copying an identical one adds nothing, so we warn instead of
 // duplicating — regardless of the copy method (＋, ⇢, or drag into the station).
@@ -564,11 +513,6 @@ function stationHasBlock(polarity: string, text: string): boolean {
 }
 function warnDuplicate() {
   toast.push('That block is already in the generation area — not duplicated', 'err')
-}
-
-// ✕ on a palette row: the block leaves the palette (its block_id returns to the browse pool).
-function unpinBlock(id: string) {
-  removeNodes([id])
 }
 
 // Drag-out of a widget row: an independent copy lands where it was dropped — inside the station
@@ -640,29 +584,21 @@ function appendToStationLane(data: any) {
     },
   }])
 }
-function copyToStation(paletteId: string) {
-  const live = findNode(paletteId)
-  if (live?.parentNode === LIBRARY) appendToStationLane(cloneBlockData(live.data))
-}
 function useLibraryBlock(b: LibraryBlock) {
   appendToStationLane(libraryBlockData(b))
 }
 
-// ＋ New custom block: a work-local block (no block_id → 'local' badge) at the top of the palette;
-// the widget expands it for editing right away.
-function addCustomBlock() {
-  addNodes([{
-    id: newId('blk'), type: 'block', parentNode: LIBRARY, zIndex: 2, hidden: true,
-    position: { x: 0, y: prevPaletteY() },
-    data: { category: 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] },
-  }])
+// ＋ New block: a fresh work-local block dropped straight into the station's positive lane, in the
+// widget's current category (custom under All/Favorites). Edited inline in the station.
+function newBlockInLane(category: string) {
+  appendToStationLane({ category: category || 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] })
 }
 
-// ↥ on a local palette row: author it into the vault. The Library editor drawer opens prefilled
-// (App mediates the tab switch); on save the pin links back via the linkPin prop below.
+// ↥ Save a station block to the vault. The Library editor drawer opens prefilled (App mediates the
+// tab switch); on save the block adopts the returned vault ref via the linkPin prop below.
 function saveToLibrary(nodeId: string) {
   const live = findNode(nodeId)
-  if (!live) return
+  if (!live || live.type !== 'block') return
   if (!String(live.data.text || '').trim()) {
     toast.push('Add prompt text before saving to the Library', 'err')
     return
@@ -676,13 +612,13 @@ function saveToLibrary(nodeId: string) {
   })
 }
 
-// After the drawer saves: link the pin to the vault block and adopt the drawer's (possibly
-// refined) content — otherwise the pin would drift from v1 the moment it was born.
+// After the drawer saves: link the station block to the vault block and adopt the drawer's
+// (possibly refined) content, so a later re-save carries the vault ref (block_id/version/tags).
 watch(() => props.linkPin?.nonce, () => {
   const link = props.linkPin
   if (!link) return
   const n = findNode(link.nodeId)
-  if (!n || n.parentNode !== LIBRARY) return
+  if (!n || n.type !== 'block') return
   n.data = {
     ...n.data, block_id: link.block.id, version: link.block.version ?? 1,
     category: link.block.category, name: link.block.name, text: link.block.text,
@@ -690,21 +626,8 @@ watch(() => props.linkPin?.nonce, () => {
   }
 })
 
-// A block "used" from the Library tab (or pinned in browse) lands in the palette, keeping its
-// vault link (block_id/version/tags) so generated snapshots and inherited image tags stay traceable.
-function insertLibraryBlock(b: LibraryBlock) {
-  if (pinnedIds.value.includes(b.id)) return // exclusive membership — never double-pin the same vault block
-  addNodes([{
-    // Unique node id (not a per-mount counter) so re-inserting a block into a reloaded work can't collide.
-    id: newId(`lib-${b.id}`), type: 'block', parentNode: LIBRARY, zIndex: 2, hidden: true,
-    position: { x: 0, y: nextPaletteY() }, // y is the palette order key — append at the end
-    data: {
-      category: b.category, name: b.name, text: b.text, polarity: b.polarity,
-      block_id: b.id, version: b.version ?? 1, tags: b.tags ?? [],
-    },
-  }])
-}
-watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(insertLibraryBlock) })
+// A block "used" from the Library tab → an independent copy in the station lane (strict polarity routing).
+watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(useLibraryBlock) })
 function doGenerate() {
   const components = compBlocks.value.slice().sort((a, b) => a.position.x - b.position.x).map((b): PersistedComponent => ({
     source: b.data.block_id ? 'library' : 'custom', block_id: b.data.block_id, version: b.data.version,
@@ -778,8 +701,8 @@ function loadDoc(doc: any) {
   setNodes(ns as unknown as FlowNode[]) // persisted nodes are plain data; Vue Flow hydrates the runtime fields
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
-  hidePaletteNodes() // palette blocks render in the widget list, never on the canvas
-  widgetRevalidate.value++ // a freshly opened work re-checks its pins' versions
+  favorites.value = [...(doc.favorites || [])] // per-work quick-access set for the widget's ★ filter
+  widgetRevalidate.value++ // a freshly opened work re-reads the Library (categories/counts)
   if (vp) setViewport(vp)
   workId.value = doc.id
   title.value = doc.title || ''
@@ -984,15 +907,12 @@ function startName(data: any, e: MouseEvent) {
 
         <template #node-zone="{ id, data, selected }">
           <template v-if="data.role === 'library'">
-            <NodeResizer v-if="!data.collapsed" :min-width="240" :min-height="260" :is-visible="selected"
+            <NodeResizer v-if="!data.collapsed" :min-width="340" :min-height="280" :is-visible="selected"
               color="var(--accent)" />
-            <PromptWidget :data="data" :selected="selected" :pins="paletteRows" :pinned-ids="pinnedIds"
-              :revalidate="widgetRevalidate"
-              @toggle="toggleLibraryCollapse" @open-library="emit('navigate', 'library')"
-              @open-settings="emit('navigate', 'settings')" @pin="insertLibraryBlock($event)"
-              @pin-many="$event.forEach(insertLibraryBlock)"
-              @use="useLibraryBlock" @new-block="addCustomBlock" @copy="copyToStation" @unpin="unpinBlock"
-              @save="saveToLibrary" @patch="patchPaletteNode" @reorder="reorderPalette" />
+            <PromptWidget :data="data" :selected="selected" :favorites="favorites" :revalidate="widgetRevalidate"
+              @toggle="toggleLibraryCollapse" @open-library="emit('open-library', $event)"
+              @open-settings="emit('navigate', 'settings')"
+              @use="useLibraryBlock" @new-block="newBlockInLane" @toggle-favorite="toggleFavorite" />
           </template>
           <template v-else>
             <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />
@@ -1017,6 +937,7 @@ function startName(data: any, e: MouseEvent) {
               <span v-else class="bname bname-text" title="double-click to rename" @dblclick.stop="startName(data, $event)">{{ data.name }}</span>
               <button class="bicon nodrag" :title="data.polarity === 'negative' ? 'negative' : 'positive'"
                 @click="data.polarity = data.polarity === 'negative' ? 'positive' : 'negative'">{{ data.polarity === 'negative' ? '−' : '＋' }}</button>
+              <button v-if="!data.block_id" class="bicon nodrag" title="Save to Library…" @click="saveToLibrary(id)">↥</button>
               <button class="bicon nodrag" @click="toggleExpand(id)">{{ data.expanded ? '▾' : '▸' }}</button>
             </div>
             <textarea v-if="data.expanded" class="btext nodrag nowheel" v-model="data.text" placeholder="tags…"></textarea>

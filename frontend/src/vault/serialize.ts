@@ -71,7 +71,7 @@ function splitImage(url: string, file: string) {
 
 export function canvasToWork(
   nodes: LiveNode[], viewport: Viewport, params: Partial<PanelParams>,
-  meta: { id: string; title: string }, drafts: GenResult[] = [],
+  meta: { id: string; title: string }, drafts: GenResult[] = [], favorites: string[] = [],
 ): WorkDoc {
   const station = nodes.find((n) => n.id === STATION)
   const library = nodes.find((n) => n.id === LIBRARY)
@@ -123,10 +123,11 @@ export function canvasToWork(
   }))
 
   return {
-    schema_version: 2, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
+    schema_version: 3, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
     canvas: { viewport, nodes: canvasNodes },
     snapshots: [...snapshotsByKey.values()],
     images, stack,
+    favorites: [...new Set(favorites)], // per-work quick-access set (Library block ids), deduped
     // Scratch is working material — a work previews (and counts) only by its gallery images.
     preview_image_id: images.find((im) => im.role === 'gallery')?.id ?? null,
   }
