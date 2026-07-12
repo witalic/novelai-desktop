@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listExamples, listTags, restoreCategories, saveBlock, saveCategory, type ExampleImage } from '../api'
+import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listExamples, listTags, resolveBlocks, restoreCategories, saveBlock, saveCategory, type ExampleImage } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
@@ -125,6 +125,49 @@ watch([gridEl, sentinel], ([root, el]) => {
 // Bulk import (modal). On success, reload so the imported blocks + any new categories show.
 const importing = ref(false)
 async function onImportDone() { importing.value = false; await refreshAll() }
+
+// ---- export (client-side JSON, import-ready): selected · current filter · entire library ----
+const exportOpen = ref(false)
+const exportEl = ref<HTMLElement | null>(null)
+const exporting = ref(false)
+function toggleExport() { exportOpen.value = !exportOpen.value }
+// Page through a filter to gather every match (large per-page to keep it to one or two round-trips).
+async function fetchAllBlocks(opts: { categories?: string[]; tags?: string[]; search?: string }): Promise<LibraryBlock[]> {
+  const out: LibraryBlock[] = []
+  for (let p = 1; ; p++) {
+    const res = await listBlocks({ ...opts, sort: 'category', page: p, perPage: 200 })
+    out.push(...res.items)
+    if (out.length >= res.total || !res.items.length) break
+  }
+  return out
+}
+// Keep only the fields the importer reads — drop the server-owned id/version/timestamps.
+function toExport(items: LibraryBlock[]) {
+  return items.map(({ category, name, text, polarity, tags }) => ({ category, name, text, polarity, tags }))
+}
+function downloadJson(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click(); a.remove()
+  URL.revokeObjectURL(url)
+}
+async function exportScope(scope: 'selected' | 'filter' | 'all') {
+  if (exporting.value) return
+  exportOpen.value = false
+  exporting.value = true
+  try {
+    const items = scope === 'selected' ? await resolveBlocks(selected.value)
+      : scope === 'filter' ? await fetchAllBlocks({ categories: activeCategory.value ? [activeCategory.value] : [], tags: selectedTags.value, search: search.value })
+        : await fetchAllBlocks({})
+    if (!items.length) { push('Nothing to export', 'err'); return }
+    downloadJson(toExport(items), `library-${scope}-${items.length}.json`)
+    push(`Exported ${items.length} block${items.length === 1 ? '' : 's'}`, 'ok')
+  } catch (e) {
+    push(e instanceof Error ? e.message : 'Export failed', 'err')
+  } finally { exporting.value = false }
+}
 
 // Restore built-in categories the user deleted — a dropdown listing every default, present ones disabled.
 // Teleported to <body> and fixed-positioned so the narrow rail's overflow/stacking can't clip it.
@@ -296,6 +339,7 @@ function onDocPointer(e: MouseEvent) {
   const t = e.target as Node
   if (blockCatEl.value && !blockCatEl.value.contains(t)) blockCatOpen.value = false
   if (moveCatEl.value && !moveCatEl.value.contains(t)) moveCatOpen.value = false
+  if (exportEl.value && !exportEl.value.contains(t)) exportOpen.value = false
 }
 onMounted(() => document.addEventListener('mousedown', onDocPointer))
 onUnmounted(() => {
@@ -455,6 +499,20 @@ async function removeBlock(b: LibraryBlock) {
           </div>
           <div class="tbactions">
             <button class="tbtn" @click="importing = true"><span>⭳</span> Import</button>
+            <div class="expwrap" ref="exportEl">
+              <button class="tbtn" :class="{ busy: exporting }" @click="toggleExport"><span>⭱</span> Export <span class="car">▾</span></button>
+              <div v-if="exportOpen" class="expmenu">
+                <button :disabled="!selected.length" @click="exportScope('selected')">
+                  Export selected<small>{{ selected.length ? `${selected.length} block${selected.length === 1 ? '' : 's'} currently selected` : 'no blocks selected' }}</small>
+                </button>
+                <button @click="exportScope('filter')">
+                  Export current filter<small>everything matching the active category + tags + search</small>
+                </button>
+                <button @click="exportScope('all')">
+                  Export entire library<small>all {{ allCount }} blocks</small>
+                </button>
+              </div>
+            </div>
             <button class="tbtn primary" @click="openNew"><span>＋</span> New block</button>
           </div>
         </div>
@@ -689,6 +747,15 @@ async function removeBlock(b: LibraryBlock) {
 .tbtn:hover{color:var(--text)}
 .tbtn.primary{background:var(--accent);color:var(--on-accent);border-color:transparent}
 .tbtn.primary:hover{background:var(--accent-strong,#0055cc)}
+.tbtn.busy{opacity:.6;cursor:progress}
+.tbtn .car{font-size:9px;opacity:.8}
+.expwrap{position:relative}
+.expmenu{position:absolute;right:0;top:calc(100% + 4px);z-index:20;min-width:230px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);background:var(--surface-1);box-shadow:0 8px 24px rgba(0,0,0,.4);padding:5px}
+.expmenu button{display:flex;flex-direction:column;gap:1px;width:100%;border:0;background:transparent;color:var(--text);font:inherit;font-size:12.5px;font-weight:600;padding:7px 9px;border-radius:var(--radius);cursor:pointer;text-align:left}
+.expmenu button small{font-weight:500;color:var(--text-faint);font-size:11px}
+.expmenu button:hover{background:var(--surface-3)}
+.expmenu button:disabled{opacity:.45;cursor:default}
+.expmenu button:disabled:hover{background:transparent}
 
 /* tag pins */
 .tagbar{display:flex;flex-direction:column;gap:6px;padding:9px 8px 9px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
