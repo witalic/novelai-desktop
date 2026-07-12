@@ -169,43 +169,12 @@ async function exportScope(scope: 'selected' | 'filter' | 'all') {
   } finally { exporting.value = false }
 }
 
-// Restore built-in categories the user deleted — a dropdown listing every default, present ones disabled.
-// Teleported to <body> and fixed-positioned so the narrow rail's overflow/stacking can't clip it.
-const restoreOpen = ref(false)
-const restoreBtn = ref<HTMLElement | null>(null)
-const restorePos = ref({ top: 0, left: 0 })
+// Built-in category set — the Manage modal diffs it against live categories for the built-in
+// badge and the "restore deleted defaults" chips.
 const defaults = ref<{ slug: string; name: string; color: string }[]>([])
-const restoreSel = ref<Set<string>>(new Set())
 const presentSlugs = computed(() => new Set(categories.value.map((c) => c.slug)))
-async function openRestore() {
-  restoreSel.value = new Set()
-  if (!defaults.value.length) {
-    try { defaults.value = await defaultCategories() } catch (e) { push(e instanceof Error ? e.message : 'Failed', 'err'); return }
-  }
-  const r = restoreBtn.value?.getBoundingClientRect()
-  if (r) {
-    const w = 244 // popover width
-    const navRight = document.querySelector('.sidebar')?.getBoundingClientRect().right ?? 0
-    let left = Math.max(r.right - w, navRight + 4) // right-align to the button, but never over the nav
-    left = Math.min(left, window.innerWidth - w - 8) // keep inside the viewport
-    restorePos.value = { top: r.bottom + 4, left: Math.max(8, left) }
-  }
-  restoreOpen.value = true
-}
-function toggleRestore(slug: string) {
-  const s = new Set(restoreSel.value)
-  s.has(slug) ? s.delete(slug) : s.add(slug)
-  restoreSel.value = s
-}
-async function doRestore() {
-  if (!restoreSel.value.size) return
-  try {
-    const res = await restoreCategories([...restoreSel.value])
-    restoreOpen.value = false
-    await refreshAll()
-    push(`Restored ${res.restored.length} categor${res.restored.length === 1 ? 'y' : 'ies'}`, 'ok')
-  } catch (e) { push(e instanceof Error ? e.message : 'Restore failed', 'err') }
-}
+const missingDefaults = computed(() => defaults.value.filter((d) => !presentSlugs.value.has(d.slug)))
+const isBuiltin = (slug: string) => defaults.value.some((d) => d.slug === slug)
 
 function selectCategory(slug: string) {
   if (activeCategory.value === slug) return
@@ -272,13 +241,10 @@ async function moveSelectedTo(slug: string) {
   } catch (e) { push(e instanceof Error ? e.message : 'Move failed', 'err') }
 }
 
-// ---- category management: one modal for create / edit (rename + recolor) / delete ----
-const catModal = ref<{ mode: 'create' | 'edit'; slug: string | null; name: string; color: string; onCreated?: (slug: string) => void } | null>(null)
+// ---- quick create-category modal (opened from the block editor's "New category…") ----
+const catModal = ref<{ name: string; color: string; onCreated?: (slug: string) => void } | null>(null)
 function openCreateCategory(onCreated?: (slug: string) => void) {
-  catModal.value = { mode: 'create', slug: null, name: '', color: PALETTE[0], onCreated }
-}
-function openEditCategory(c: CategoryCount) {
-  catModal.value = { mode: 'edit', slug: c.slug, name: c.name, color: c.color }
+  catModal.value = { name: '', color: PALETTE[0], onCreated }
 }
 function closeCatModal() { catModal.value = null }
 async function saveCatModal() {
@@ -286,8 +252,7 @@ async function saveCatModal() {
   if (!m) return
   if (!m.name.trim()) { push('Category name is required', 'err'); return }
   try {
-    // Edit keeps the same slug (rename only changes the label) — no accidental new category.
-    const res = await saveCategory(m.name.trim(), m.color, m.mode === 'edit' ? (m.slug ?? undefined) : undefined)
+    const res = await saveCategory(m.name.trim(), m.color)
     await loadCategories()
     const cb = m.onCreated
     catModal.value = null
@@ -295,6 +260,51 @@ async function saveCatModal() {
   } catch (e) {
     push(e instanceof Error ? e.message : 'Save failed', 'err')
   }
+}
+
+// ---- category manager modal: rename / recolor / delete / add / restore, all in one place ----
+const manageOpen = ref(false)
+const newCatName = ref('')
+const recolorSlug = ref<string | null>(null)
+const recolorStyle = ref<Record<string, string>>({})
+const recolorCat = computed(() => categories.value.find((c) => c.slug === recolorSlug.value) ?? null)
+async function openManage() {
+  if (!defaults.value.length) {
+    try { defaults.value = await defaultCategories() } catch { /* restore chips + built-in badges just won't show */ }
+  }
+  manageOpen.value = true
+}
+function closeManage() { manageOpen.value = false; recolorSlug.value = null; newCatName.value = '' }
+async function renameCategory(c: CategoryCount, name: string) {
+  const n = name.trim()
+  if (!n || n === c.name) return
+  try { await saveCategory(n, c.color, c.slug); await loadCategories() } // same slug — rename only relabels
+  catch (e) { push(e instanceof Error ? e.message : 'Rename failed', 'err') }
+}
+function toggleRecolor(e: MouseEvent, slug: string) {
+  if (recolorSlug.value === slug) { recolorSlug.value = null; return }
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  recolorStyle.value = { left: `${r.left}px`, top: `${r.bottom + 6}px` }
+  recolorSlug.value = slug
+}
+async function recolor(color: string) {
+  const c = recolorCat.value
+  recolorSlug.value = null
+  if (!c || color.toLowerCase() === c.color.toLowerCase()) return
+  try { await saveCategory(c.name, color, c.slug); await loadCategories() }
+  catch (e) { push(e instanceof Error ? e.message : 'Recolor failed', 'err') }
+}
+async function addCategory() {
+  const n = newCatName.value.trim()
+  if (!n) return
+  const used = new Set(categories.value.map((c) => c.color.toLowerCase()))
+  const color = PALETTE.find((p) => !used.has(p.toLowerCase())) ?? PALETTE[0] // first unused palette hue
+  try { await saveCategory(n, color); newCatName.value = ''; await loadCategories() }
+  catch (e) { push(e instanceof Error ? e.message : 'Add failed', 'err') }
+}
+async function restoreDefault(slug: string) {
+  try { await restoreCategories([slug]); await refreshAll(); push('Category restored', 'ok') }
+  catch (e) { push(e instanceof Error ? e.message : 'Restore failed', 'err') }
 }
 async function removeCategory(c: CategoryCount) {
   const message = c.count > 0
@@ -309,13 +319,6 @@ async function removeCategory(c: CategoryCount) {
   } catch (e) {
     push(e instanceof Error ? e.message : 'Delete failed', 'err')
   }
-}
-async function deleteFromCatModal() {
-  const m = catModal.value
-  if (!m || !m.slug) return
-  const c = categories.value.find((x) => x.slug === m.slug)
-  catModal.value = null
-  if (c) await removeCategory(c)
 }
 
 // ---- block-editor category selector: click-to-open, close outside ----
@@ -448,33 +451,11 @@ async function removeBlock(b: LibraryBlock) {
     </div>
 
     <div v-else class="lbody">
-      <!-- left rail — categories only (+ new / restore for now) -->
+      <!-- left rail — categories + a single Manage entry point -->
       <div class="rail">
         <div class="railhd">
           <span>Categories</span>
-          <button ref="restoreBtn" class="railbtn" title="Restore default categories" @click="openRestore()">⟲</button>
-          <button class="railbtn" title="New category" @click="openCreateCategory()">＋</button>
-          <Teleport to="body">
-            <template v-if="restoreOpen">
-              <div class="restore-back" @click="restoreOpen = false"></div>
-              <div class="restorepop" :style="{ top: restorePos.top + 'px', left: restorePos.left + 'px' }" @click.stop>
-                <div class="rp-hd">Restore default categories</div>
-                <div class="rp-list">
-                  <label v-for="d in defaults" :key="d.slug" class="rp-item" :class="{ have: presentSlugs.has(d.slug) }">
-                    <input type="checkbox" :disabled="presentSlugs.has(d.slug)"
-                      :checked="presentSlugs.has(d.slug) || restoreSel.has(d.slug)" @change="toggleRestore(d.slug)" />
-                    <span class="cdot" :style="{ background: d.color }"></span>
-                    <span class="rp-name">{{ d.name }}</span>
-                    <span v-if="presentSlugs.has(d.slug)" class="rp-tag">present</span>
-                  </label>
-                </div>
-                <div class="rp-ft">
-                  <button class="rp-cancel" @click="restoreOpen = false">Cancel</button>
-                  <button class="rp-ok" :disabled="!restoreSel.size" @click="doRestore">Restore{{ restoreSel.size ? ` ${restoreSel.size}` : '' }}</button>
-                </div>
-              </div>
-            </template>
-          </Teleport>
+          <button class="manage" title="Manage categories" @click="openManage"><span>⚙</span> Manage</button>
         </div>
         <div class="catlist">
           <div class="catrow" :class="{ on: activeCategory === '' }" @click="selectCategory('')">
@@ -482,9 +463,9 @@ async function removeBlock(b: LibraryBlock) {
           </div>
           <div v-for="c in categories" :key="c.slug" class="catrow" :class="{ on: activeCategory === c.slug }"
             :style="{ '--cat': c.color }" @click="selectCategory(c.slug)">
-            <span class="cdot editable" title="Edit category" @click.stop="openEditCategory(c)"></span>
+            <span class="cdot"></span>
             <span class="cn">{{ c.name }}</span>
-            <button class="ce" title="Edit category" @click.stop="openEditCategory(c)">✎</button>
+            <button class="ce" title="Manage categories" @click.stop="openManage">✎</button>
             <span class="cc">{{ c.count }}</span>
           </div>
         </div>
@@ -638,11 +619,50 @@ async function removeBlock(b: LibraryBlock) {
       </div>
     </div>
 
-    <!-- one modal for all category management: create + edit (rename/recolor) + delete -->
+    <!-- category manager modal: rename · recolor · delete · add · restore defaults -->
+    <Teleport to="body">
+      <div v-if="manageOpen" class="mng-back" @click="closeManage">
+        <div class="mng" @click.stop>
+          <div class="mng-hd">Manage categories<button class="x" title="Done" @click="closeManage">✕</button></div>
+          <div class="mng-body" @click="recolorSlug = null" @scroll="recolorSlug = null">
+            <div class="cmlist">
+              <div v-for="c in categories" :key="c.slug" class="cmrow">
+                <button class="cdot" :style="{ background: c.color }" title="Recolor" @click.stop="toggleRecolor($event, c.slug)"></button>
+                <input class="nm" :value="c.name" @change="renameCategory(c, ($event.target as HTMLInputElement).value)"
+                  @keyup.enter="($event.target as HTMLInputElement).blur()" />
+                <span class="cnt">{{ c.count }}</span>
+                <span v-if="isBuiltin(c.slug)" class="builtin">built-in</span>
+                <button class="rm" title="Delete category" @click="removeCategory(c)">🗑</button>
+              </div>
+            </div>
+            <div class="cmadd">
+              <input v-model="newCatName" placeholder="New category name…" @keyup.enter="addCategory" />
+              <button :disabled="!newCatName.trim()" @click="addCategory">Add</button>
+            </div>
+            <div v-if="missingDefaults.length" class="cmrestore">
+              <div class="rl">Restore deleted defaults</div>
+              <div class="rchips">
+                <button v-for="d in missingDefaults" :key="d.slug" class="rchip" @click="restoreDefault(d.slug)">
+                  <span class="cdot" :style="{ background: d.color }"></span>＋ {{ d.name }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="mng-ft"><button class="done" @click="closeManage">Done</button></div>
+        </div>
+      </div>
+      <!-- recolor swatch popover (fixed, so the scrolling modal body can't clip it) -->
+      <div v-if="recolorSlug" class="swpop" :style="recolorStyle" @click.stop>
+        <span v-for="col in PALETTE" :key="col" class="sw" :class="{ on: recolorCat && recolorCat.color.toLowerCase() === col }"
+          :style="{ background: col }" @click="recolor(col)"></span>
+      </div>
+    </Teleport>
+
+    <!-- quick create-category modal (from the block editor's "New category…") -->
     <Teleport to="body">
       <div v-if="catModal" class="catmodal-back" @click="closeCatModal">
         <div class="catmodal" @click.stop>
-          <div class="cmhd">{{ catModal.mode === 'create' ? 'New category' : 'Edit category' }}</div>
+          <div class="cmhd">New category</div>
           <div class="fld"><label>Name</label>
             <input class="nameinput" v-model="catModal.name" placeholder="Category name" @keyup.enter="saveCatModal" />
           </div>
@@ -657,10 +677,9 @@ async function removeBlock(b: LibraryBlock) {
             </div>
           </div>
           <div class="cmfoot">
-            <button v-if="catModal.mode === 'edit' && catModal.slug !== 'custom'" class="del" @click="deleteFromCatModal">Delete</button>
             <span class="sp"></span>
             <button class="cancel" @click="closeCatModal">Cancel</button>
-            <button class="save" @click="saveCatModal">Save</button>
+            <button class="save" @click="saveCatModal">Create</button>
           </div>
         </div>
       </div>
@@ -693,10 +712,10 @@ async function removeBlock(b: LibraryBlock) {
 
 /* left rail — categories */
 .rail{width:210px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;background:color-mix(in srgb,var(--surface-1) 45%,transparent)}
-.railhd{position:relative;display:flex;align-items:center;gap:2px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint);padding:12px 10px 6px 12px}
+.railhd{display:flex;align-items:center;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint);padding:12px 12px 6px}
 .railhd > span:first-child{margin-right:auto}
-.railhd .railbtn{border:0;background:transparent;color:var(--text-faint);font-size:15px;line-height:1;cursor:pointer;padding:0 4px;border-radius:4px}
-.railhd .railbtn:hover{color:var(--accent);background:var(--surface-3)}
+.railhd .manage{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2);color:var(--text-dim);font:inherit;font-size:11px;font-weight:600;padding:3px 8px;cursor:pointer}
+.railhd .manage:hover{color:var(--accent);border-color:var(--accent)}
 .catlist{flex:1;min-height:0;overflow-y:auto;padding:4px 8px 10px}
 .catrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--radius);color:var(--text-dim);font-size:12.5px;font-weight:600;margin-bottom:1px;cursor:pointer}
 .catrow .cdot{width:9px;height:9px;border-radius:50%;background:var(--cat,#738496);flex-shrink:0}
@@ -705,33 +724,10 @@ async function removeBlock(b: LibraryBlock) {
 .catrow:hover{background:var(--surface-3);color:var(--text)}
 .catrow.on{background:var(--nav-active);color:var(--accent)}
 .catrow.on .cc{color:var(--accent)}
-.catrow .cdot.editable{cursor:pointer}
-.catrow .cdot.editable:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--cat,#738496) 35%,transparent)}
 .catrow .ce{margin-left:auto;width:18px;height:18px;flex-shrink:0;border:0;background:transparent;color:var(--text-faint);font-size:11px;line-height:1;cursor:pointer;border-radius:3px;opacity:0;padding:0}
 .catrow:hover .ce{opacity:1}
 .catrow .ce:hover{color:var(--accent);background:var(--surface-3)}
 .catrow .ce + .cc{margin-left:6px}
-
-/* restore-defaults popover (teleported) */
-.restore-back{position:fixed;inset:0;z-index:2100}
-.restorepop{position:fixed;z-index:2101;width:244px;max-height:70vh;background:var(--surface-1);
-  border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 16px 40px rgba(0,0,0,.5);
-  display:flex;flex-direction:column;text-transform:none;letter-spacing:0}
-.rp-hd{font-size:12px;font-weight:600;color:var(--text-dim);padding:10px 12px 6px}
-.rp-list{max-height:280px;overflow:auto;padding:0 6px 4px;display:flex;flex-direction:column;gap:1px}
-.rp-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;font-weight:500;color:var(--text-dim)}
-.rp-item:hover{background:var(--surface-3);color:var(--text)}
-.rp-item.have{opacity:.5;cursor:default}.rp-item.have:hover{background:transparent}
-.rp-item input{accent-color:var(--accent);cursor:inherit}
-.rp-item .cdot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
-.rp-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rp-tag{font-size:9px;font-weight:700;text-transform:uppercase;color:var(--text-faint)}
-.rp-ft{display:flex;gap:8px;justify-content:flex-end;padding:8px 12px;border-top:1px solid var(--border)}
-.rp-ft button{border-radius:var(--radius);font:inherit;font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer}
-.rp-cancel{border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim)}
-.rp-cancel:hover{color:var(--text)}
-.rp-ok{border:0;background:var(--accent);color:var(--on-accent)}
-.rp-ok:disabled{opacity:.5;cursor:default}
 
 /* content column */
 .content{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -895,4 +891,40 @@ async function removeBlock(b: LibraryBlock) {
 .catmodal .cmfoot .sp{flex:1}
 .catmodal .cmfoot .cancel{border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
 .catmodal .cmfoot .save{border:0;background:var(--accent);color:#fff;border-radius:var(--radius);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer}
+
+/* category manager modal (teleported → global) */
+.mng-back{position:fixed;inset:0;z-index:1500;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px}
+.mng{width:min(560px,96vw);max-height:88vh;display:flex;flex-direction:column;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface-1);box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden}
+.mng-hd{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700;color:var(--text)}
+.mng-hd .x{margin-left:auto;border:0;background:transparent;color:var(--text-faint);font-size:16px;cursor:pointer}
+.mng-hd .x:hover{color:var(--text)}
+.mng-body{flex:1;min-height:0;overflow-y:auto;padding:14px 18px}
+.mng .cmlist{display:flex;flex-direction:column;gap:4px}
+.mng .cmrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2)}
+.mng .cmrow .cdot{width:14px;height:14px;border-radius:50%;flex-shrink:0;cursor:pointer;border:2px solid transparent;padding:0}
+.mng .cmrow .cdot:hover{border-color:var(--text-faint)}
+.mng .cmrow .nm{flex:1;min-width:0;font:inherit;font-size:13px;font-weight:600;color:var(--text);background:transparent;border:1px solid transparent;border-radius:4px;padding:3px 6px;outline:none}
+.mng .cmrow .nm:hover{border-color:var(--border)}
+.mng .cmrow .nm:focus{border-color:var(--accent);background:var(--surface-1)}
+.mng .cmrow .cnt{font-size:11px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.mng .cmrow .builtin{font-size:9px;font-weight:700;text-transform:uppercase;color:var(--text-faint);border:1px solid var(--border);border-radius:9px;padding:0 6px}
+.mng .cmrow .rm{border:0;background:transparent;color:var(--text-faint);cursor:pointer;font-size:13px}
+.mng .cmrow .rm:hover{color:var(--danger)}
+.mng .cmadd{display:flex;gap:8px;padding:12px 0 0}
+.mng .cmadd input{flex:1;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;outline:none}
+.mng .cmadd input:focus{border-color:var(--accent)}
+.mng .cmadd button{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:var(--radius);padding:8px 14px;font:inherit;font-weight:700;cursor:pointer}
+.mng .cmadd button:disabled{opacity:.45;cursor:default;border-color:var(--border-strong);color:var(--text-faint)}
+.mng .cmrestore{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
+.mng .cmrestore .rl{font-size:10.5px;font-weight:700;text-transform:uppercase;color:var(--text-faint);margin-bottom:8px}
+.mng .cmrestore .rchips{display:flex;flex-wrap:wrap;gap:6px}
+.mng .rchip{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border-strong);background:transparent;color:var(--text-dim);border-radius:20px;padding:3px 10px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer}
+.mng .rchip:hover{border-color:var(--accent);color:var(--accent)}
+.mng .rchip .cdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.mng-ft{display:flex;padding:12px 18px;border-top:1px solid var(--border)}
+.mng-ft .done{margin-left:auto;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);border-radius:var(--radius);padding:7px 16px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer}
+.mng-ft .done:hover{border-color:var(--accent);color:var(--accent)}
+.swpop{position:fixed;z-index:1600;display:flex;flex-wrap:wrap;gap:7px;width:168px;padding:9px;background:var(--surface-1);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.swpop .sw{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer}
+.swpop .sw.on{border-color:var(--text)}
 </style>
