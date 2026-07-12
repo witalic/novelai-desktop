@@ -22,6 +22,7 @@ DEFAULTS: list[CategoryDoc] = [
     CategoryDoc(slug="character", name="Character", color="#0c66e4"),
     # body / subject
     CategoryDoc(slug="body", name="Body", color="#c77d54"),
+    CategoryDoc(slug="body-anatomy", name="Body - Anatomy", color="#c0674a"),
     CategoryDoc(slug="body-skin", name="Body - Skin", color="#e0a878"),
     CategoryDoc(slug="body-hair", name="Body - Hair", color="#9c6b3f"),
     CategoryDoc(slug="body-face", name="Body - Face", color="#d99578"),

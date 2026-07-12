@@ -232,7 +232,7 @@ async def test_default_categories_and_restore(client):
     ac, _ = client
     # The defaults endpoint lists the whole built-in set (incl. the prefixed groups).
     slugs = {c["slug"] for c in (await ac.get("/api/vault/library/categories/defaults")).json()}
-    assert {"body-skin", "outfit-fabric", "scene-lighting", "nsfw-act"} <= slugs
+    assert {"body-anatomy", "body-skin", "outfit-fabric", "scene-lighting", "nsfw-act"} <= slugs
     # Delete a built-in → it drops out of the live list…
     await ac.delete("/api/vault/library/categories/pose")
     present = {c["slug"] for c in (await ac.get("/api/vault/library/categories")).json()}

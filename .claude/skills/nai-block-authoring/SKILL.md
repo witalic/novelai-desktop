@@ -47,7 +47,8 @@ Pick the slug that names the block's primary role. Slugs are prefixed by group (
 | slug | for |
 |---|---|
 | `character` | a specific character / person + defining traits |
-| `body` | body type / physique / proportions / anatomy |
+| `body` | body type / physique / proportions (SFW figure) |
+| `body-anatomy` | explicit anatomy — breasts, genitals, buttocks, anus (size/shape/state/exposure); always `nsfw` |
 | `body-skin` | skin tone / finish / rendering (porcelain, glossy, tan, subsurface) |
 | `body-hair` | hairstyle / color / detail |
 | `body-face` | face shape, eyes, expression |
@@ -99,8 +100,8 @@ every tag (nai-prompt-writing: strengthen only key elements — 1 per block here
 ## NSFW
 
 Most NSFW content maps to a **standard semantic category** — put it there and add an **`nsfw` tag**:
-- explicit anatomy / breasts → `body` + `nsfw`; a lewd pose → `pose` + `nsfw`; revealing lingerie →
-  `outfit` + `nsfw`.
+- explicit anatomy / breasts / genitals → `body-anatomy` + `nsfw`; a lewd pose → `pose` + `nsfw`;
+  revealing lingerie → `outfit` + `nsfw`.
 
 Use a dedicated NSFW **category** only for content that doesn't fit a standard one:
 - `nsfw-act` — sexual acts. `nsfw-fluids` — fluids. `nsfw` — general / uncategorisable explicit.
