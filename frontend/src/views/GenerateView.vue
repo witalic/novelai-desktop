@@ -13,7 +13,6 @@ import type { PanelParams, PresetParams, Preset, GenResult, WorkDoc, SnapshotDat
 
 const props = defineProps<{
   openWorkId?: string | null
-  insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
   linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
   applyPreset?: { id: string; params: PresetParams; nonce: number } | null
 }>()
@@ -180,7 +179,7 @@ watch(() => props.openWorkId, async (raw) => {
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :insert-blocks="insertBlocks" :link-pin="linkPin" :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
+      :link-pin="linkPin" :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
       @save-block="emit('save-block', $event)" @new-work="onNewWork" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"

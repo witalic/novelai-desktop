@@ -29,7 +29,7 @@ const toast = useToast()
 const { confirm } = useConfirm()
 const props = defineProps<{
   drafts: GenResult[]; busy: boolean; error: string; preview: string; params: PanelParams
-  openWork: WorkDoc | null; insertBlocks?: { blocks: LibraryBlock[]; nonce: number } | null
+  openWork: WorkDoc | null
   linkPin?: { nodeId: string; block: LibraryBlock; nonce: number } | null
   keepDrafts?: { ids: string[]; nonce: number } | null
 }>()
@@ -692,8 +692,6 @@ watch(() => props.linkPin?.nonce, () => {
   }
 })
 
-// A block "used" from the Library tab → an independent copy in the station lane (strict polarity routing).
-watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(useLibraryBlock) })
 function doGenerate() {
   const components = compBlocks.value.map((b): PersistedComponent => ({ // compBlocks is already in list order (position.y)
     source: b.data.block_id ? 'library' : 'custom', block_id: b.data.block_id, version: b.data.version,

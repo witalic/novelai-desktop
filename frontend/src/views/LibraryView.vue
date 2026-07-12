@@ -14,7 +14,7 @@ const props = defineProps<{
   // Deep-link filter from the prompt widget's "Open in Library ↗": pre-select category + tags.
   filter?: { category: string; tags: string[]; nonce: number } | null
 }>()
-const emit = defineEmits<{ use: [LibraryBlock[]]; 'draft-saved': [LibraryBlock] }>()
+const emit = defineEmits<{ 'draft-saved': [LibraryBlock] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
 

@@ -17,24 +17,15 @@ useTheme()
 export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
 const view = ref<ViewId>('generate')
 const views = { generate: GenerateView, works: WorksView, library: LibraryView, presets: PresetsView, settings: SettingsView }
-const { toasts, push } = useToast()
+const { toasts } = useToast()
 
 const activeWorkId = ref<string | null>(null)
-const pendingBlocks = ref<{ blocks: LibraryBlock[]; nonce: number } | null>(null)
 
 // Opening a work from the Works grid: hand its id to the Generate view and switch to it.
 // The trailing '#' bumps the prop even when the same work is reopened, re-triggering the loader.
 function openWork(id: string) {
   activeWorkId.value = `${id}#${Date.now()}`
   view.value = 'generate'
-}
-
-// "Use" one or many library blocks: drop them into the Generate canvas's Library zone.
-function useBlocks(blocks: LibraryBlock[]) {
-  if (!blocks.length) return
-  pendingBlocks.value = { blocks, nonce: Date.now() }
-  view.value = 'generate'
-  push(`Added ${blocks.length} block${blocks.length > 1 ? 's' : ''} to the canvas library`, 'ok')
 }
 
 // Apply a preset: hand its id + params to the Generate view (nonce-bumped like the other cross-view
@@ -74,13 +65,13 @@ function openLibraryWithFilter(f: { category: string; tags: string[] }) {
 // Props/handlers bound only to the active view (avoids attribute fallthrough onto the wrong root).
 const viewBindings = computed(() =>
   view.value === 'generate'
-    ? { openWorkId: activeWorkId.value, insertBlocks: pendingBlocks.value, linkPin: linkPin.value,
+    ? { openWorkId: activeWorkId.value, linkPin: linkPin.value,
         applyPreset: applyPreset.value, onNavigate: (v: ViewId) => (view.value = v),
         onOpenLibrary: openLibraryWithFilter, onSaveBlock: saveBlockToLibrary }
     : view.value === 'works'
       ? { onOpen: openWork }
       : view.value === 'library'
-        ? { onUse: useBlocks, draftBlock: libraryDraft.value, filter: libraryFilter.value, onDraftSaved }
+        ? { draftBlock: libraryDraft.value, filter: libraryFilter.value, onDraftSaved }
         : view.value === 'presets'
           ? { onApply: onApplyPreset, onNavigate: (v: ViewId) => (view.value = v) }
           : {},
