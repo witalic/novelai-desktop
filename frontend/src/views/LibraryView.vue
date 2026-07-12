@@ -639,9 +639,13 @@ async function removeBlock(b: LibraryBlock) {
     <!-- category manager modal: rename · recolor · delete · add · restore defaults -->
     <Teleport to="body">
       <div v-if="manageOpen" class="mng-back" @click="closeManage">
-        <div class="mng" @click.stop>
+        <div class="mng" @click.stop="recolorSlug = null">
           <div class="mng-hd">Manage categories<button class="x" title="Done" @click="closeManage">✕</button></div>
-          <div class="mng-body" @click="recolorSlug = null" @scroll="recolorSlug = null">
+          <div class="mng-add">
+            <input v-model="newCatName" placeholder="New category name…" @keyup.enter="addCategory" />
+            <button :disabled="!newCatName.trim()" @click="addCategory">＋ Add</button>
+          </div>
+          <div class="mng-list" @scroll="recolorSlug = null">
             <div class="cmlist">
               <div v-for="c in categories" :key="c.slug" class="cmrow">
                 <button class="cdot" :style="{ background: c.color }" title="Recolor" @click.stop="toggleRecolor($event, c.slug)"></button>
@@ -652,17 +656,13 @@ async function removeBlock(b: LibraryBlock) {
                 <button class="rm" title="Delete category" @click="removeCategory(c)">🗑</button>
               </div>
             </div>
-            <div class="cmadd">
-              <input v-model="newCatName" placeholder="New category name…" @keyup.enter="addCategory" />
-              <button :disabled="!newCatName.trim()" @click="addCategory">Add</button>
-            </div>
-            <div v-if="missingDefaults.length" class="cmrestore">
-              <div class="rl">Restore deleted defaults</div>
-              <div class="rchips">
-                <button v-for="d in missingDefaults" :key="d.slug" class="rchip" @click="restoreDefault(d.slug)">
-                  <span class="cdot" :style="{ background: d.color }"></span>＋ {{ d.name }}
-                </button>
-              </div>
+          </div>
+          <div v-if="missingDefaults.length" class="mng-restore">
+            <div class="rl">Restore deleted defaults</div>
+            <div class="rchips">
+              <button v-for="d in missingDefaults" :key="d.slug" class="rchip" @click="restoreDefault(d.slug)">
+                <span class="cdot" :style="{ background: d.color }"></span>＋ {{ d.name }}
+              </button>
             </div>
           </div>
           <div class="mng-ft"><button class="done" @click="closeManage">Done</button></div>
@@ -672,6 +672,9 @@ async function removeBlock(b: LibraryBlock) {
       <div v-if="recolorSlug" class="swpop" :style="recolorStyle" @click.stop>
         <span v-for="col in PALETTE" :key="col" class="sw" :class="{ on: recolorCat && recolorCat.color.toLowerCase() === col }"
           :style="{ background: col }" @click="recolor(col)"></span>
+        <label class="swhex" title="Custom color…">
+          <input type="color" :value="recolorCat?.color || '#738496'" @change="recolor(($event.target as HTMLInputElement).value)" />
+        </label>
       </div>
     </Teleport>
 
@@ -845,7 +848,10 @@ async function removeBlock(b: LibraryBlock) {
 .medit{flex:1;min-width:0;padding:16px 18px;display:flex;flex-direction:column;gap:13px}
 .row2{display:grid;grid-template-columns:1fr 160px;gap:12px}
 .mexamples{width:280px;flex-shrink:0;border-left:1px solid var(--border);padding:16px;overflow-y:auto;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
-.mexamples .exlbl{font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint);margin-bottom:10px}
+.mexamples{display:flex;flex-direction:column}
+.mexamples .exlbl{font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint);margin-bottom:10px;flex-shrink:0}
+/* show ~6 examples (3 rows × 2); the rest scroll so the modal never stretches tall */
+.mexamples .examples{min-height:0;max-height:500px;overflow-y:auto;padding-right:4px}
 .fld{display:flex;flex-direction:column;gap:6px}
 .fld label{font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint)}
 .fld>input,.fld textarea{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);font:inherit;font-size:13px;outline:none}
@@ -925,10 +931,16 @@ async function removeBlock(b: LibraryBlock) {
 /* category manager modal (teleported → global) */
 .mng-back{position:fixed;inset:0;z-index:1500;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px}
 .mng{width:min(560px,96vw);max-height:88vh;display:flex;flex-direction:column;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface-1);box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden}
-.mng-hd{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700;color:var(--text)}
+.mng-hd{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700;color:var(--text);flex-shrink:0}
 .mng-hd .x{margin-left:auto;border:0;background:transparent;color:var(--text-faint);font-size:16px;cursor:pointer}
 .mng-hd .x:hover{color:var(--text)}
-.mng-body{flex:1;min-height:0;overflow-y:auto;padding:14px 18px}
+/* add row pinned at the top; only the list scrolls, capped so the modal stays compact */
+.mng-add{display:flex;gap:8px;padding:12px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
+.mng-add input{flex:1;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;outline:none}
+.mng-add input:focus{border-color:var(--accent)}
+.mng-add button{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:var(--radius);padding:8px 14px;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}
+.mng-add button:disabled{opacity:.45;cursor:default;border-color:var(--border-strong);color:var(--text-faint)}
+.mng-list{flex:1;min-height:0;max-height:46vh;overflow-y:auto;padding:12px 18px}
 .mng .cmlist{display:flex;flex-direction:column;gap:4px}
 .mng .cmrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2)}
 .mng .cmrow .cdot{width:14px;height:14px;border-radius:50%;flex-shrink:0;cursor:pointer;border:2px solid transparent;padding:0}
@@ -940,21 +952,19 @@ async function removeBlock(b: LibraryBlock) {
 .mng .cmrow .builtin{font-size:9px;font-weight:700;text-transform:uppercase;color:var(--text-faint);border:1px solid var(--border);border-radius:9px;padding:0 6px}
 .mng .cmrow .rm{border:0;background:transparent;color:var(--text-faint);cursor:pointer;font-size:13px}
 .mng .cmrow .rm:hover{color:var(--danger)}
-.mng .cmadd{display:flex;gap:8px;padding:12px 0 0}
-.mng .cmadd input{flex:1;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;outline:none}
-.mng .cmadd input:focus{border-color:var(--accent)}
-.mng .cmadd button{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:var(--radius);padding:8px 14px;font:inherit;font-weight:700;cursor:pointer}
-.mng .cmadd button:disabled{opacity:.45;cursor:default;border-color:var(--border-strong);color:var(--text-faint)}
-.mng .cmrestore{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
-.mng .cmrestore .rl{font-size:10.5px;font-weight:700;text-transform:uppercase;color:var(--text-faint);margin-bottom:8px}
-.mng .cmrestore .rchips{display:flex;flex-wrap:wrap;gap:6px}
-.mng .rchip{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border-strong);background:transparent;color:var(--text-dim);border-radius:20px;padding:3px 10px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer}
-.mng .rchip:hover{border-color:var(--accent);color:var(--accent)}
-.mng .rchip .cdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-.mng-ft{display:flex;padding:12px 18px;border-top:1px solid var(--border)}
+.mng-restore{padding:12px 18px;border-top:1px solid var(--border);flex-shrink:0}
+.mng-restore .rl{font-size:10.5px;font-weight:700;text-transform:uppercase;color:var(--text-faint);margin-bottom:8px}
+.mng-restore .rchips{display:flex;flex-wrap:wrap;gap:6px}
+.mng-restore .rchip{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border-strong);background:transparent;color:var(--text-dim);border-radius:20px;padding:3px 10px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer}
+.mng-restore .rchip:hover{border-color:var(--accent);color:var(--accent)}
+.mng-restore .rchip .cdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.mng-ft{display:flex;padding:12px 18px;border-top:1px solid var(--border);flex-shrink:0}
 .mng-ft .done{margin-left:auto;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);border-radius:var(--radius);padding:7px 16px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer}
 .mng-ft .done:hover{border-color:var(--accent);color:var(--accent)}
-.swpop{position:fixed;z-index:1600;display:flex;flex-wrap:wrap;gap:7px;width:168px;padding:9px;background:var(--surface-1);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.swpop{position:fixed;z-index:1600;display:flex;flex-wrap:wrap;align-items:center;gap:7px;width:168px;padding:9px;background:var(--surface-1);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 10px 30px rgba(0,0,0,.5)}
 .swpop .sw{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer}
 .swpop .sw.on{border-color:var(--text)}
+/* custom color: a rainbow-ringed swatch wrapping a hidden native color input */
+.swpop .swhex{position:relative;width:20px;height:20px;border-radius:50%;overflow:hidden;cursor:pointer;border:2px solid var(--border-strong);background:conic-gradient(from 90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
+.swpop .swhex input{position:absolute;inset:-6px;width:200%;height:200%;padding:0;border:0;background:none;cursor:pointer;opacity:0}
 </style>
