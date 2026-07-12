@@ -360,6 +360,7 @@ const tagFocus = ref(false)
 
 // Example images for the block: generated images that share the most tags with it.
 const examples = ref<ExampleImage[]>([])
+const showExamples = ref(true) // header toggle; persists across opens
 const lightbox = ref<string | null>(null)
 let exTimer: ReturnType<typeof setTimeout> | null = null
 async function loadExamples() {
@@ -556,68 +557,84 @@ async function removeBlock(b: LibraryBlock) {
         </div>
       </div>
 
-      <!-- block editor drawer -->
-      <div v-if="editor" class="drawer">
-        <div class="dhd">{{ editor.isNew ? '＋ New block' : '✎ Edit block' }}<span class="x" @click="closeEditor">✕</span></div>
-        <div class="dbody">
-          <div class="fld"><label>Name</label><input v-model="editor.block.name" placeholder="Block name" /></div>
+    </div>
 
-          <div class="fld"><label>Category</label>
-            <div class="catselect" ref="blockCatEl">
-              <button class="catselbtn" @click="toggleBlockCat">
-                <span class="cdot" :style="{ background: catColor(editor.block.category) }"></span>
-                <span class="cn">{{ catName(editor.block.category) }}</span>
-                <span class="chev">▾</span>
-              </button>
-              <div v-if="blockCatOpen" class="catseldrop" :style="blockCatStyle">
-                <div v-for="c in categories" :key="c.slug" class="co" @click="chooseBlockCat(c.slug)">
-                  <span class="cdot" :style="{ background: c.color }"></span>{{ c.name }}
+    <!-- block editor — centered modal (form on the left, example images on the right) -->
+    <Teleport to="body">
+      <div v-if="editor" class="edit-back" @click="closeEditor">
+        <div class="edit" :class="{ noex: !showExamples }" @click.stop>
+          <div class="edit-hd">
+            <span class="ttl">{{ editor.isNew ? 'New block' : 'Edit block' }}</span>
+            <div class="extoggle">
+              <button :class="{ on: showExamples }" @click="showExamples = true">Examples on</button>
+              <button :class="{ on: !showExamples }" @click="showExamples = false">off</button>
+            </div>
+            <button class="x" title="Close" @click="closeEditor">✕</button>
+          </div>
+          <div class="edit-body">
+            <div class="medit">
+              <div class="fld"><label>Name</label><input v-model="editor.block.name" placeholder="Block name" /></div>
+              <div class="row2">
+                <div class="fld"><label>Category</label>
+                  <div class="catselect" ref="blockCatEl">
+                    <button class="catselbtn" @click="toggleBlockCat">
+                      <span class="cdot" :style="{ background: catColor(editor.block.category) }"></span>
+                      <span class="cn">{{ catName(editor.block.category) }}</span>
+                      <span class="chev">▾</span>
+                    </button>
+                    <div v-if="blockCatOpen" class="catseldrop" :style="blockCatStyle">
+                      <div v-for="c in categories" :key="c.slug" class="co" @click="chooseBlockCat(c.slug)">
+                        <span class="cdot" :style="{ background: c.color }"></span>{{ c.name }}
+                      </div>
+                      <div class="co create" @click="newCategoryForBlock">＋ New category…</div>
+                    </div>
+                  </div>
                 </div>
-                <div class="co create" @click="newCategoryForBlock">＋ New category…</div>
+                <div class="fld"><label>Polarity</label>
+                  <div class="seg">
+                    <button :class="{ on: editor.block.polarity === 'positive' }" @click="editor.block.polarity = 'positive'">＋ Positive</button>
+                    <button class="neg" :class="{ on: editor.block.polarity === 'negative' }" @click="editor.block.polarity = 'negative'">− Negative</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="fld"><label>Text (prompt tags) <span class="req">· required</span></label><textarea v-model="editor.block.text" placeholder="1girl, silver hair, …"></textarea></div>
+
+              <div class="fld"><label>Tags</label>
+                <div class="tagedit">
+                  <span v-for="t in editor.block.tags" :key="t" class="et">{{ t }} <b @click="removeEdTag(t)">✕</b></span>
+                  <input class="ti" v-model="edTagInput" placeholder="Search or add…"
+                    @focus="tagFocus = true" @blur="tagFocus = false" @keyup.enter="addEdTag(edTagInput)" />
+                </div>
+                <div v-if="tagFocus && (edTagMatches.length || edTagInput.trim())" class="accd">
+                  <div v-for="t in edTagMatches" :key="t.name" class="tsopt" @mousedown.prevent="addEdTag(t.name)">
+                    <span class="cn">{{ t.name }}</span><span class="cc">{{ t.count }}</span>
+                  </div>
+                  <div v-if="edTagInput.trim() && !allTags.some((t) => t.name === edTagInput.trim())" class="tsopt create" @mousedown.prevent="addEdTag(edTagInput)">
+                    <span class="cn">＋ Create “{{ edTagInput.trim() }}”</span>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div class="fld"><label>Polarity</label>
-            <div class="seg">
-              <button :class="{ on: editor.block.polarity === 'positive' }" @click="editor.block.polarity = 'positive'">＋ Positive</button>
-              <button class="neg" :class="{ on: editor.block.polarity === 'negative' }" @click="editor.block.polarity = 'negative'">− Negative</button>
-            </div>
-          </div>
-
-          <div class="fld"><label>Text (prompt tags) <span class="req">· required</span></label><textarea v-model="editor.block.text" placeholder="1girl, silver hair, …"></textarea></div>
-
-          <div class="fld"><label>Tags</label>
-            <div class="tagedit">
-              <span v-for="t in editor.block.tags" :key="t" class="et">{{ t }} <b @click="removeEdTag(t)">✕</b></span>
-              <input class="ti" v-model="edTagInput" placeholder="Search or add…"
-                @focus="tagFocus = true" @blur="tagFocus = false" @keyup.enter="addEdTag(edTagInput)" />
-            </div>
-            <div v-if="tagFocus && (edTagMatches.length || edTagInput.trim())" class="accd">
-              <div v-for="t in edTagMatches" :key="t.name" class="tsopt" @mousedown.prevent="addEdTag(t.name)">
-                <span class="cn">{{ t.name }}</span><span class="cc">{{ t.count }}</span>
+            <div v-if="showExamples" class="mexamples">
+              <div class="exlbl">Examples — images sharing these tags</div>
+              <div v-if="examples.length" class="examples">
+                <img v-for="ex in examples" :key="ex.image_id" :src="`${ex.url}?w=400`" alt="example" loading="lazy"
+                  title="Click to enlarge" @click="lightbox = ex.url" />
               </div>
-              <div v-if="edTagInput.trim() && !allTags.some((t) => t.name === edTagInput.trim())" class="tsopt create" @mousedown.prevent="addEdTag(edTagInput)">
-                <span class="cn">＋ Create “{{ edTagInput.trim() }}”</span>
-              </div>
+              <div v-else class="prev"><b>Inherited by images</b>Images generated with this block carry its tags automatically — the most-matching ones show up here.</div>
             </div>
           </div>
-          <div class="fld"><label>Example images</label>
-            <div v-if="examples.length" class="examples">
-              <img v-for="ex in examples" :key="ex.image_id" :src="`${ex.url}?w=400`" alt="example" loading="lazy"
-                title="Click to enlarge" @click="lightbox = ex.url" />
-            </div>
-            <div v-else class="prev"><b>Inherited by images</b>Images generated with this block carry its tags automatically — the most-matching ones show up here.</div>
+          <div class="edit-ft">
+            <button v-if="!editor.isNew" class="del" @click="removeBlock(editor.block)">🗑 Delete</button>
+            <span class="sp"></span>
+            <button class="cancel" @click="closeEditor">Cancel</button>
+            <button class="save" :disabled="!canSaveBlock" @click="saveEditor">Save block</button>
           </div>
-        </div>
-        <div class="dfoot">
-          <button v-if="!editor.isNew" class="del" @click="removeBlock(editor.block)">Delete</button>
-          <span class="sp"></span>
-          <button class="cancel" @click="closeEditor">Cancel</button>
-          <button class="save" :disabled="!canSaveBlock" @click="saveEditor">Save block</button>
         </div>
       </div>
-    </div>
+    </Teleport>
 
     <!-- category manager modal: rename · recolor · delete · add · restore defaults -->
     <Teleport to="body">
@@ -812,11 +829,23 @@ async function removeBlock(b: LibraryBlock) {
 .loadmore{display:flex;align-items:center;justify-content:center;gap:8px;padding:22px;font-size:12px;color:var(--text-faint)}
 .loadmore span{font-variant-numeric:tabular-nums;opacity:.7}
 
-/* block editor drawer */
-.drawer{width:340px;flex-shrink:0;border-left:1px solid var(--border);background:var(--surface-1);display:flex;flex-direction:column}
-.dhd{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);font-weight:650;font-size:14px}
-.dhd .x{margin-left:auto;color:var(--text-faint);font-size:16px;cursor:pointer}
-.dbody{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:15px}
+/* block editor — centered modal (teleported to body) */
+.edit-back{position:fixed;inset:0;z-index:1600;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px}
+.edit{width:min(760px,96vw);max-height:88vh;display:flex;flex-direction:column;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface-1);box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden}
+.edit.noex{width:min(520px,96vw)}
+.edit-hd{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700}
+.edit-hd .ttl{margin-right:auto}
+.edit-hd .extoggle{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;font-size:11.5px}
+.edit-hd .extoggle button{border:0;border-left:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font:inherit;font-weight:600;padding:4px 10px;cursor:pointer}
+.edit-hd .extoggle button:first-child{border-left:0}
+.edit-hd .extoggle button.on{background:var(--nav-active);color:var(--accent)}
+.edit-hd .x{border:0;background:transparent;color:var(--text-faint);font-size:16px;cursor:pointer}
+.edit-hd .x:hover{color:var(--text)}
+.edit-body{flex:1;min-height:0;overflow-y:auto;display:flex}
+.medit{flex:1;min-width:0;padding:16px 18px;display:flex;flex-direction:column;gap:13px}
+.row2{display:grid;grid-template-columns:1fr 160px;gap:12px}
+.mexamples{width:280px;flex-shrink:0;border-left:1px solid var(--border);padding:16px;overflow-y:auto;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
+.mexamples .exlbl{font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint);margin-bottom:10px}
 .fld{display:flex;flex-direction:column;gap:6px}
 .fld label{font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint)}
 .fld>input,.fld textarea{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);font:inherit;font-size:13px;outline:none}
@@ -859,12 +888,13 @@ async function removeBlock(b: LibraryBlock) {
 .examples img:hover{border-color:var(--accent)}
 .prev{background:var(--surface-2);border:1px dashed var(--border-strong);border-radius:var(--radius);padding:9px 11px;font-size:11.5px;color:var(--text-dim);line-height:1.5}
 .prev b{color:var(--text-faint);font-weight:700;letter-spacing:.3px;text-transform:uppercase;font-size:10px;display:block;margin-bottom:3px}
-.dfoot{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--border)}
-.dfoot .del{color:#e8913a;border:1px solid color-mix(in srgb,#b65c02 40%,var(--border));background:transparent;border-radius:var(--radius);padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer}
-.dfoot .sp{flex:1}
-.dfoot .cancel{border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
-.dfoot .save{border:0;background:var(--accent);color:#fff;border-radius:var(--radius);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer}
-.dfoot .save:disabled{opacity:.5;cursor:default}
+.edit-ft{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border)}
+.edit-ft .del{color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--border));background:transparent;border-radius:var(--radius);padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer}
+.edit-ft .del:hover{border-color:var(--danger);color:var(--danger)}
+.edit-ft .sp{flex:1}
+.edit-ft .cancel{border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);border-radius:var(--radius);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.edit-ft .save{border:0;background:var(--accent);color:var(--on-accent);border-radius:var(--radius);padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer}
+.edit-ft .save:disabled{opacity:.5;cursor:default}
 .fld label .req{color:var(--text-faint);font-weight:500}
 </style>
 
