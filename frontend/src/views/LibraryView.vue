@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listExamples, listTags, restoreCategories, saveBlock, saveCategory, type ExampleImage } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
 import { newId } from '../vault/ids'
+import { groupByCategory } from './librarySections'
 import type { CategoryCount, LibraryBlock, TagCount } from '../types'
 
 const props = defineProps<{
@@ -20,14 +21,13 @@ const { confirm } = useConfirm()
 const PALETTE = ['#6e5dc6', '#0c66e4', '#ae4787', '#1f845a', '#b65c02', '#12b5a6', '#d4537e', '#e2483d', '#2fb8c6', '#738496']
 
 const categories = ref<CategoryCount[]>([])
-const blocks = ref<LibraryBlock[]>([])
+const blocks = ref<LibraryBlock[]>([]) // accumulated across pages (infinite scroll)
 const total = ref(0)
 const page = ref(1)
 const perPage = 48
 const activeCategory = ref('') // '' = all
 const selectedTags = ref<string[]>([])
 const tagOptions = ref<TagCount[]>([])
-const tagSearch = ref('')
 const search = ref('')
 const loading = ref(false)
 const noVault = ref(false)
@@ -35,8 +35,11 @@ const noVault = ref(false)
 const colorBySlug = computed(() => Object.fromEntries(categories.value.map((c) => [c.slug, c.color])))
 const catColor = (slug: string) => colorBySlug.value[slug] || '#738496'
 const catName = (slug: string) => categories.value.find((c) => c.slug === slug)?.name || slug
+const catCount = (slug: string) => categories.value.find((c) => c.slug === slug)?.count ?? 0
 const allCount = computed(() => categories.value.reduce((n, c) => n + c.count, 0))
-const pages = () => Math.max(1, Math.ceil(total.value / perPage))
+const hasMore = computed(() => blocks.value.length < total.value)
+// One section per consecutive category run — sort=category makes categories contiguous across pages.
+const sections = computed(() => groupByCategory(blocks.value))
 
 async function loadCategories() {
   try {
@@ -51,15 +54,25 @@ async function loadTags() {
   try { tagOptions.value = await listTags(activeCategory.value) } catch { tagOptions.value = [] }
 }
 let blocksReq = 0
-async function loadBlocks() {
-  const req = ++blocksReq // rapid category/tag/search changes: a slow earlier response must not overwrite a newer one
+// reset=true replaces the list (category/tag/search change); reset=false appends the next page.
+async function loadPage(reset: boolean) {
+  if (!reset && (loading.value || !hasMore.value)) return
+  const req = ++blocksReq // a slow earlier response must not overwrite a newer filter's result
   loading.value = true
   try {
-    const res = await listBlocks({ categories: activeCategory.value ? [activeCategory.value] : [], tags: selectedTags.value, search: search.value, page: page.value, perPage })
+    const p = reset ? 1 : page.value + 1
+    const res = await listBlocks({
+      categories: activeCategory.value ? [activeCategory.value] : [], tags: selectedTags.value,
+      search: search.value, sort: 'category', page: p, perPage,
+    })
     if (req !== blocksReq) return // superseded
-    blocks.value = res.items
+    page.value = p
+    blocks.value = reset ? res.items : [...blocks.value, ...res.items]
     total.value = res.total
     noVault.value = false
+    // After a reset the fresh list may be shorter than the viewport — top up until the sentinel
+    // is pushed out of view (the observer only fires on an intersection *change*).
+    nextTick(fillViewport)
   } catch (e) {
     if (req !== blocksReq) return
     if (e instanceof ApiError && e.status === 409) { noVault.value = true; blocks.value = []; total.value = 0 }
@@ -68,9 +81,10 @@ async function loadBlocks() {
     if (req === blocksReq) loading.value = false
   }
 }
+function reload() { clearSelection(); page.value = 1; loadPage(true) }
 async function refreshAll() {
   await loadCategories()
-  await Promise.all([loadBlocks(), loadTags()])
+  await Promise.all([reload(), loadTags()])
 }
 // onActivated also fires on first mount under KeepAlive, so a separate setup-time call would double-load.
 onActivated(refreshAll)
@@ -83,9 +97,30 @@ watch(() => props.filter?.nonce, () => {
   activeCategory.value = props.filter.category
   selectedTags.value = [...props.filter.tags]
   search.value = ''
-  page.value = 1
   refreshAll()
 }, { immediate: true })
+
+// ---- infinite scroll: an IntersectionObserver on a bottom sentinel within the scroll area ----
+const gridEl = ref<HTMLElement | null>(null)
+const sentinel = ref<HTMLElement | null>(null)
+let observer: IntersectionObserver | null = null
+function fillViewport() {
+  // Re-arm the observer against the sentinel's current position so a short list keeps loading until
+  // the sentinel leaves the root+rootMargin band (or there's nothing more).
+  const el = sentinel.value
+  if (!observer || !el) return
+  observer.unobserve(el)
+  observer.observe(el)
+}
+watch([gridEl, sentinel], ([root, el]) => {
+  observer?.disconnect()
+  observer = null
+  if (!root || !el) return
+  observer = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting && hasMore.value && !loading.value) loadPage(false)
+  }, { root, rootMargin: '800px' })
+  observer.observe(el)
+})
 
 // Bulk import (modal). On success, reload so the imported blocks + any new categories show.
 const importing = ref(false)
@@ -132,23 +167,20 @@ async function doRestore() {
 function selectCategory(slug: string) {
   if (activeCategory.value === slug) return
   activeCategory.value = slug
-  page.value = 1
-  clearSelection()
-  loadBlocks(); loadTags() // tag filter persists across category switches; only the tag *options* re-scope
+  reload()
+  loadTags() // tag filter persists across category switches; only the tag *options* re-scope
 }
 function toggleTag(name: string) {
   const i = selectedTags.value.indexOf(name)
   if (i >= 0) selectedTags.value.splice(i, 1)
   else selectedTags.value.push(name)
-  page.value = 1
-  clearSelection()
-  loadBlocks(); loadCategories() // re-count categories under the new tag filter
+  reload()
+  loadCategories() // re-count categories under the new tag filter
 }
 let searchTimer: ReturnType<typeof setTimeout> | null = null
-watch(search, () => { if (searchTimer) clearTimeout(searchTimer); page.value = 1; clearSelection(); searchTimer = setTimeout(loadBlocks, 300) })
-function goPage(p: number) { if (p < 1 || p > pages() || p === page.value) return; page.value = p; clearSelection(); loadBlocks() }
+watch(search, () => { if (searchTimer) clearTimeout(searchTimer); searchTimer = setTimeout(reload, 300) })
 
-// ---- multi-select (bulk use / delete) ----
+// ---- multi-select (bulk move / delete) ----
 const selected = ref<string[]>([])
 const selectedBlocks = computed(() => blocks.value.filter((b) => selected.value.includes(b.id)))
 function toggleSelect(id: string) {
@@ -156,16 +188,11 @@ function toggleSelect(id: string) {
   if (i >= 0) selected.value.splice(i, 1)
   else selected.value.push(id)
 }
-function clearSelection() { selected.value = [] }
+function clearSelection() { selected.value = []; moveCatOpen.value = false }
 const allSelected = computed(() => blocks.value.length > 0 && selected.value.length === blocks.value.length)
-const someSelected = computed(() => selected.value.length > 0 && !allSelected.value)
 function toggleAll() {
   if (allSelected.value) clearSelection()
-  else selected.value = blocks.value.map((b) => b.id) // selects everything in the current view
-}
-function useSelected() {
-  if (selectedBlocks.value.length) emit('use', selectedBlocks.value)
-  clearSelection()
+  else selected.value = blocks.value.map((b) => b.id) // selects every loaded block
 }
 async function deleteSelected() {
   const ids = [...selected.value]
@@ -181,10 +208,26 @@ async function deleteSelected() {
   }
 }
 
-const tagMatches = computed(() => {
-  const q = tagSearch.value.trim().toLowerCase()
-  return tagOptions.value.filter((t) => !q || t.name.toLowerCase().includes(q))
-})
+// ---- move selected blocks to another category (fixed popover off the selection bar button) ----
+const moveCatOpen = ref(false)
+const moveCatEl = ref<HTMLElement | null>(null)
+const moveCatStyle = ref<Record<string, string>>({})
+function openMoveCat(e: MouseEvent) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  moveCatStyle.value = { left: `${r.left}px`, top: `${r.bottom + 5}px`, minWidth: `${r.width}px` }
+  moveCatOpen.value = !moveCatOpen.value
+}
+async function moveSelectedTo(slug: string) {
+  moveCatOpen.value = false
+  const items = selectedBlocks.value.filter((b) => b.category !== slug)
+  if (!items.length) { clearSelection(); return }
+  try {
+    for (const b of items) await saveBlock({ ...b, category: slug })
+    push(`Moved ${items.length} block(s) to ${catName(slug)}`, 'ok')
+    clearSelection()
+    await refreshAll()
+  } catch (e) { push(e instanceof Error ? e.message : 'Move failed', 'err') }
+}
 
 // ---- category management: one modal for create / edit (rename + recolor) / delete ----
 const catModal = ref<{ mode: 'create' | 'edit'; slug: string | null; name: string; color: string; onCreated?: (slug: string) => void } | null>(null)
@@ -232,9 +275,7 @@ async function deleteFromCatModal() {
   if (c) await removeCategory(c)
 }
 
-// ---- rail dropdowns (tag filter) + block-editor category selector: click-to-open, close outside ----
-const tagFilterOpen = ref(false)
-const tagselEl = ref<HTMLElement | null>(null)
+// ---- block-editor category selector: click-to-open, close outside ----
 const blockCatOpen = ref(false)
 const blockCatEl = ref<HTMLElement | null>(null)
 const blockCatStyle = ref<Record<string, string>>({})
@@ -253,44 +294,18 @@ function newCategoryForBlock() {
 }
 function onDocPointer(e: MouseEvent) {
   const t = e.target as Node
-  if (tagselEl.value && !tagselEl.value.contains(t)) tagFilterOpen.value = false
   if (blockCatEl.value && !blockCatEl.value.contains(t)) blockCatOpen.value = false
+  if (moveCatEl.value && !moveCatEl.value.contains(t)) moveCatOpen.value = false
 }
 onMounted(() => document.addEventListener('mousedown', onDocPointer))
 onUnmounted(() => {
   document.removeEventListener('mousedown', onDocPointer)
   if (searchTimer) clearTimeout(searchTimer) // don't let a debounced load fire after teardown
   if (exTimer) clearTimeout(exTimer)
-  activeRailCleanup?.() // tear down a splitter drag if we unmount mid-drag
+  observer?.disconnect()
 })
 
-// The tag dropdown is fixed-positioned (measured off the input) so a resizable/scrolling rail can't clip it.
-const tagDropStyle = ref<Record<string, string>>({})
-function openTagFilter(e: FocusEvent) {
-  const r = (e.target as HTMLElement).getBoundingClientRect()
-  tagDropStyle.value = { left: `${r.left}px`, top: `${r.bottom + 5}px`, width: `${r.width}px` }
-  tagFilterOpen.value = true
-}
-
-// Resizable split between the Categories pane and the Filter-by-tags pane (each scrolls independently).
-// Default 65/35 (catsH === null → flex-basis); once the user drags, an explicit px height sticks.
-const railEl = ref<HTMLElement | null>(null)
-const catsPaneEl = ref<HTMLElement | null>(null)
-const catsH = ref<number | null>(null)
-function startRailDrag(e: MouseEvent) {
-  e.preventDefault()
-  const startY = e.clientY
-  const startH = catsPaneEl.value?.getBoundingClientRect().height ?? 300
-  const railH = railEl.value?.clientHeight ?? 600
-  const onMove = (ev: MouseEvent) => { catsH.value = Math.max(96, Math.min(railH - 110, startH + (ev.clientY - startY))) }
-  const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); activeRailCleanup = null }
-  window.addEventListener('mousemove', onMove)
-  window.addEventListener('mouseup', onUp)
-  activeRailCleanup = onUp // so an unmount mid-drag still tears these window listeners down
-}
-let activeRailCleanup: (() => void) | null = null
-
-// ---- block editor drawer ----
+// ---- block editor drawer (converted to a centered modal in a later increment) ----
 const editor = ref<{ isNew: boolean; fromDraft?: boolean; block: LibraryBlock } | null>(null)
 const edTagInput = ref('')
 const allTags = ref<TagCount[]>([])
@@ -378,12 +393,9 @@ async function removeBlock(b: LibraryBlock) {
 
 <template>
   <section class="library">
+    <!-- clean title row — just the section name + count -->
     <div class="lhead">
       <h1>Library</h1><span class="count">· {{ allCount }} blocks</span>
-      <div class="spacer"></div>
-      <input class="search" v-model="search" placeholder="Search name or text…" />
-      <button class="impbtn" @click="importing = true"><span>⭳</span> Import</button>
-      <button class="newbtn" @click="openNew"><span>＋</span> New block</button>
     </div>
 
     <div v-if="noVault" class="empty">
@@ -392,36 +404,35 @@ async function removeBlock(b: LibraryBlock) {
     </div>
 
     <div v-else class="lbody">
-      <!-- category + tag rail: two independently-scrolling panes, resizable via the splitter -->
-      <div class="rail" ref="railEl">
-        <div class="rail-pane cats" :class="{ flexed: catsH === null }"
-          :style="catsH !== null ? { height: catsH + 'px' } : undefined" ref="catsPaneEl">
-          <div class="railhead">
-            <span>Categories</span>
-            <button ref="restoreBtn" class="addcat" title="Restore default categories" @click="openRestore()">⟲</button>
-            <button class="addcat" title="New category" @click="openCreateCategory()">＋</button>
-            <Teleport to="body">
-              <template v-if="restoreOpen">
-                <div class="restore-back" @click="restoreOpen = false"></div>
-                <div class="restorepop" :style="{ top: restorePos.top + 'px', left: restorePos.left + 'px' }" @click.stop>
-                  <div class="rp-hd">Restore default categories</div>
-                  <div class="rp-list">
-                    <label v-for="d in defaults" :key="d.slug" class="rp-item" :class="{ have: presentSlugs.has(d.slug) }">
-                      <input type="checkbox" :disabled="presentSlugs.has(d.slug)"
-                        :checked="presentSlugs.has(d.slug) || restoreSel.has(d.slug)" @change="toggleRestore(d.slug)" />
-                      <span class="cdot" :style="{ background: d.color }"></span>
-                      <span class="rp-name">{{ d.name }}</span>
-                      <span v-if="presentSlugs.has(d.slug)" class="rp-tag">present</span>
-                    </label>
-                  </div>
-                  <div class="rp-ft">
-                    <button class="rp-cancel" @click="restoreOpen = false">Cancel</button>
-                    <button class="rp-ok" :disabled="!restoreSel.size" @click="doRestore">Restore{{ restoreSel.size ? ` ${restoreSel.size}` : '' }}</button>
-                  </div>
+      <!-- left rail — categories only (+ new / restore for now) -->
+      <div class="rail">
+        <div class="railhd">
+          <span>Categories</span>
+          <button ref="restoreBtn" class="railbtn" title="Restore default categories" @click="openRestore()">⟲</button>
+          <button class="railbtn" title="New category" @click="openCreateCategory()">＋</button>
+          <Teleport to="body">
+            <template v-if="restoreOpen">
+              <div class="restore-back" @click="restoreOpen = false"></div>
+              <div class="restorepop" :style="{ top: restorePos.top + 'px', left: restorePos.left + 'px' }" @click.stop>
+                <div class="rp-hd">Restore default categories</div>
+                <div class="rp-list">
+                  <label v-for="d in defaults" :key="d.slug" class="rp-item" :class="{ have: presentSlugs.has(d.slug) }">
+                    <input type="checkbox" :disabled="presentSlugs.has(d.slug)"
+                      :checked="presentSlugs.has(d.slug) || restoreSel.has(d.slug)" @change="toggleRestore(d.slug)" />
+                    <span class="cdot" :style="{ background: d.color }"></span>
+                    <span class="rp-name">{{ d.name }}</span>
+                    <span v-if="presentSlugs.has(d.slug)" class="rp-tag">present</span>
+                  </label>
                 </div>
-              </template>
-            </Teleport>
-          </div>
+                <div class="rp-ft">
+                  <button class="rp-cancel" @click="restoreOpen = false">Cancel</button>
+                  <button class="rp-ok" :disabled="!restoreSel.size" @click="doRestore">Restore{{ restoreSel.size ? ` ${restoreSel.size}` : '' }}</button>
+                </div>
+              </div>
+            </template>
+          </Teleport>
+        </div>
+        <div class="catlist">
           <div class="catrow" :class="{ on: activeCategory === '' }" @click="selectCategory('')">
             <span class="cdot" style="background:var(--text-dim)"></span><span class="cn">All blocks</span><span class="cc">{{ allCount }}</span>
           </div>
@@ -429,71 +440,81 @@ async function removeBlock(b: LibraryBlock) {
             :style="{ '--cat': c.color }" @click="selectCategory(c.slug)">
             <span class="cdot editable" title="Edit category" @click.stop="openEditCategory(c)"></span>
             <span class="cn">{{ c.name }}</span>
-            <button class="catedit" title="Edit category" @click.stop="openEditCategory(c)">✎</button>
+            <button class="ce" title="Edit category" @click.stop="openEditCategory(c)">✎</button>
             <span class="cc">{{ c.count }}</span>
-          </div>
-        </div>
-
-        <div class="rail-split" title="Drag to resize" @mousedown="startRailDrag"></div>
-
-        <div class="rail-pane tags" ref="tagselEl">
-          <div class="railgroup">Filter by tags</div>
-          <div class="tsel-field">
-            <input class="tsel-input" v-model="tagSearch" placeholder="Search tags…" @focus="openTagFilter" />
-            <div v-if="tagFilterOpen" class="tsel-drop" :style="tagDropStyle">
-              <div v-for="t in tagMatches" :key="t.name" class="tsopt" :class="{ on: selectedTags.includes(t.name) }" @click="toggleTag(t.name)">
-                <span class="ck">{{ selectedTags.includes(t.name) ? '✓' : '' }}</span><span class="cn">{{ t.name }}</span><span class="cc">{{ t.count }}</span>
-              </div>
-              <div v-if="!tagMatches.length" class="tshint">No tags {{ activeCategory ? `in ${catName(activeCategory)}` : 'yet' }}.</div>
-              <div v-else class="tshint">Tags within <b>{{ activeCategory ? catName(activeCategory) : 'all categories' }}</b></div>
-            </div>
-          </div>
-          <div v-if="selectedTags.length" class="tsel-chosen">
-            <span v-for="t in selectedTags" :key="t" class="et">{{ t }} <b @click="toggleTag(t)">✕</b></span>
           </div>
         </div>
       </div>
 
-      <!-- block grid -->
-      <div class="gridwrap">
-        <div v-if="blocks.length" class="selbar" :class="{ active: selected.length }">
+      <!-- content column: toolbar · tag pins · selection bar · sectioned grid -->
+      <div class="content">
+        <div class="toolbar">
+          <div class="search">
+            <span class="ic">⌕</span>
+            <input v-model="search" placeholder="Search name or text…" />
+          </div>
+          <div class="tbactions">
+            <button class="tbtn" @click="importing = true"><span>⭳</span> Import</button>
+            <button class="tbtn primary" @click="openNew"><span>＋</span> New block</button>
+          </div>
+        </div>
+
+        <div class="tagbar">
+          <span class="taglbl">Tags · {{ activeCategory ? catName(activeCategory) : 'all' }}</span>
+          <div v-if="tagOptions.length" class="tagwrap">
+            <button v-for="t in tagOptions" :key="t.name" class="tchip" :class="{ on: selectedTags.includes(t.name) }" @click="toggleTag(t.name)">
+              {{ t.name }} <span class="n">{{ t.count }}</span>
+            </button>
+          </div>
+          <span v-else class="tagempty">No tags {{ activeCategory ? `in ${catName(activeCategory)}` : 'yet' }}.</span>
+        </div>
+
+        <div v-if="selected.length" class="selbar" ref="moveCatEl">
           <button class="selall" @click="toggleAll">
-            <span class="box" :class="{ on: allSelected, some: someSelected }">{{ allSelected ? '✓' : someSelected ? '–' : '' }}</span>
-            {{ allSelected ? 'Deselect all' : 'Select all' }}
+            <span class="box on">✓</span> {{ allSelected ? 'Deselect all' : 'Select all' }}
           </button>
-          <span v-if="selected.length" class="scount">· {{ selected.length }} selected</span>
-          <div class="ssp"></div>
-          <template v-if="selected.length">
-            <button class="sbtn use" @click="useSelected">⇢ Use</button>
-            <button class="sbtn del" @click="deleteSelected">🗑 Delete</button>
-            <button class="sbtn ghost" @click="clearSelection">Clear</button>
-          </template>
-        </div>
-        <div v-if="!loading && !blocks.length" class="gridempty">
-          <p>No blocks here yet. Click <b>＋ New block</b> to author one.</p>
-        </div>
-        <div class="grid">
-          <div v-for="b in blocks" :key="b.id" class="bcard" :class="{ sel: selected.includes(b.id) }"
-            :style="{ '--cat': catColor(b.category) }" @click="toggleSelect(b.id)">
-            <div class="top">
-              <span class="bd"></span><span class="bn">{{ b.name || 'Untitled' }}</span>
-              <span class="polbadge" :class="{ neg: b.polarity === 'negative' }">{{ b.polarity === 'negative' ? '−' : '＋' }}</span>
-            </div>
-            <div class="catlbl">{{ catName(b.category) }}</div>
-            <div class="btext">{{ b.text || 'empty' }}</div>
-            <div class="btags"><span v-for="t in b.tags" :key="t" class="btag">{{ t }}</span></div>
-            <div class="acts">
-              <button class="act use" @click.stop="emit('use', [b])">⇢ Use</button>
-              <button class="act" @click.stop="openEdit(b)">✎ Edit</button>
-              <button class="act del" @click.stop="removeBlock(b)" title="Delete">🗑</button>
+          <span class="scount">· {{ selected.length }} selected</span>
+          <div class="selsp"></div>
+          <button class="sbtn" @click="openMoveCat">↔ Move to category</button>
+          <button class="sbtn del" @click="deleteSelected">🗑 Delete</button>
+          <button class="sbtn" @click="clearSelection">Clear</button>
+          <div v-if="moveCatOpen" class="movepop" :style="moveCatStyle" @click.stop>
+            <div v-for="c in categories" :key="c.slug" class="mo" @click="moveSelectedTo(c.slug)">
+              <span class="cdot" :style="{ background: c.color }"></span>{{ c.name }}
             </div>
           </div>
         </div>
-        <footer v-if="pages() > 1" class="pager">
-          <button :disabled="page <= 1" @click="goPage(page - 1)">‹ Prev</button>
-          <span>Page {{ page }} / {{ pages() }}</span>
-          <button :disabled="page >= pages()" @click="goPage(page + 1)">Next ›</button>
-        </footer>
+
+        <div class="gridscroll" ref="gridEl">
+          <div v-if="!loading && !blocks.length" class="gridempty">
+            <p>No blocks here yet. Click <b>＋ New block</b> to author one.</p>
+          </div>
+          <template v-for="sec in sections" :key="sec.slug">
+            <div class="cathead">
+              <span class="cdot" :style="{ background: catColor(sec.slug) }"></span>
+              <span class="cn">{{ catName(sec.slug) }}</span>
+              <span class="cc">{{ catCount(sec.slug) }} blocks</span>
+            </div>
+            <div class="grid">
+              <div v-for="b in sec.items" :key="b.id" class="bcard" :class="{ sel: selected.includes(b.id), neg: b.polarity === 'negative' }"
+                :style="{ '--cat': b.polarity === 'negative' ? 'var(--danger)' : catColor(b.category) }" @click="toggleSelect(b.id)">
+                <div class="top">
+                  <span class="selbox">{{ selected.includes(b.id) ? '✓' : '' }}</span>
+                  <span class="bn">{{ b.name || 'Untitled' }}</span>
+                  <span class="polbadge" :class="b.polarity === 'negative' ? 'neg' : 'pos'">{{ b.polarity === 'negative' ? 'NEG' : 'POS' }}</span>
+                </div>
+                <div class="btext">{{ b.text || 'empty' }}</div>
+                <div class="btags"><span v-for="t in b.tags" :key="t" class="btag">{{ t }}</span></div>
+                <div class="acts">
+                  <button class="act" @click.stop="openEdit(b)">✎ Edit</button>
+                  <button class="act del" @click.stop="removeBlock(b)" title="Delete">🗑</button>
+                </div>
+              </div>
+            </div>
+          </template>
+          <div ref="sentinel" class="sentinel"></div>
+          <div v-if="loading" class="loadmore">↻ Loading…<span v-if="total"> {{ blocks.length }} of {{ total }}</span></div>
+        </div>
       </div>
 
       <!-- block editor drawer -->
@@ -600,34 +621,40 @@ async function removeBlock(b: LibraryBlock) {
 
 <style scoped>
 .library{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
-.lhead{display:flex;align-items:center;gap:12px;padding:13px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
-.lhead h1{font-size:16px;font-weight:650;margin:0}
-.lhead .count{font-size:12px;color:var(--text-faint)}
-.lhead .spacer{flex:1}
-.search{width:230px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 10px;color:var(--text);font:inherit;font-size:13px;outline:none}
-.search:focus{border-color:var(--accent)}
-.newbtn{background:var(--accent);color:var(--on-accent);border:0;border-radius:var(--radius);font-weight:600;font-size:13px;padding:8px 14px;display:flex;align-items:center;gap:7px;cursor:pointer}
-.impbtn{background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border-strong);border-radius:var(--radius);font-weight:600;font-size:13px;padding:8px 14px;display:flex;align-items:center;gap:7px;cursor:pointer}
-.impbtn:hover{color:var(--text)}
+
+/* clean title row */
+.lhead{display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
+.lhead h1{font-size:18px;font-weight:700;margin:0}
+.lhead .count{font-size:13px;color:var(--text-faint)}
 
 .empty{max-width:420px;margin:12vh auto;text-align:center;color:var(--text-dim)}
 .empty .emoji{font-size:34px;color:var(--text-faint);margin-bottom:12px}
 .empty p{font-size:13px;line-height:1.6}
 
 .lbody{flex:1;display:flex;min-height:0}
-.rail{width:200px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
-.rail-pane{padding:8px 10px}
-.rail-pane.cats{flex-shrink:0;overflow-y:auto}
-.rail-pane.cats.flexed{flex:0 0 65%}
-.rail-pane.tags{flex:1;min-height:64px;overflow-y:auto}
-.rail-split{height:9px;flex-shrink:0;cursor:row-resize;position:relative}
-.rail-split::before{content:"";position:absolute;left:10px;right:10px;top:4px;height:1px;background:var(--border)}
-.rail-split:hover::before{background:var(--accent);height:2px;top:3px}
-.railgroup{font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:4px 8px 6px}
-.railhead{position:relative;display:flex;align-items:center;gap:2px;font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:4px 6px 6px 8px}
-.railhead > span:first-child{margin-right:auto}
-.railhead .addcat{border:0;background:transparent;color:var(--text-faint);font-size:15px;line-height:1;cursor:pointer;padding:0 4px;border-radius:4px}
-.railhead .addcat:hover{color:var(--accent);background:var(--surface-3)}
+
+/* left rail — categories */
+.rail{width:210px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;background:color-mix(in srgb,var(--surface-1) 45%,transparent)}
+.railhd{position:relative;display:flex;align-items:center;gap:2px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint);padding:12px 10px 6px 12px}
+.railhd > span:first-child{margin-right:auto}
+.railhd .railbtn{border:0;background:transparent;color:var(--text-faint);font-size:15px;line-height:1;cursor:pointer;padding:0 4px;border-radius:4px}
+.railhd .railbtn:hover{color:var(--accent);background:var(--surface-3)}
+.catlist{flex:1;min-height:0;overflow-y:auto;padding:4px 8px 10px}
+.catrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--radius);color:var(--text-dim);font-size:12.5px;font-weight:600;margin-bottom:1px;cursor:pointer}
+.catrow .cdot{width:9px;height:9px;border-radius:50%;background:var(--cat,#738496);flex-shrink:0}
+.catrow .cn{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.catrow .cc{font-size:11px;color:var(--text-faint);font-weight:500;font-variant-numeric:tabular-nums}
+.catrow:hover{background:var(--surface-3);color:var(--text)}
+.catrow.on{background:var(--nav-active);color:var(--accent)}
+.catrow.on .cc{color:var(--accent)}
+.catrow .cdot.editable{cursor:pointer}
+.catrow .cdot.editable:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--cat,#738496) 35%,transparent)}
+.catrow .ce{margin-left:auto;width:18px;height:18px;flex-shrink:0;border:0;background:transparent;color:var(--text-faint);font-size:11px;line-height:1;cursor:pointer;border-radius:3px;opacity:0;padding:0}
+.catrow:hover .ce{opacity:1}
+.catrow .ce:hover{color:var(--accent);background:var(--surface-3)}
+.catrow .ce + .cc{margin-left:6px}
+
+/* restore-defaults popover (teleported) */
 .restore-back{position:fixed;inset:0;z-index:2100}
 .restorepop{position:fixed;z-index:2101;width:244px;max-height:70vh;background:var(--surface-1);
   border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 16px 40px rgba(0,0,0,.5);
@@ -647,76 +674,82 @@ async function removeBlock(b: LibraryBlock) {
 .rp-cancel:hover{color:var(--text)}
 .rp-ok{border:0;background:var(--accent);color:var(--on-accent)}
 .rp-ok:disabled{opacity:.5;cursor:default}
-.catrow{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--radius);color:var(--text-dim);font-size:13px;font-weight:500;margin-bottom:1px;cursor:pointer}
-.catrow .cdot{width:8px;height:8px;border-radius:2px;background:var(--cat,#738496);flex-shrink:0}
-.catrow .cn{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.catrow .cc{font-size:11px;color:var(--text-faint)}
-.catrow:hover{background:var(--surface-2)}
-.catrow.on{background:var(--nav-active);color:var(--text)}
-.catrow.on .cc{color:var(--accent)}
-.catrow .cdot.editable{cursor:pointer}
-.catrow .cdot.editable:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--cat,#738496) 35%,transparent)}
-.catrow .catedit{width:18px;height:18px;flex-shrink:0;border:0;background:transparent;color:var(--text-faint);font-size:12px;line-height:1;cursor:pointer;border-radius:3px;opacity:0;padding:0}
-.catrow:hover .catedit{opacity:.8}
-.catrow .catedit:hover{color:var(--accent);background:var(--surface-3);opacity:1}
 
-.tagsel{padding:2px 6px}
-.tsel-field{position:relative}
-.tsel-input{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:6px 9px;color:var(--text);font:inherit;font-size:12px;outline:none}
-.tsel-input:focus{border-color:var(--accent)}
-.tsel-chosen{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0 0}
-.et{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--accent);background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:20px;padding:2px 8px}
-.et b{color:var(--text-faint);font-weight:400;cursor:pointer}
-.tsel-drop{position:fixed;z-index:30;background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden;max-height:280px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.45)}
-.tsopt{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:12px;color:var(--text-dim);cursor:pointer}
-.tsopt:hover{background:var(--surface-3)}
-.tsopt .ck{width:13px;height:13px;border:1px solid var(--border-strong);border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff}
-.tsopt.on .ck{background:var(--accent);border-color:var(--accent)}
-.tsopt .cn{flex:1}
-.tsopt .cc{font-size:11px;color:var(--text-faint)}
-.tsopt.create{color:var(--accent);font-weight:600;border-top:1px dashed var(--border)}
-.tshint{font-size:10.5px;color:var(--text-faint);padding:6px 8px 2px}
+/* content column */
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
 
-.gridwrap{flex:1;overflow:auto;padding:18px;display:flex;flex-direction:column}
-.gridempty{margin:10vh auto;color:var(--text-dim);font-size:13px}
-.selbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:7px 12px;background:var(--surface-1);
-  border:1px solid var(--border);border-radius:var(--radius);position:sticky;top:0;z-index:4}
-.selbar.active{background:var(--nav-active);border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
-.selbar .selall{display:flex;align-items:center;gap:8px;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;padding:0}
-.selbar .selall:hover{color:var(--text)}
-.selbar .selall .box{width:15px;height:15px;border:1.5px solid var(--border-strong);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;line-height:1}
-.selbar .selall .box.on,.selbar .selall .box.some{background:var(--accent);border-color:var(--accent)}
-.selbar .scount{font-size:12.5px;font-weight:600;color:var(--accent)}
-.selbar .ssp{flex:1}
-.selbar .sbtn{border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);border-radius:var(--radius);
-  font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer}
-.selbar .sbtn.use{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
-.selbar .sbtn.del{color:#e8913a;border-color:color-mix(in srgb,#b65c02 40%,var(--border))}
-.selbar .sbtn.ghost{border-color:transparent;background:transparent;color:var(--text-dim)}
-.selbar .sbtn:hover{filter:brightness(1.15)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:14px;align-content:start}
-.bcard{height:186px;background:var(--surface-1);border:1px solid var(--border);border-left:3px solid var(--cat,#738496);border-radius:9px;padding:12px 13px;display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:border-color .1s,box-shadow .1s}
+/* toolbar row */
+.toolbar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.search{position:relative;flex:0 1 520px;min-width:200px}
+.search .ic{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-faint);font-size:12px}
+.search input{width:100%;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px 8px 30px;outline:none}
+.search input:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+.tbactions{margin-left:auto;display:flex;align-items:center;gap:8px}
+.tbtn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:8px 12px;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.tbtn:hover{color:var(--text)}
+.tbtn.primary{background:var(--accent);color:var(--on-accent);border-color:transparent}
+.tbtn.primary:hover{background:var(--accent-strong,#0055cc)}
+
+/* tag pins */
+.tagbar{display:flex;flex-direction:column;gap:6px;padding:9px 8px 9px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.taglbl{font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint)}
+.tagempty{font-size:11.5px;color:var(--text-faint)}
+.tagwrap{display:flex;flex-wrap:wrap;gap:6px;max-height:60px;overflow-y:auto}
+.tchip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:20px;padding:2px 10px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.tchip .n{color:var(--text-faint);font-weight:500;font-size:10px}
+.tchip:hover{border-color:var(--border-strong);color:var(--text)}
+.tchip.on{background:var(--nav-active);border-color:color-mix(in srgb,var(--accent) 45%,var(--border));color:var(--accent)}
+.tchip.on .n{color:var(--accent)}
+
+/* selection bar */
+.selbar{position:relative;display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.selall{display:inline-flex;align-items:center;gap:7px;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;padding:0}
+.selall:hover{color:var(--text)}
+.selall .box{width:16px;height:16px;border:1.5px solid var(--border-strong);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;color:var(--accent)}
+.selall .box.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.selbar .scount{font-size:12px;color:var(--text-faint)}
+.selbar .selsp{flex:1}
+.selbar .sbtn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:6px 11px;font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+.selbar .sbtn:hover{color:var(--text)}
+.selbar .sbtn.del:hover{color:var(--danger);border-color:var(--danger)}
+.movepop{position:fixed;z-index:40;background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden;max-height:280px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.movepop .mo{display:flex;align-items:center;gap:8px;padding:8px 11px;font-size:12.5px;color:var(--text-dim);cursor:pointer}
+.movepop .mo:hover{background:var(--surface-3);color:var(--text)}
+.movepop .mo .cdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+
+/* sectioned grid */
+.gridscroll{flex:1;min-height:0;overflow-y:auto;padding:14px 8px 14px 16px;margin-right:8px}
+.gridempty{margin:10vh auto;color:var(--text-dim);font-size:13px;text-align:center}
+.cathead{display:flex;align-items:center;gap:9px;margin:2px 0 10px;padding-top:6px}
+.cathead:not(:first-child){margin-top:22px;border-top:1px solid var(--border);padding-top:16px}
+.cathead .cdot{width:11px;height:11px;border-radius:50%;flex-shrink:0}
+.cathead .cn{font-size:13px;font-weight:700}
+.cathead .cc{font-size:11px;color:var(--text-faint);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;align-content:start}
+.bcard{border:1px solid var(--border);border-left:3px solid var(--cat,#738496);border-radius:var(--radius-lg);background:var(--surface-1);padding:10px 12px;cursor:pointer;display:flex;flex-direction:column;transition:border-color .1s,box-shadow .1s}
 .bcard:hover{border-color:var(--border-strong)}
-.bcard.sel{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 55%,transparent)}
-.bcard .top{display:flex;align-items:center;gap:8px}
-.bcard .bd{width:8px;height:8px;border-radius:50%;background:var(--cat,#738496);flex-shrink:0}
-.bcard .bn{font-size:13px;font-weight:650;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bcard .polbadge{font-size:10px;font-weight:700;color:var(--text-faint);border:1px solid var(--border-strong);border-radius:4px;padding:0 5px;line-height:16px}
-.bcard .polbadge.neg{color:#e8913a}
-.bcard .catlbl{font-size:10.5px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.3px;font-weight:600}
-.bcard .btext{font-size:11.5px;color:var(--text-dim);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:34px}
-.bcard .btags{flex:1;min-height:0;display:flex;flex-wrap:wrap;gap:5px;align-content:flex-start;overflow-y:auto}
-.bcard .btag{font-size:10.5px;color:var(--accent);background:var(--nav-active);border-radius:20px;padding:1px 8px}
-.bcard .acts{display:flex;gap:6px;border-top:1px solid var(--border);padding-top:9px}
-.bcard .act{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius);padding:5px;background:var(--surface-2);cursor:pointer}
-.bcard .act:hover{color:var(--text);border-color:var(--border-strong)}
-.bcard .act.use{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.bcard.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.bcard .top{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+.bcard .selbox{width:15px;height:15px;border:1.5px solid var(--border-strong);border-radius:4px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:var(--accent);line-height:1}
+.bcard.sel .selbox{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.bcard .bn{font-size:13px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bcard .polbadge{margin-left:auto;font-size:8.5px;font-weight:800;border-radius:9px;padding:0 6px;line-height:15px}
+.bcard .polbadge.pos{color:var(--ok);border:1px solid color-mix(in srgb,var(--ok) 45%,var(--border));background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.bcard .polbadge.neg{color:var(--danger);border:1px solid color-mix(in srgb,var(--danger) 50%,var(--border));background:color-mix(in srgb,var(--danger) 12%,transparent)}
+.bcard .btext{font-size:11.5px;color:var(--text-faint);line-height:1.45;margin:2px 0 7px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:33px}
+.bcard .btags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:9px;min-height:0}
+.bcard .btag{font-size:10px;background:var(--surface-3);border:1px solid var(--border);border-radius:20px;padding:1px 7px;color:var(--text-dim)}
+.bcard .acts{display:flex;gap:6px;margin-top:auto}
+.bcard .act{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:5px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer}
+.bcard .act:hover{color:var(--accent);border-color:var(--accent)}
 .bcard .act.del{flex:0 0 34px}
+.bcard .act.del:hover{color:var(--danger);border-color:var(--danger)}
 
-.pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:22px;font-size:13px;color:var(--text-dim)}
-.pager button{padding:6px 14px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer}
-.pager button:disabled{opacity:.45;cursor:default}
+.sentinel{height:1px}
+.loadmore{display:flex;align-items:center;justify-content:center;gap:8px;padding:22px;font-size:12px;color:var(--text-faint)}
+.loadmore span{font-variant-numeric:tabular-nums;opacity:.7}
 
+/* block editor drawer */
 .drawer{width:340px;flex-shrink:0;border-left:1px solid var(--border);background:var(--surface-1);display:flex;flex-direction:column}
 .dhd{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);font-weight:650;font-size:14px}
 .dhd .x{margin-left:auto;color:var(--text-faint);font-size:16px;cursor:pointer}
@@ -750,7 +783,14 @@ async function removeBlock(b: LibraryBlock) {
 
 .tagedit{display:flex;flex-wrap:wrap;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:7px}
 .tagedit .ti{flex:1;min-width:80px;border:0;background:transparent;color:var(--text);font:inherit;font-size:12px;outline:none}
+.et{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--accent);background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:20px;padding:2px 8px}
+.et b{color:var(--text-faint);font-weight:400;cursor:pointer}
 .accd{margin-top:5px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;max-height:180px;overflow-y:auto}
+.tsopt{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:12px;color:var(--text-dim);cursor:pointer}
+.tsopt:hover{background:var(--surface-3)}
+.tsopt .cn{flex:1}
+.tsopt .cc{font-size:11px;color:var(--text-faint)}
+.tsopt.create{color:var(--accent);font-weight:600;border-top:1px dashed var(--border)}
 .examples{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .examples img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:7px;border:1px solid var(--border);background:var(--surface-2);cursor:zoom-in;transition:border-color .1s}
 .examples img:hover{border-color:var(--accent)}

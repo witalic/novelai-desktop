@@ -7,6 +7,8 @@
   --bg:#101214; --surface-1:#1d2125; --surface-2:#22272b; --surface-3:#282e33;
   --border:#2c333a; --border-strong:#454f59;
   --text:#c7d1db; --text-dim:#9fadbc; --text-faint:#738496; --nav-active:#1c3049;
+  /* Semantic status colors — readable on both palettes, so the theme blocks don't override them. */
+  --ok:#3aa675; --warn:#b65c02; --danger:#e2483d; --star:#e0a534;
 }
 [data-theme="dark"]{
   color-scheme:dark;
