@@ -19,7 +19,6 @@ import { useImagePreview } from '../composables/useImagePreview'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
-import { appendX } from '../canvas/pack'
 import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
 import { newId } from '../vault/ids'
@@ -50,12 +49,10 @@ const {
   screenToFlowCoordinate, setNodes, setViewport, onNodeContextMenu, onSelectionContextMenu, onPaneContextMenu,
 } = useVueFlow()
 
-// The "station" is one coupled node: [ Output | Positive / Negative lanes ] + header + meta.
-// Internal areas are ratio-driven (data.outputRatio, data.posRatio) so they scale on resize + splitters.
+// The "station" is one node: header + two zones (Generation output | Composition block list) + a meta
+// footer. The Generation↔Composition ratio, split axis, and lead order live in the station node data.
 // STATION/LIBRARY/GALLERY zone ids come from serialize (single source of truth). Content inside them is
 // saved; anything loose on the canvas is a draft.
-const HEADER = 44
-const META = 66
 const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
 // Offline fallback colors (vault categories override once loaded); mirror catalog.py DEFAULTS.
@@ -73,24 +70,30 @@ const CATS: Record<string, string> = {
 // opening a work) so the prompt widget re-reads category colors/counts and its pins' versions —
 // KeepAlive keeps the widget mounted, so it can't rely on its own onMounted firing again.
 const widgetRevalidate = ref(0)
-// Colors come from the vault's categories (customs have their own); CATS is the offline fallback.
+// Colors + names come from the vault's categories (customs have their own); CATS is the offline fallback.
 const vaultCatColors = ref<Record<string, string>>({})
+const vaultCatNames = ref<Record<string, string>>({})
 async function loadCategoryColors() {
   try {
-    vaultCatColors.value = Object.fromEntries((await listCategories()).map((c) => [c.slug, c.color]))
+    const cats = await listCategories()
+    vaultCatColors.value = Object.fromEntries(cats.map((c) => [c.slug, c.color]))
+    vaultCatNames.value = Object.fromEntries(cats.map((c) => [c.slug, c.name]))
   } catch { /* backend not ready / no vault — fall back to the builtin palette */ }
 }
 const catColor = (c: string) => vaultCatColors.value[c] ?? CATS[c] ?? CATS.custom
+const catName = (c: string) => vaultCatNames.value[c] || (c.startsWith('cat-') ? 'custom' : c)
 
 // Estimated Anlas cost of the current params (Opus tier gets the first sample free — see cost.ts).
 const { subscription } = useAccount()
 const genCost = computed(() => anlasCost(props.params, subscription.value?.tier ?? 0, !!subscription.value?.active))
 
-const compBlocks = computed(() => nodes.value.filter((n) => n.type === 'block' && n.parentNode === STATION))
+// Composition = the station's child block nodes, ordered by position.y (the list order key, like the
+// old palette). They never free-render on the canvas — the station node draws them as an HTML list.
+const compBlocks = computed(() => nodes.value.filter((n) => n.type === 'block' && n.parentNode === STATION)
+  .slice().sort((a, b) => a.position.y - b.position.y))
 const composed = computed(() => {
   const pick = (neg: boolean) => compBlocks.value
     .filter((b) => (b.data.polarity === 'negative') === neg)
-    .slice().sort((a, b) => a.position.x - b.position.x)
     .map((b) => String(b.data.text || '').trim()).filter(Boolean)
   let positive = pick(false).join(', ')
   let negative = pick(true).join(', ')
@@ -181,6 +184,11 @@ function onCanvasDrop(e: DragEvent) {
       const b = JSON.parse(payload.slice('nai-libblock:'.length)) as LibraryBlock
       dropBlockAt(libraryBlockData(b), toFlow(e.clientX, e.clientY))
     } catch { /* malformed payload — ignore */ }
+    return
+  }
+  if (payload.startsWith('nai-comp:')) { // a composition row dragged out of the station → scratch copy
+    const src = findNode(payload.slice('nai-comp:'.length))
+    if (src) dropBlockAt({ ...src.data, expanded: false, editing: false }, toFlow(e.clientX, e.clientY))
     return
   }
   if (payload.startsWith('nai-drafts:')) { // a multi-selected group of drafts dragged out
@@ -356,38 +364,134 @@ function applyScaleAll(scale: number) {
   if (imgs.length > 1) arrangeImages(imgs, anchors)
 }
 
-const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
-
-// Reflow the station's blocks so each keeps its relative position WITHIN its polarity lane after the
-// station resizes or a splitter moves — a negative block never drifts into the positive region.
-function relayoutBlocks() {
-  const st = findNode(STATION)
-  if (!st) return
-  // dims() falls back to the node's style size, so this is safe even when the station is unmounted by
-  // viewport culling (its measured `dimensions` may be absent) or not yet measured after load.
-  const { w: stW, h } = dims(st)
-  const outputW = (st.data.outputRatio ?? 0.3) * stW
-  const compW = stW - outputW
-  const laneBoundary = HEADER + (st.data.posRatio ?? 0.5) * (h - HEADER - META)
-  for (const n of nodes.value) {
-    if (n.type !== 'block' || n.parentNode !== STATION) continue
-    const neg = n.data.polarity === 'negative'
-    const laneTop = neg ? laneBoundary : HEADER
-    const laneBot = neg ? (h - META) : laneBoundary
-    const bd = dims(n)
-    n.position = {
-      x: outputW + (n.data.xFrac ?? 0.06) * Math.max(0, compW - bd.w),
-      y: laneTop + (n.data.laneFrac ?? 0.12) * Math.max(0, (laneBot - laneTop) - bd.h),
-    }
+/* ============================ Composition (station block list) ============================ */
+// The station renders its child blocks as an ordered HTML list (order = position.y); they stay hidden
+// so Vue Flow never free-renders them on the canvas.
+const compFilter = ref('') // single-select category rail; '' = all
+const compRows = computed(() => {
+  let rows = compBlocks.value.filter((n) => !compFilter.value || n.data.category === compFilter.value)
+  // In "All" the list groups by category for readability (display sort); within a filtered category it
+  // keeps the manual position.y order (drag-reorder is enabled only there).
+  if (!compFilter.value) {
+    rows = rows.slice().sort((a, b) =>
+      catName(a.data.category).localeCompare(catName(b.data.category)) || (a.position.y - b.position.y))
   }
+  return rows.map((n) => ({
+    nodeId: n.id,
+    name: (n.data?.name as string) || 'Untitled',
+    text: (n.data?.text as string) || '',
+    polarity: (((n.data?.polarity as string) === 'negative') ? 'negative' : 'positive') as 'positive' | 'negative',
+    category: (n.data?.category as string) || 'custom',
+    block_id: n.data?.block_id as string | undefined,
+    expanded: !!n.data?.expanded,
+  }))
+})
+// Rail categories derived from the composition (only categories present), with counts + colors.
+const compRail = computed(() => {
+  const counts: Record<string, number> = {}
+  for (const b of compBlocks.value) counts[b.data.category] = (counts[b.data.category] || 0) + 1
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])
+    .map(([slug, count]) => ({ slug, name: catName(slug), color: catColor(slug), count }))
+})
+
+function hideStationBlocks() {
+  for (const n of nodes.value) if (n.parentNode === STATION && n.type === 'block') n.hidden = true
 }
+const nextCompY = () => (compBlocks.value.length ? Math.max(...compBlocks.value.map((n) => n.position.y)) + 10 : 0)
+
+// Edit a composition row via property mutation (Vue Flow tracks node.data mutations, not reassignment).
+function patchCompBlock(p: { nodeId: string; patch: Record<string, unknown> }) {
+  const n = findNode(p.nodeId)
+  if (n && n.parentNode === STATION) Object.assign(n.data, p.patch)
+}
+function toggleCompExpand(nodeId: string) {
+  const n = findNode(nodeId)
+  if (n) n.data.expanded = !n.data.expanded
+}
+function toggleCompPolarity(nodeId: string) {
+  const n = findNode(nodeId)
+  if (n) n.data.polarity = n.data.polarity === 'negative' ? 'positive' : 'negative'
+}
+function deleteCompBlock(nodeId: string) { removeNodes([nodeId]) }
+
+// Inline rename of a composition row (double-click the name).
+const renamingId = ref<string | null>(null)
+function startCompRename(nodeId: string) {
+  renamingId.value = nodeId
+  requestAnimationFrame(() => {
+    const el = document.getElementById(`cname-${nodeId}`) as HTMLInputElement | null
+    el?.focus(); el?.select()
+  })
+}
+
+// Clear the whole composition (confirmed — it's the work's prompt).
+async function clearComposition() {
+  const ids = compBlocks.value.map((n) => n.id)
+  if (!ids.length) return
+  if (!(await confirm({
+    title: 'Clear composition', danger: true, confirmLabel: 'Clear all',
+    message: `Remove all ${ids.length} block${ids.length > 1 ? 's' : ''} from the generation area?`,
+  }))) return
+  removeNodes(ids)
+}
+
+// Auto-size an expanded prompt textarea to fit its content (grows on open + while typing).
+function autosize(el: HTMLTextAreaElement) { el.style.height = 'auto'; el.style.height = `${Math.max(52, el.scrollHeight)}px` }
+const vAutosize = { mounted: (el: HTMLTextAreaElement) => autosize(el) }
+
+// Interacting with a composition row/rail must not select/drag the whole station node — stop the
+// press from reaching Vue Flow, but only when it started on an interactive element (rows/buttons/inputs).
+function stopIfInteractive(e: Event) {
+  const t = e.target as HTMLElement | null
+  if (t && t !== e.currentTarget && t.closest('button, input, textarea, .crow, .cnav, .clearall')) e.stopPropagation()
+}
+
+// Drag-reorder within the list: renumber position.y as 0,10,20… after moving nodeId before beforeId.
+function reorderComp(p: { nodeId: string; beforeId: string | null }) {
+  const ids = compBlocks.value.map((n) => n.id)
+  const rest = ids.filter((id) => id !== p.nodeId)
+  const at = p.beforeId ? rest.indexOf(p.beforeId) : -1
+  rest.splice(at >= 0 ? at : rest.length, 0, p.nodeId)
+  rest.forEach((id, i) => { const n = findNode(id); if (n) n.position = { x: 0, y: i * 10 } })
+}
+
+// ---- station layout (two zones): ratio, axis (h/v), genFirst ----
+function setStationAxis(axis: 'h' | 'v') { const st = findNode(STATION); if (st) st.data.axis = axis }
+function swapStationZones() { const st = findNode(STATION); if (st) st.data.genFirst = !(st.data.genFirst ?? true) }
+
+// Drag a composition row: within the list = reorder; out onto the canvas = an independent scratch copy.
+const compDragId = ref<string | null>(null)
+const compDropBefore = ref<string | null | undefined>(undefined)
+function onCompDragStart(e: DragEvent, nodeId: string) {
+  if (!e.dataTransfer) return
+  compDragId.value = nodeId
+  e.dataTransfer.effectAllowed = 'copyMove'
+  e.dataTransfer.setData('text/plain', `nai-comp:${nodeId}`)
+}
+function onCompDragOver(e: DragEvent, nodeId: string) {
+  if (!compDragId.value || compDragId.value === nodeId) return
+  e.preventDefault()
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const before = e.clientY < r.top + r.height / 2
+  const idx = compRows.value.findIndex((p) => p.nodeId === nodeId)
+  compDropBefore.value = before ? nodeId : (compRows.value[idx + 1]?.nodeId ?? null)
+}
+function onCompDrop(e: DragEvent) {
+  if (!compDragId.value || compDropBefore.value === undefined) return
+  e.preventDefault()
+  e.stopPropagation() // don't let the canvas drop handler spawn a scratch copy
+  reorderComp({ nodeId: compDragId.value, beforeId: compDropBefore.value })
+  compDragId.value = null
+  compDropBefore.value = undefined
+}
+function onCompDragEnd() { compDragId.value = null; compDropBefore.value = undefined }
 
 // The three anchor zones only — the skeleton every work starts from.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function zoneNodes(): any[] {
   return [
     { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '260px', height: '460px' } },
-    { id: STATION, type: 'station', position: { x: 316, y: 40 }, data: { outputRatio: 0.3, posRatio: 0.5 }, zIndex: 0, style: { width: '760px', height: '460px' } },
+    { id: STATION, type: 'station', position: { x: 316, y: 40 }, data: { ratio: 0.3, axis: 'h', genFirst: true }, zIndex: 0, style: { width: '760px', height: '460px' } },
     { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, data: { role: 'gallery' }, zIndex: 0, style: { width: '320px', height: '440px' } },
   ]
 }
@@ -430,29 +534,17 @@ onNodeDragStop(({ nodes: dragged, node }) => {
 function settleNode(node: any) {
   const live = findNode(node.id)
   if (!live) return
-  const st = findNode(STATION)
-  const stPos = st ? (st.computedPosition || st.position) : { x: 0, y: 0 } // top-level → computedPosition == position
-  const rel = st ? { x: node.computedPosition.x - stPos.x, y: node.computedPosition.y - stPos.y } : { x: 0, y: 0 }
   const overStation = getIntersectingNodes(node).some((n) => n.id === STATION)
-  const { w: stW, h } = st ? dims(st) : { w: 824, h: 460 } // dims() → style fallback, cull-safe
-  const outputW = (st?.data.outputRatio ?? 0.3) * stW
-  const laneBoundary = HEADER + (st?.data.posRatio ?? 0.5) * (h - HEADER - META)
 
   if (node.type === 'block') {
-    // Blocks belong only in the composition side (right of the Output column).
-    if (overStation && rel.x >= outputW && rel.y >= HEADER && rel.y <= h - META) {
-      if (live.parentNode !== STATION) live.position = rel
+    // Only loose scratch blocks are draggable (composition blocks are hidden list rows). Dropping one
+    // onto the station appends it to the composition list; dropping it elsewhere keeps it loose.
+    if (overStation) {
       live.parentNode = STATION
-      live.data.polarity = live.position.y < laneBoundary ? 'positive' : 'negative'
-      const neg = live.data.polarity === 'negative'
-      const lTop = neg ? laneBoundary : HEADER
-      const lBot = neg ? (h - META) : laneBoundary
-      const bd = dims(live)
-      live.data.xFrac = clamp01((live.position.x - outputW) / Math.max(1, (stW - outputW) - bd.w))
-      live.data.laneFrac = clamp01((live.position.y - lTop) / Math.max(1, (lBot - lTop) - bd.h))
+      live.hidden = true
+      live.position = { x: 0, y: nextCompY() }
+      live.data = { ...live.data, expanded: false }
     } else if (live.parentNode) {
-      // Not in the composition — a block dropped outside the station detaches to scratch (loose on
-      // the canvas). The widget no longer holds blocks, so it is not a drop target.
       live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
       live.parentNode = undefined
     }
@@ -515,39 +607,25 @@ function warnDuplicate() {
   toast.push('That block is already in the generation area — not duplicated', 'err')
 }
 
-// Drag-out of a widget row: an independent copy lands where it was dropped — inside the station
-// composition (polarity re-derived from the drop y) or loose on the canvas as scratch.
+// Drop from the Library widget (drag-out): an independent copy joins the composition when dropped
+// over the station, else lands loose on the canvas as scratch.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function dropBlockAt(data: any, pos: { x: number; y: number }) {
   const st = findNode(STATION)
-  const stPos = st ? (st.computedPosition || st.position) : { x: 0, y: 0 }
-  const rel = { x: pos.x - stPos.x, y: pos.y - stPos.y }
-  const { w: stW, h } = st ? dims(st) : { w: 0, h: 0 }
-  const outputW = (st?.data.outputRatio ?? 0.3) * stW
-  const laneBoundary = HEADER + (st?.data.posRatio ?? 0.5) * (h - HEADER - META)
-  const bw = 176, bh = 34
-  const inComposition = !!st && rel.x >= outputW && rel.x <= stW && rel.y >= HEADER && rel.y <= h - META
-  if (inComposition) {
-    const polarity = rel.y < laneBoundary ? 'positive' : 'negative'
-    if (stationHasBlock(polarity, data.text)) { warnDuplicate(); return }
-    const lTop = polarity === 'negative' ? laneBoundary : HEADER
-    const lBot = polarity === 'negative' ? (h - META) : laneBoundary
-    addNodes([{
-      id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2,
-      position: { x: rel.x - bw / 2, y: rel.y - bh / 2 }, style: { width: `${bw}px` },
-      data: {
-        ...data, polarity,
-        xFrac: clamp01((rel.x - bw / 2 - outputW) / Math.max(1, (stW - outputW) - bw)),
-        laneFrac: clamp01((rel.y - bh / 2 - lTop) / Math.max(1, (lBot - lTop) - bh)),
-      },
-    }])
-  } else {
-    addNodes([{
-      id: newId('blk'), type: 'block', zIndex: 2,
-      position: { x: pos.x - bw / 2, y: pos.y - bh / 2 }, style: { width: `${bw}px` },
-      data,
-    }])
+  if (st) {
+    const stPos = st.computedPosition || st.position
+    const { w: stW, h } = dims(st)
+    if (pos.x >= stPos.x && pos.x <= stPos.x + stW && pos.y >= stPos.y && pos.y <= stPos.y + h) {
+      appendToComp(data)
+      return
+    }
   }
+  const bw = 176, bh = 34
+  addNodes([{
+    id: newId('blk'), type: 'block', zIndex: 2,
+    position: { x: pos.x - bw / 2, y: pos.y - bh / 2 }, style: { width: `${bw}px` },
+    data,
+  }])
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -556,42 +634,25 @@ function libraryBlockData(b: LibraryBlock): any {
     block_id: b.id, version: b.version ?? 1, tags: [...(b.tags ?? [])], expanded: false }
 }
 
-// ⇢: an independent copy lands at the end of the station lane matching the block's polarity
-// (strict routing — drag if you want the other lane). Serves both palette and browse rows.
+// ⇢ / drop / ＋: an independent copy appended to the END of the composition list (position.y order).
+// Polarity is the block's own (no lanes); duplicates (same polarity + text) are refused, not stacked.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function appendToStationLane(data: any) {
-  const st = findNode(STATION)
-  if (!st) return
-  if (stationHasBlock(data.polarity, data.text)) { warnDuplicate(); return }
-  const { w: stW, h } = dims(st)
-  const outputW = (st.data.outputRatio ?? 0.3) * stW
-  const laneBoundary = HEADER + (st.data.posRatio ?? 0.5) * (h - HEADER - META)
-  const neg = data.polarity === 'negative'
-  const laneTop = neg ? laneBoundary : HEADER
-  const laneBot = neg ? (h - META) : laneBoundary
-  const lane = nodes.value.filter((n) => n.type === 'block' && n.parentNode === STATION
-    && (n.data.polarity === 'negative') === neg)
-  const bw = 176, bh = 34
-  const x = Math.min(appendX(lane.map((b) => ({ x: b.position.x, w: dims(b).w })), outputW), stW - bw - 8)
-  const y = Math.min(laneTop + 10, Math.max(laneTop, laneBot - bh - 4))
+function appendToComp(data: any) {
+  if (!findNode(STATION)) return
+  if (stationHasBlock(data.polarity ?? 'positive', data.text)) { warnDuplicate(); return }
   addNodes([{
-    id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2,
-    position: { x, y }, style: { width: `${bw}px` },
-    data: {
-      ...data,
-      xFrac: clamp01((x - outputW) / Math.max(1, (stW - outputW) - bw)),
-      laneFrac: clamp01((y - laneTop) / Math.max(1, (laneBot - laneTop) - bh)),
-    },
+    id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2, hidden: true,
+    position: { x: 0, y: nextCompY() }, style: { width: '176px' },
+    data: { ...data, expanded: false },
   }])
 }
 function useLibraryBlock(b: LibraryBlock) {
-  appendToStationLane(libraryBlockData(b))
+  appendToComp(libraryBlockData(b))
 }
 
-// ＋ New block: a fresh work-local block dropped straight into the station's positive lane, in the
-// widget's current category (custom under All/Favorites). Edited inline in the station.
-function newBlockInLane(category: string) {
-  appendToStationLane({ category: category || 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] })
+// ＋ New block (from the Library widget): a fresh work-local block appended to the composition.
+function newCompBlock(category: string) {
+  appendToComp({ category: category || 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] })
 }
 
 // ↥ Save a station block to the vault. The Library editor drawer opens prefilled (App mediates the
@@ -629,7 +690,7 @@ watch(() => props.linkPin?.nonce, () => {
 // A block "used" from the Library tab → an independent copy in the station lane (strict polarity routing).
 watch(() => props.insertBlocks?.nonce, () => { props.insertBlocks?.blocks.forEach(useLibraryBlock) })
 function doGenerate() {
-  const components = compBlocks.value.slice().sort((a, b) => a.position.x - b.position.x).map((b): PersistedComponent => ({
+  const components = compBlocks.value.map((b): PersistedComponent => ({ // compBlocks is already in list order (position.y)
     source: b.data.block_id ? 'library' : 'custom', block_id: b.data.block_id, version: b.data.version,
     name: b.data.name, text: String(b.data.text || '').trim(), polarity: b.data.polarity,
     category: b.data.category, tags: b.data.tags || [],
@@ -702,6 +763,7 @@ function loadDoc(doc: any) {
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
   favorites.value = [...(doc.favorites || [])] // per-work quick-access set for the widget's ★ filter
+  hideStationBlocks() // composition blocks render as the station's list, never free on the canvas
   widgetRevalidate.value++ // a freshly opened work re-reads the Library (categories/counts)
   if (vp) setViewport(vp)
   workId.value = doc.id
@@ -768,21 +830,22 @@ onSelectionContextMenu(({ event, nodes: sel }) => {
 })
 onPaneContextMenu(() => closeMenu())
 
-// Drag an internal splitter to adjust the Output↔composition (v) or Positive↔Negative (h) ratio.
-function startSplit(kind: 'v' | 'h', e: MouseEvent) {
+// Drag the single splitter to adjust the Generation↔Composition ratio (axis-aware; inverts when the
+// generation zone leads from the far side).
+function startSplit(e: MouseEvent) {
   const st = findNode(STATION)
   if (!st) return
-  const start = kind === 'v' ? e.clientX : e.clientY
-  const startRatio = kind === 'v' ? (st.data.outputRatio ?? 0.3) : (st.data.posRatio ?? 0.5)
+  const vert = (st.data.axis ?? 'h') === 'v'
+  const genFirst = st.data.genFirst ?? true
+  const start = vert ? e.clientY : e.clientX
+  const startRatio = st.data.ratio ?? 0.3
   const sd = dims(st) // style fallback → safe if the station isn't currently measured
-  const span = kind === 'v' ? sd.w : (sd.h - HEADER - META)
+  const span = vert ? sd.h : sd.w
   const onMove = (ev: MouseEvent) => {
     const zoom = viewport.value?.zoom ?? 1
-    const delta = ((kind === 'v' ? ev.clientX : ev.clientY) - start) / zoom
-    const r = Math.min(0.75, Math.max(0.15, startRatio + delta / span))
-    if (kind === 'v') st.data.outputRatio = r
-    else st.data.posRatio = r
-    relayoutBlocks()
+    let delta = ((vert ? ev.clientY : ev.clientX) - start) / zoom / Math.max(1, span)
+    if (!genFirst) delta = -delta
+    st.data.ratio = Math.min(0.8, Math.max(0.2, startRatio + delta))
   }
   const onUp = () => {
     window.removeEventListener('mousemove', onMove)
@@ -849,7 +912,7 @@ function startName(data: any, e: MouseEvent) {
         <Controls position="bottom-left" :show-interactive="false" />
 
         <template #node-station="{ data, selected }">
-          <NodeResizer :min-width="640" :min-height="360" :is-visible="selected" color="var(--accent)" @resize="relayoutBlocks()" />
+          <NodeResizer :min-width="560" :min-height="320" :is-visible="selected" color="var(--accent)" />
           <div class="station">
             <div class="sthd">
               <span class="sttitle">Generation</span>
@@ -863,9 +926,11 @@ function startName(data: any, e: MouseEvent) {
                 Generate <span class="gcost">{{ genCost === 0 ? 'free' : `◆ ${genCost}` }}</span>
               </button>
             </div>
-            <div class="stbody">
-              <div class="stoutput" :style="{ flexGrow: data.outputRatio ?? 0.3 }">
-                <div class="colhd">Output</div>
+
+            <!-- two zones: Generation | Composition — axis + lead order come from data.axis/genFirst -->
+            <div class="stbody" :class="{ v: (data.axis ?? 'h') === 'v', rev: !(data.genFirst ?? true) }">
+              <div class="genzone" :style="{ flexGrow: data.ratio ?? 0.3 }">
+                <div class="zlbl">Output</div>
                 <div class="outbody">
                   <img v-if="busy && preview" class="liveprev" :src="preview" alt="generating preview" />
                   <div v-else-if="drafts.length" class="topwrap nodrag" :class="{ selected: topSelected }" draggable="true"
@@ -879,18 +944,67 @@ function startName(data: any, e: MouseEvent) {
                   <span v-else-if="!busy" class="outhint">Generated images appear here — drag them out to keep.</span>
                 </div>
               </div>
-              <div class="vsplit nodrag" title="Drag to resize" @mousedown.stop.prevent="startSplit('v', $event)"></div>
-              <div class="stcomp" :style="{ flexGrow: 1 - (data.outputRatio ?? 0.3) }">
-                <div class="lane pos" :style="{ flexGrow: data.posRatio ?? 0.5 }"><span class="lanelbl">Positive</span></div>
-                <div class="hsplit nodrag" title="Drag to resize" @mousedown.stop.prevent="startSplit('h', $event)"></div>
-                <div class="lane neg" :style="{ flexGrow: 1 - (data.posRatio ?? 0.5) }"><span class="lanelbl">Negative</span></div>
+
+              <div class="stsplit nodrag" title="Drag to resize" @mousedown.stop.prevent="startSplit($event)"></div>
+
+              <div class="compzone" :style="{ flexGrow: 1 - (data.ratio ?? 0.3) }">
+                <div class="complist nodrag nowheel" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive"
+                  @click="stopIfInteractive" @drop="onCompDrop" @dragover.prevent>
+                  <div v-if="!compRows.length" class="comphint">
+                    {{ compFilter ? `No ${catName(compFilter)} blocks.` : 'Drop blocks from the Library widget to build the prompt.' }}
+                  </div>
+                  <div v-for="b in compRows" :key="b.nodeId" class="crow"
+                    :class="[b.polarity === 'negative' ? 'neg' : 'pos', { drop: compDropBefore === b.nodeId }]"
+                    :draggable="!!compFilter" @dragstart="onCompDragStart($event, b.nodeId)" @dragover="onCompDragOver($event, b.nodeId)" @dragend="onCompDragEnd">
+                    <div class="cr1">
+                      <span v-if="compFilter" class="grip" title="Drag to reorder">⠿</span>
+                      <span class="cdot2" :style="{ background: catColor(b.category) }" :title="catName(b.category)"></span>
+                      <input v-if="renamingId === b.nodeId" :id="`cname-${b.nodeId}`" class="cnamein nodrag" :value="b.name"
+                        @pointerdown.stop @click.stop @input="patchCompBlock({ nodeId: b.nodeId, patch: { name: ($event.target as HTMLInputElement).value } })"
+                        @blur="renamingId = null" @keyup.enter="renamingId = null" @keyup.esc="renamingId = null" />
+                      <span v-else class="cname" title="Double-click to rename" @dblclick.stop="startCompRename(b.nodeId)">{{ b.name }}</span>
+                      <span class="crsp"></span>
+                      <button class="cicon pol" :class="b.polarity === 'negative' ? 'neg' : 'pos'" :title="`Polarity: ${b.polarity} — click to flip`"
+                        @click.stop="toggleCompPolarity(b.nodeId)" @pointerdown.stop>{{ b.polarity === 'negative' ? '−' : '＋' }}</button>
+                      <button class="cicon" :title="b.expanded ? 'Collapse' : 'Expand to edit'"
+                        @click.stop="toggleCompExpand(b.nodeId)" @pointerdown.stop>{{ b.expanded ? '▾' : '▸' }}</button>
+                      <button class="cicon" title="Save to Library…" @click.stop="saveToLibrary(b.nodeId)" @pointerdown.stop>↥</button>
+                      <button class="cicon del" title="Delete from composition" @click.stop="deleteCompBlock(b.nodeId)" @pointerdown.stop>✕</button>
+                    </div>
+                    <textarea v-if="b.expanded" v-autosize class="ctext nodrag nowheel" :value="b.text" placeholder="tags…"
+                      @pointerdown.stop @click.stop
+                      @input="patchCompBlock({ nodeId: b.nodeId, patch: { text: ($event.target as HTMLTextAreaElement).value } }); autosize($event.target as HTMLTextAreaElement)"></textarea>
+                    <div v-else class="cprev">{{ b.text || 'empty' }}</div>
+                  </div>
+                </div>
+                <div class="comprail nodrag nowheel" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
+                  <div class="railnavs">
+                    <button class="cnav" :class="{ on: !compFilter }" @click.stop="compFilter = ''" @pointerdown.stop>
+                      <span class="gl">▦</span><span class="cn">All</span><span class="cc">{{ compBlocks.length }}</span>
+                    </button>
+                    <button v-for="c in compRail" :key="c.slug" class="cnav" :class="{ on: compFilter === c.slug }"
+                      @click.stop="compFilter = c.slug" @pointerdown.stop>
+                      <span class="cdot2" :style="{ background: c.color }"></span><span class="cn">{{ c.name }}</span><span class="cc">{{ c.count }}</span>
+                    </button>
+                  </div>
+                  <button v-if="compBlocks.length" class="clearall" title="Remove every block from the composition"
+                    @click.stop="clearComposition" @pointerdown.stop>🗑 Clear all</button>
+                </div>
               </div>
             </div>
+
             <div class="stmeta nowheel">
-              <div class="mrow"><b>+</b> <span class="mtext">{{ composed.positive || '—' }}</span>
-                <span class="tok" :class="{ over: posTokens > posLimit }" :title="`Positive prompt — ${posTokens} of ${posLimit} T5 tokens`">{{ posTokens }} / {{ posLimit }} tokens</span></div>
-              <div class="mrow neg"><b>−</b> <span class="mtext">{{ composed.negative || '—' }}</span>
-                <span class="tok" :class="{ over: negTokens > negLimit }" :title="`Negative prompt — ${negTokens} of ${negLimit} T5 tokens`">{{ negTokens }} / {{ negLimit }}</span></div>
+              <div class="mrows">
+                <div class="mrow"><b>+</b> <span class="mtext">{{ composed.positive || '—' }}</span>
+                  <span class="tok" :class="{ over: posTokens > posLimit }" :title="`Positive prompt — ${posTokens} of ${posLimit} T5 tokens`">{{ posTokens }} / {{ posLimit }}</span></div>
+                <div class="mrow neg"><b>−</b> <span class="mtext">{{ composed.negative || '—' }}</span>
+                  <span class="tok" :class="{ over: negTokens > negLimit }" :title="`Negative prompt — ${negTokens} of ${negLimit} T5 tokens`">{{ negTokens }} / {{ negLimit }}</span></div>
+              </div>
+              <div class="orient nodrag" title="Zone layout">
+                <button :class="{ on: (data.axis ?? 'h') === 'h' }" title="Side by side" @click.stop="setStationAxis('h')" @pointerdown.stop>⇔</button>
+                <button :class="{ on: (data.axis ?? 'h') === 'v' }" title="Stacked" @click.stop="setStationAxis('v')" @pointerdown.stop>⇕</button>
+                <button title="Swap which zone leads" @click.stop="swapStationZones" @pointerdown.stop>⇄</button>
+              </div>
             </div>
           </div>
         </template>
@@ -912,7 +1026,7 @@ function startName(data: any, e: MouseEvent) {
             <PromptWidget :data="data" :selected="selected" :favorites="favorites" :revalidate="widgetRevalidate"
               @toggle="toggleLibraryCollapse" @open-library="emit('open-library', $event)"
               @open-settings="emit('navigate', 'settings')"
-              @use="useLibraryBlock" @new-block="newBlockInLane" @toggle-favorite="toggleFavorite" />
+              @use="useLibraryBlock" @new-block="newCompBlock" @toggle-favorite="toggleFavorite" />
           </template>
           <template v-else>
             <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />
@@ -1007,14 +1121,18 @@ function startName(data: any, e: MouseEvent) {
   background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--border));border-radius:10px;padding:1px 6px}
 .gzcancel{border:1px solid var(--border-strong);border-radius:var(--radius);background:transparent;color:var(--text);font-weight:600;font-size:12px;padding:6px 14px;cursor:pointer}
 .gzcancel:hover{border-color:var(--danger,#e2483d);color:var(--danger,#e2483d)}
+/* two zones — axis (v = stacked) + lead order (rev = the generation zone leads from the far side) */
 .stbody{flex:1;display:flex;min-height:0}
-.stoutput{flex-basis:0;min-width:120px;display:flex;flex-direction:column;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
-.colhd{height:26px;flex-shrink:0;display:flex;align-items:center;padding:0 12px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);border-bottom:1px solid var(--border)}
-.outbody{flex:1;position:relative}
-.vsplit{width:6px;flex-shrink:0;cursor:col-resize;background:var(--border)}
-.vsplit:hover{background:var(--accent)}
-.hsplit{height:6px;flex-shrink:0;cursor:row-resize;background:var(--border)}
-.hsplit:hover{background:var(--accent)}
+.stbody.v{flex-direction:column}
+.stbody.rev:not(.v){flex-direction:row-reverse}
+.stbody.rev.v{flex-direction:column-reverse}
+.genzone{flex-basis:0;min-width:80px;min-height:0;display:flex;flex-direction:column;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
+.zlbl{height:24px;flex-shrink:0;display:flex;align-items:center;padding:0 12px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint)}
+.outbody{flex:1;min-height:0;position:relative}
+.stsplit{flex-shrink:0;background:var(--border)}
+.stbody:not(.v) .stsplit{width:6px;cursor:col-resize}
+.stbody.v .stsplit{height:6px;cursor:row-resize}
+.stsplit:hover{background:var(--accent)}
 .outhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;font-size:12px;color:var(--text-faint)}
 .liveprev{position:absolute;inset:8px;width:calc(100% - 16px);height:calc(100% - 16px);object-fit:contain;border-radius:8px;
   border:1px solid var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
@@ -1027,17 +1145,56 @@ function startName(data: any, e: MouseEvent) {
 .stackbadge{position:absolute;top:2px;right:2px;font-size:10px;font-weight:600;background:color-mix(in srgb,#000 58%,transparent);color:#fff;padding:2px 8px;border-radius:20px}
 .draghint{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:600;background:var(--accent);color:var(--on-accent);padding:3px 10px;border-radius:20px;opacity:0;transition:opacity .12s;pointer-events:none;white-space:nowrap}
 .topwrap:hover .draghint{opacity:1}
-.stcomp{flex-basis:0;min-width:0;display:flex;flex-direction:column}
-.lane{flex-basis:0;min-height:0;position:relative}
-.lane.pos{background:color-mix(in srgb,var(--accent) 6%,transparent)}
-.lane.neg{background:color-mix(in srgb,#e2483d 6%,transparent)}
-.lanelbl{position:absolute;left:10px;top:8px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint)}
-.stmeta{height:66px;flex-shrink:0;border-top:1px solid var(--border);background:var(--surface-1);padding:7px 12px;overflow:auto;font-size:11px;color:var(--text-dim)}
-.stmeta .mrow{display:flex;align-items:center;gap:8px;white-space:nowrap;margin-bottom:2px}
-.stmeta .mrow b{color:var(--text-faint);flex-shrink:0}.stmeta .mrow.neg b{color:#e2483d}
+/* composition zone = [ block list | category rail on the right ] */
+.compzone{flex-basis:0;min-width:0;min-height:0;display:flex;border-left:1px solid var(--border)}
+.stbody.rev:not(.v) .compzone{border-left:0;border-right:1px solid var(--border)}
+.stbody.v .compzone{border-left:0;border-top:1px solid var(--border)}
+.complist{flex:1;min-width:0;min-height:0;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:5px}
+.comphint{margin:auto;text-align:center;font-size:11.5px;color:var(--text-faint);padding:18px}
+.crow{position:relative;flex-shrink:0;border:1px solid var(--border);border-left:4px solid var(--pol);border-radius:8px;background:var(--surface-2);padding:5px 8px 6px;cursor:grab}
+.crow.pos{--pol:var(--ok,#3aa675)}
+.crow.neg{--pol:var(--danger,#e2483d);background:color-mix(in srgb,var(--danger,#e2483d) 7%,var(--surface-2))}
+.crow:hover{border-color:var(--border-strong);border-left-color:var(--pol)}
+.crow.drop{box-shadow:0 -2px 0 0 var(--accent)}
+.crow .cr1{display:flex;align-items:center;gap:6px;min-height:22px}
+.crow .grip{color:var(--text-faint);font-size:10px;cursor:grab;flex-shrink:0}
+.cdot2{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.cname{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crsp{margin-left:auto}
+.cicon{flex-shrink:0;border:1px solid var(--border-strong);background:var(--surface-1);color:var(--text-dim);border-radius:5px;height:21px;min-width:21px;font-size:11px;font-weight:700;line-height:1;cursor:pointer;padding:0 4px;display:inline-flex;align-items:center;justify-content:center}
+.cicon:hover{color:var(--accent);border-color:var(--accent)}
+.cicon.pol.pos{color:var(--ok,#3aa675);border-color:color-mix(in srgb,var(--ok,#3aa675) 50%,var(--border))}
+.cicon.pol.neg{color:var(--danger,#e2483d);border-color:color-mix(in srgb,var(--danger,#e2483d) 50%,var(--border))}
+.cicon.del:hover{color:var(--danger,#e2483d);border-color:var(--danger,#e2483d)}
+.cprev{font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.ctext{width:100%;min-height:52px;margin-top:5px;resize:vertical;font:inherit;font-size:11.5px;color:var(--text);background:var(--surface-1);border:1px solid var(--border);border-radius:5px;padding:6px;outline:none}
+.ctext:focus{border-color:var(--accent)}
+.comprail{width:118px;flex-shrink:0;border-left:1px solid var(--border);display:flex;flex-direction:column;padding:6px;background:color-mix(in srgb,var(--surface-1) 45%,transparent)}
+.railnavs{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px}
+.clearall{flex-shrink:0;margin-top:5px;border:1px solid var(--border);border-radius:var(--radius);background:transparent;color:var(--text-faint);font:inherit;font-size:10.5px;font-weight:600;padding:5px 6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
+.clearall:hover{color:var(--danger,#e2483d);border-color:var(--danger,#e2483d)}
+.cnamein{flex:1;min-width:0;font:inherit;font-size:12px;font-weight:600;color:var(--text);background:var(--surface-1);border:1px solid var(--accent);border-radius:4px;padding:1px 5px;outline:none}
+.cnav{display:flex;align-items:center;gap:6px;width:100%;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:11px;font-weight:600;padding:5px 6px;border-radius:var(--radius);cursor:pointer;text-align:left}
+.cnav:hover{background:var(--surface-3);color:var(--text)}
+.cnav.on{background:var(--nav-active);color:var(--accent)}
+.cnav .cdot2,.cnav .gl{width:8px;flex-shrink:0}
+.cnav .gl{text-align:center;font-size:11px}
+.cnav .cn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cnav .cc{margin-left:auto;color:var(--text-faint);font-weight:500;font-variant-numeric:tabular-nums;font-size:10px}
+.cnav.on .cc{color:var(--accent)}
+/* meta footer: assembled +/- prompts + the orientation control on the right */
+.stmeta{flex-shrink:0;border-top:1px solid var(--border);background:var(--surface-1);padding:7px 12px;display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-dim)}
+.stmeta .mrows{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;max-height:52px;overflow-y:auto}
+.stmeta .mrow{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.stmeta .mrow b{color:var(--text-faint);flex-shrink:0}.stmeta .mrow.neg b{color:var(--danger,#e2483d)}
 .stmeta .mrow .mtext{overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .stmeta .tok{flex-shrink:0;color:var(--text-faint);font-weight:600;font-variant-numeric:tabular-nums}
-.stmeta .tok.over{color:#e2483d}
+.stmeta .tok.over{color:var(--danger,#e2483d)}
+.orient{flex-shrink:0;display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.orient button{border:0;border-left:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font:inherit;font-size:12px;font-weight:600;padding:3px 8px;cursor:pointer}
+.orient button:first-child{border-left:0}
+.orient button.on{background:var(--nav-active);color:var(--accent)}
+.orient button:hover:not(.on){color:var(--text)}
 
 /* The min size must stay below any legit node box (×0.5 portrait ≈ 62×90) — a larger clamp makes the
    card outgrow the node while the image inside stays transform-scaled to the node box (right/bottom gap). */

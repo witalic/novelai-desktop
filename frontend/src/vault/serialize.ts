@@ -30,9 +30,9 @@ export interface LiveNode {
 // ---- persistence whitelists (domain + layout per node type; the rest is transient) ----
 const BLOCK_FIELDS = [
   'category', 'name', 'text', 'polarity', 'block_id', 'version', 'tags', // domain (frozen copy + vault ref)
-  'xFrac', 'laneFrac',                                                   // layout (station lane placement)
+  // layout: order in the station list is position.y; loose scratch blocks use position — no extra fields
 ] as const
-const STATION_FIELDS = ['outputRatio', 'posRatio'] as const
+const STATION_FIELDS = ['ratio', 'axis', 'genFirst'] as const // two-zone layout (Generation | Composition)
 const ZONE_FIELDS = ['role', 'collapsed', 'expandedH'] as const // prompt-widget collapse is layout
 // image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
 
@@ -123,7 +123,7 @@ export function canvasToWork(
   }))
 
   return {
-    schema_version: 3, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
+    schema_version: 4, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
     canvas: { viewport, nodes: canvasNodes },
     snapshots: [...snapshotsByKey.values()],
     images, stack,

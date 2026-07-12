@@ -14,7 +14,7 @@ from app.vault.models import WorkDoc
 
 log = logging.getLogger(__name__)
 
-CURRENT = 3
+CURRENT = 4
 
 
 def _migrate_1_to_2(raw: dict) -> dict:
@@ -57,7 +57,36 @@ def _migrate_2_to_3(raw: dict) -> dict:
     return raw
 
 
-_MIGRATIONS: dict[int, Callable[[dict], dict]] = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
+def _migrate_3_to_4(raw: dict) -> dict:
+    """v4: the station drops its free-placed blocks + positive/negative lanes for a two-zone layout
+    (Generation | Composition) with an ordered block list. The station node's ``outputRatio`` becomes
+    ``ratio`` (+ default ``axis``/``genFirst``); ``posRatio`` is gone. Composition blocks (children of
+    ``station``) lose ``xFrac``/``laneFrac`` and get an order = ``position.y``, seeded from their old
+    left-to-right x (the previous assembly order)."""
+    nodes = (raw.get("canvas") or {}).get("nodes", [])
+    for node in nodes:
+        if node.get("type") == "station":
+            data = node.get("data") or {}
+            data.setdefault("ratio", data.get("outputRatio", 0.3))
+            data.pop("outputRatio", None)
+            data.pop("posRatio", None)
+            data.setdefault("axis", "h")
+            data.setdefault("genFirst", True)
+            node["data"] = data
+    comp = [n for n in nodes if n.get("type") == "block" and n.get("parentNode") == "station"]
+    comp.sort(key=lambda n: (n.get("position") or {}).get("x", 0))
+    for i, n in enumerate(comp):
+        n["position"] = {"x": 0, "y": i * 10}
+        d = n.get("data")
+        if isinstance(d, dict):
+            d.pop("xFrac", None)
+            d.pop("laneFrac", None)
+    return raw
+
+
+_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
+    1: _migrate_1_to_2, 2: _migrate_2_to_3, 3: _migrate_3_to_4,
+}
 
 
 def load_doc(text: str) -> WorkDoc:

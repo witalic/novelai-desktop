@@ -178,10 +178,12 @@ interface CanvasNodeBase {
   zIndex?: number
 }
 
-// The generation station: [ Output | Positive / Negative lanes ]; internal areas are ratio-driven.
+// The generation station: two zones (Generation output | Composition block list). `ratio` is the
+// Generation zone's share; `axis` splits them side-by-side ('h') or stacked ('v'); `genFirst` picks
+// which zone leads (left/top vs right/bottom).
 export interface StationNode extends CanvasNodeBase {
   type: 'station'
-  data: { outputRatio?: number; posRatio?: number }
+  data: { ratio?: number; axis?: 'h' | 'v'; genFirst?: boolean }
 }
 
 export interface ZoneNode extends CanvasNodeBase {
@@ -203,9 +205,8 @@ export interface BlockNodeData {
   block_id?: string
   version?: number
   tags?: string[]
-  // layout — relative placement within the station's polarity lane
-  xFrac?: number
-  laneFrac?: number
+  // layout — a composition block's order in the station list is its `position.y` (like the old
+  // palette); loose scratch blocks use `position` directly. No per-lane fractions any more.
   // transient UI state — never persisted (serialize.ts whitelists it out)
   expanded?: boolean
   editing?: boolean

@@ -7,7 +7,7 @@ import { canvasToWork, workToCanvas, workToDrafts, GALLERY, STATION } from './se
 
 function anchors() {
   return [
-    { id: STATION, type: 'station', position: { x: 316, y: 40 }, style: { width: '760px', height: '460px' }, data: { outputRatio: 0.3, posRatio: 0.5 } },
+    { id: STATION, type: 'station', position: { x: 316, y: 40 }, style: { width: '760px', height: '460px' }, data: { ratio: 0.3, axis: 'h', genFirst: true } },
     { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, style: { width: '320px', height: '440px' }, data: { role: 'gallery' } },
   ]
 }
@@ -29,7 +29,7 @@ const viewport = { x: 40, y: 40, zoom: 0.7 }
 describe('canvasToWork', () => {
   it('splits a vault-path image into a file ref (no base64) and keeps its recipe', () => {
     const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'Test' })
-    expect(doc.schema_version).toBe(3)
+    expect(doc.schema_version).toBe(4)
     expect(doc.id).toBe('w1')
     expect(doc.title).toBe('Test')
     expect(doc.images).toHaveLength(1)
@@ -51,12 +51,12 @@ describe('canvasToWork', () => {
     expect(doc.images.map((i: any) => i.snapshot_id)).toEqual([doc.snapshots[0].id, doc.snapshots[1].id])
   })
 
-  it('whitelists block data: domain + lane layout survive, every transient flag is stripped', () => {
+  it('whitelists block data: domain survives, position is the order key, every transient flag is stripped', () => {
     const block = {
-      id: 'block-1', type: 'block', parentNode: STATION, position: { x: 400, y: 80 }, style: { width: '176px' }, zIndex: 2,
+      id: 'block-1', type: 'block', parentNode: STATION, position: { x: 0, y: 80 }, style: { width: '176px' }, zIndex: 2,
       data: {
         name: 'Char', text: '1girl', polarity: 'positive', category: 'character',
-        block_id: 'b1', version: 1, tags: ['x'], xFrac: 0.25, laneFrac: 0.5,
+        block_id: 'b1', version: 1, tags: ['x'], xFrac: 0.25, laneFrac: 0.5, // legacy fractions — no longer persisted
         expanded: true, editing: true, _cw: '176px', _ch: '34px', // transient — must never reach disk
       },
     }
@@ -64,8 +64,9 @@ describe('canvasToWork', () => {
     const saved = doc.canvas.nodes.find((n) => n.id === 'block-1')!
     expect(saved.data).toEqual({
       name: 'Char', text: '1girl', polarity: 'positive', category: 'character',
-      block_id: 'b1', version: 1, tags: ['x'], xFrac: 0.25, laneFrac: 0.5,
+      block_id: 'b1', version: 1, tags: ['x'], // no xFrac/laneFrac — order lives in position.y
     })
+    expect(saved.position).toEqual({ x: 0, y: 80 }) // position.y is the list order
     expect(saved.zIndex).toBe(2) // stacking order is layout — it persists
   })
 

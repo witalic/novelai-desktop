@@ -32,7 +32,7 @@ def _v1_doc() -> dict:
 
 def test_v1_migrates_to_current_with_ar_backfill():
     doc = load_doc(json.dumps(_v1_doc()))
-    assert doc.schema_version == CURRENT == 3
+    assert doc.schema_version == CURRENT == 4
     assert doc.images[0].ar == pytest.approx(832 / 1216)  # backfilled from the snapshot params
     assert doc.images[0].role == "gallery"                # model default covers v1 (no migration needed)
     assert doc.images[1].ar is None                       # dangling snapshot ref -> no backfill, no crash
@@ -58,10 +58,36 @@ def test_v2_palette_pins_become_favorites():
         "snapshots": [], "images": [], "stack": [],
     }
     doc = load_doc(json.dumps(raw))
-    assert doc.schema_version == CURRENT == 3
+    assert doc.schema_version == CURRENT == 4
     assert doc.favorites == ["blk-a"]                     # only the linked pin; the local custom is dropped
     ids = {n["id"] for n in doc.canvas["nodes"]}
     assert ids == {"lib", "st-1"}                         # both palette pins gone; the station copy survives
+
+
+def test_v3_station_becomes_two_zone_ordered_list():
+    """v4: station gains ratio/axis/genFirst (from outputRatio, no posRatio); composition blocks lose
+    xFrac/laneFrac and get order = position.y seeded from their old left-to-right x."""
+    raw = {
+        "schema_version": 3, "id": "w3", "favorites": [],
+        "canvas": {"viewport": {"x": 0, "y": 0, "zoom": 1}, "nodes": [
+            {"id": "station", "type": "station", "position": {"x": 316, "y": 40},
+             "data": {"outputRatio": 0.35, "posRatio": 0.5}},
+            {"id": "b-right", "type": "block", "parentNode": "station", "position": {"x": 500, "y": 90},
+             "data": {"name": "R", "text": "b", "polarity": "positive", "xFrac": 0.7, "laneFrac": 0.2}},
+            {"id": "b-left", "type": "block", "parentNode": "station", "position": {"x": 340, "y": 70},
+             "data": {"name": "L", "text": "a", "polarity": "positive", "xFrac": 0.1, "laneFrac": 0.1}},
+        ]},
+        "snapshots": [], "images": [], "stack": [],
+    }
+    doc = load_doc(json.dumps(raw))
+    assert doc.schema_version == CURRENT == 4
+    st = next(n for n in doc.canvas["nodes"] if n["id"] == "station")
+    assert st["data"] == {"ratio": 0.35, "axis": "h", "genFirst": True}  # outputRatio→ratio, posRatio dropped
+    order = {n["id"]: n["position"]["y"] for n in doc.canvas["nodes"] if n.get("parentNode") == "station"}
+    assert order == {"b-left": 0, "b-right": 10}           # ordered by old x (left before right)
+    for n in doc.canvas["nodes"]:
+        if n.get("parentNode") == "station":
+            assert "xFrac" not in n["data"] and "laneFrac" not in n["data"]
 
 
 def test_migration_is_idempotent_on_v2():
@@ -112,7 +138,7 @@ async def test_v1_on_disk_loads_lazily_and_reindexes(client):
     wj.write_text(json.dumps(raw), "utf-8")
 
     body = (await ac.get("/api/vault/works/w1")).json()
-    assert body["schema_version"] == 3
+    assert body["schema_version"] == 4
     assert body["images"][0]["ar"] == pytest.approx(832 / 1216)
     # Lazy migration: reads never rewrite the file — only the next save will.
     assert json.loads(wj.read_text("utf-8"))["schema_version"] == 1
