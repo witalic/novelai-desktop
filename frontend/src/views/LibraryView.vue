@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listExamples, listTags, reorderCategories, resolveBlocks, restoreCategories, saveBlock, saveCategory, type ExampleImage } from '../api'
+import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listTags, reorderCategories, resolveBlocks, restoreCategories, saveBlock, saveCategory } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
+import BlockEditorModal from '../components/BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { groupByCategory } from './librarySections'
 import type { CategoryCount, LibraryBlock, TagCount } from '../types'
@@ -241,27 +242,6 @@ async function moveSelectedTo(slug: string) {
   } catch (e) { push(e instanceof Error ? e.message : 'Move failed', 'err') }
 }
 
-// ---- quick create-category modal (opened from the block editor's "New category…") ----
-const catModal = ref<{ name: string; color: string; onCreated?: (slug: string) => void } | null>(null)
-function openCreateCategory(onCreated?: (slug: string) => void) {
-  catModal.value = { name: '', color: PALETTE[0], onCreated }
-}
-function closeCatModal() { catModal.value = null }
-async function saveCatModal() {
-  const m = catModal.value
-  if (!m) return
-  if (!m.name.trim()) { push('Category name is required', 'err'); return }
-  try {
-    const res = await saveCategory(m.name.trim(), m.color)
-    await loadCategories()
-    const cb = m.onCreated
-    catModal.value = null
-    if (cb) cb(res.slug)
-  } catch (e) {
-    push(e instanceof Error ? e.message : 'Save failed', 'err')
-  }
-}
-
 // ---- category manager modal: rename / recolor / delete / add / restore, all in one place ----
 const manageOpen = ref(false)
 const newCatName = ref('')
@@ -348,26 +328,8 @@ async function removeCategory(c: CategoryCount) {
   }
 }
 
-// ---- block-editor category selector: click-to-open, close outside ----
-const blockCatOpen = ref(false)
-const blockCatEl = ref<HTMLElement | null>(null)
-const blockCatStyle = ref<Record<string, string>>({})
-function toggleBlockCat(e: MouseEvent) {
-  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  blockCatStyle.value = { left: `${r.left}px`, top: `${r.bottom + 4}px`, width: `${r.width}px` }
-  blockCatOpen.value = !blockCatOpen.value
-}
-function chooseBlockCat(slug: string) {
-  if (editor.value) editor.value.block.category = slug
-  blockCatOpen.value = false
-}
-function newCategoryForBlock() {
-  blockCatOpen.value = false
-  openCreateCategory((slug) => { if (editor.value) editor.value.block.category = slug })
-}
 function onDocPointer(e: MouseEvent) {
   const t = e.target as Node
-  if (blockCatEl.value && !blockCatEl.value.contains(t)) blockCatOpen.value = false
   if (moveCatEl.value && !moveCatEl.value.contains(t)) moveCatOpen.value = false
   if (exportEl.value && !exportEl.value.contains(t)) exportOpen.value = false
 }
@@ -375,93 +337,34 @@ onMounted(() => document.addEventListener('mousedown', onDocPointer))
 onUnmounted(() => {
   document.removeEventListener('mousedown', onDocPointer)
   if (searchTimer) clearTimeout(searchTimer) // don't let a debounced load fire after teardown
-  if (exTimer) clearTimeout(exTimer)
   observer?.disconnect()
 })
 
-// ---- block editor drawer (converted to a centered modal in a later increment) ----
-const editor = ref<{ isNew: boolean; fromDraft?: boolean; block: LibraryBlock } | null>(null)
-const edTagInput = ref('')
-const allTags = ref<TagCount[]>([])
-const tagFocus = ref(false)
-
-// Example images for the block: generated images that share the most tags with it.
-const examples = ref<ExampleImage[]>([])
-const showExamples = ref(true) // header toggle; persists across opens
-const lightbox = ref<string | null>(null)
-let exTimer: ReturnType<typeof setTimeout> | null = null
-async function loadExamples() {
-  const tags = editor.value?.block.tags ?? []
-  if (!tags.length) { examples.value = []; return }
-  try { examples.value = await listExamples(tags, 12) } catch { examples.value = [] }
+// ---- block editor (shared BlockEditorModal) ----
+const editing = ref<{ block: LibraryBlock; isNew: boolean; fromDraft?: boolean } | null>(null)
+function openNew() {
+  editing.value = { isNew: true, block: { id: newId('block'), category: activeCategory.value || 'custom', name: '', text: '', polarity: 'positive', tags: [] } }
 }
-watch(() => editor.value?.block.tags, () => {
-  if (exTimer) clearTimeout(exTimer)
-  exTimer = setTimeout(loadExamples, 250)
-}, { deep: true })
-
-async function openNew() {
-  editor.value = { isNew: true, block: { id: newId('block'), category: activeCategory.value || 'custom', name: '', text: '', polarity: 'positive', tags: [] } }
-  edTagInput.value = ''; examples.value = []
-  allTags.value = await listTags('')
-}
-async function openEdit(b: LibraryBlock) {
-  editor.value = { isNew: false, block: { ...b, tags: [...b.tags] } }
-  edTagInput.value = ''
-  allTags.value = await listTags('')
-  loadExamples()
-}
-
-// A canvas-local block arriving to be saved: prefill the drawer. `immediate` covers the mount
-// that the App's tab switch just triggered (the nonce is already set when this view appears).
-watch(() => props.draftBlock?.nonce, async () => {
+function openEdit(b: LibraryBlock) { editing.value = { isNew: false, block: b } }
+// A canvas-local block arriving to be saved: open the editor prefilled. `immediate` covers the mount
+// the App's tab switch just triggered (the nonce is already set when this view appears).
+watch(() => props.draftBlock?.nonce, () => {
   const d = props.draftBlock
   if (!d) return
-  editor.value = { isNew: true, fromDraft: true, block: { ...d.block, tags: [...d.block.tags] } }
-  edTagInput.value = ''
-  allTags.value = await listTags('')
-  loadExamples()
+  editing.value = { isNew: true, fromDraft: true, block: d.block }
 }, { immediate: true })
-function closeEditor() { editor.value = null; blockCatOpen.value = false; examples.value = [] }
+function onEditorSaved(saved: LibraryBlock) {
+  const fromDraft = editing.value?.fromDraft
+  editing.value = null
+  refreshAll()
+  if (fromDraft) emit('draft-saved', saved) // a saved canvas draft links its palette pin back in Generate
+}
+function onEditorDeleted() { editing.value = null; refreshAll() }
 
-const edTagMatches = computed(() => {
-  const q = edTagInput.value.trim().toLowerCase()
-  const chosen = new Set(editor.value?.block.tags ?? [])
-  return allTags.value.filter((t) => !chosen.has(t.name) && (!q || t.name.toLowerCase().includes(q)))
-})
-function addEdTag(name: string) {
-  const n = name.trim()
-  if (!n || !editor.value) return
-  if (!editor.value.block.tags.includes(n)) editor.value.block.tags.push(n)
-  edTagInput.value = ''
-}
-function removeEdTag(name: string) {
-  if (editor.value) editor.value.block.tags = editor.value.block.tags.filter((t) => t !== name)
-}
-
-const canSaveBlock = computed(() =>
-  !!editor.value && editor.value.block.name.trim().length > 0 && editor.value.block.text.trim().length > 0,
-)
-async function saveEditor() {
-  if (!editor.value) return
-  const b = editor.value.block // category is already a slug chosen via the selector — no rename side effects
-  const fromDraft = !!editor.value.fromDraft
-  if (!b.name.trim()) { push('Block name is required', 'err'); return }
-  if (!b.text.trim()) { push('Prompt text is required', 'err'); return }
-  try {
-    await saveBlock(b)
-    push(editor.value.isNew ? 'Block created' : 'Block saved', 'ok')
-    closeEditor()
-    await refreshAll()
-    // A saved canvas draft links its palette pin back in Generate (version 1 — a fresh vault block).
-    if (fromDraft) emit('draft-saved', { ...b, tags: [...b.tags], version: 1 })
-  } catch (e) {
-    push(e instanceof Error ? e.message : 'Save failed', 'err')
-  }
-}
+// Grid tile 🗑 (delete without opening the editor).
 async function removeBlock(b: LibraryBlock) {
   if (!(await confirm({ title: 'Delete block', message: `Delete “${b.name || 'block'}”? This can't be undone.`, confirmLabel: 'Delete', danger: true }))) return
-  try { await deleteBlock(b.id); push('Block deleted', 'ok'); closeEditor(); await refreshAll() }
+  try { await deleteBlock(b.id); push('Block deleted', 'ok'); await refreshAll() }
   catch (e) { push(e instanceof Error ? e.message : 'Delete failed', 'err') }
 }
 </script>
@@ -586,82 +489,9 @@ async function removeBlock(b: LibraryBlock) {
 
     </div>
 
-    <!-- block editor — centered modal (form on the left, example images on the right) -->
-    <Teleport to="body">
-      <div v-if="editor" class="edit-back" @click="closeEditor">
-        <div class="edit" :class="{ noex: !showExamples }" @click.stop>
-          <div class="edit-hd">
-            <span class="ttl">{{ editor.isNew ? 'New block' : 'Edit block' }}</span>
-            <div class="extoggle">
-              <button :class="{ on: showExamples }" @click="showExamples = true">Examples on</button>
-              <button :class="{ on: !showExamples }" @click="showExamples = false">off</button>
-            </div>
-            <button class="x" title="Close" @click="closeEditor">✕</button>
-          </div>
-          <div class="edit-body">
-            <div class="medit">
-              <div class="fld"><label>Name</label><input v-model="editor.block.name" placeholder="Block name" /></div>
-              <div class="row2">
-                <div class="fld"><label>Category</label>
-                  <div class="catselect" ref="blockCatEl">
-                    <button class="catselbtn" @click="toggleBlockCat">
-                      <span class="cdot" :style="{ background: catColor(editor.block.category) }"></span>
-                      <span class="cn">{{ catName(editor.block.category) }}</span>
-                      <span class="chev">▾</span>
-                    </button>
-                    <div v-if="blockCatOpen" class="catseldrop" :style="blockCatStyle">
-                      <div v-for="c in categories" :key="c.slug" class="co" @click="chooseBlockCat(c.slug)">
-                        <span class="cdot" :style="{ background: c.color }"></span>{{ c.name }}
-                      </div>
-                      <div class="co create" @click="newCategoryForBlock">＋ New category…</div>
-                    </div>
-                  </div>
-                </div>
-                <div class="fld"><label>Polarity</label>
-                  <div class="seg">
-                    <button :class="{ on: editor.block.polarity === 'positive' }" @click="editor.block.polarity = 'positive'">＋ Positive</button>
-                    <button class="neg" :class="{ on: editor.block.polarity === 'negative' }" @click="editor.block.polarity = 'negative'">− Negative</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="fld"><label>Text (prompt tags) <span class="req">· required</span></label><textarea v-model="editor.block.text" placeholder="1girl, silver hair, …"></textarea></div>
-
-              <div class="fld"><label>Tags</label>
-                <div class="tagedit">
-                  <span v-for="t in editor.block.tags" :key="t" class="et">{{ t }} <b @click="removeEdTag(t)">✕</b></span>
-                  <input class="ti" v-model="edTagInput" placeholder="Search or add…"
-                    @focus="tagFocus = true" @blur="tagFocus = false" @keyup.enter="addEdTag(edTagInput)" />
-                </div>
-                <div v-if="tagFocus && (edTagMatches.length || edTagInput.trim())" class="accd">
-                  <div v-for="t in edTagMatches" :key="t.name" class="tsopt" @mousedown.prevent="addEdTag(t.name)">
-                    <span class="cn">{{ t.name }}</span><span class="cc">{{ t.count }}</span>
-                  </div>
-                  <div v-if="edTagInput.trim() && !allTags.some((t) => t.name === edTagInput.trim())" class="tsopt create" @mousedown.prevent="addEdTag(edTagInput)">
-                    <span class="cn">＋ Create “{{ edTagInput.trim() }}”</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="showExamples" class="mexamples">
-              <div class="exlbl">Examples — images sharing these tags</div>
-              <div v-if="examples.length" class="examples">
-                <img v-for="ex in examples" :key="ex.image_id" :src="`${ex.url}?w=400`" alt="example" loading="lazy"
-                  title="Click to enlarge" @click="lightbox = ex.url" />
-              </div>
-              <div v-else class="prev"><b>Inherited by images</b>Images generated with this block carry its tags automatically — the most-matching ones show up here.</div>
-            </div>
-          </div>
-          <div class="edit-ft">
-            <button v-if="!editor.isNew" class="del" @click="removeBlock(editor.block)">🗑 Delete</button>
-            <span class="sp"></span>
-            <button class="cancel" @click="closeEditor">Cancel</button>
-            <button class="save" :disabled="!canSaveBlock" @click="saveEditor">Save block</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <!-- block editor — shared centered modal (also used in-place by the canvas station) -->
+    <BlockEditorModal v-if="editing" :block="editing.block" :is-new="editing.isNew"
+      @close="editing = null" @saved="onEditorSaved" @deleted="onEditorDeleted" />
 
     <!-- category manager modal: rename · recolor · delete · add · restore defaults -->
     <Teleport to="body">
@@ -706,40 +536,6 @@ async function removeBlock(b: LibraryBlock) {
         <label class="swhex" title="Custom color…">
           <input type="color" :value="recolorCat?.color || '#738496'" @change="recolor(($event.target as HTMLInputElement).value)" />
         </label>
-      </div>
-    </Teleport>
-
-    <!-- quick create-category modal (from the block editor's "New category…") -->
-    <Teleport to="body">
-      <div v-if="catModal" class="catmodal-back" @click="closeCatModal">
-        <div class="catmodal" @click.stop>
-          <div class="cmhd">New category</div>
-          <div class="fld"><label>Name</label>
-            <input class="nameinput" v-model="catModal.name" placeholder="Category name" @keyup.enter="saveCatModal" />
-          </div>
-          <div class="fld"><label>Color</label>
-            <div class="cmswatches">
-              <span v-for="col in PALETTE" :key="col" class="sw" :class="{ on: catModal.color.toLowerCase() === col }"
-                :style="{ background: col }" @click="catModal.color = col"></span>
-              <label class="hexpick">
-                <input type="color" v-model="catModal.color" />
-                <span class="hexval">{{ catModal.color.toUpperCase() }}</span>
-              </label>
-            </div>
-          </div>
-          <div class="cmfoot">
-            <span class="sp"></span>
-            <button class="cancel" @click="closeCatModal">Cancel</button>
-            <button class="save" @click="saveCatModal">Create</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- example image lightbox -->
-    <Teleport to="body">
-      <div v-if="lightbox" class="lightbox" @click="lightbox = null">
-        <img :src="lightbox" alt="example" />
       </div>
     </Teleport>
 
@@ -863,102 +659,9 @@ async function removeBlock(b: LibraryBlock) {
 .loadmore{display:flex;align-items:center;justify-content:center;gap:8px;padding:22px;font-size:12px;color:var(--text-faint)}
 .loadmore span{font-variant-numeric:tabular-nums;opacity:.7}
 
-/* block editor — centered modal (teleported to body) */
-.edit-back{position:fixed;inset:0;z-index:1600;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px}
-.edit{width:min(760px,96vw);max-height:88vh;display:flex;flex-direction:column;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface-1);box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden}
-.edit.noex{width:min(520px,96vw)}
-.edit-hd{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700}
-.edit-hd .ttl{margin-right:auto}
-.edit-hd .extoggle{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;font-size:11.5px}
-.edit-hd .extoggle button{border:0;border-left:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font:inherit;font-weight:600;padding:4px 10px;cursor:pointer}
-.edit-hd .extoggle button:first-child{border-left:0}
-.edit-hd .extoggle button.on{background:var(--nav-active);color:var(--accent)}
-.edit-hd .x{border:0;background:transparent;color:var(--text-faint);font-size:16px;cursor:pointer}
-.edit-hd .x:hover{color:var(--text)}
-.edit-body{flex:1;min-height:0;overflow-y:auto;display:flex}
-.medit{flex:1;min-width:0;padding:16px 18px;display:flex;flex-direction:column;gap:13px}
-.row2{display:grid;grid-template-columns:1fr 160px;gap:12px}
-.mexamples{width:280px;flex-shrink:0;border-left:1px solid var(--border);padding:16px;overflow-y:auto;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
-.mexamples{display:flex;flex-direction:column}
-.mexamples .exlbl{font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint);margin-bottom:10px;flex-shrink:0}
-/* show ~6 examples (3 rows × 2); the rest scroll so the modal never stretches tall */
-.mexamples .examples{min-height:0;max-height:500px;overflow-y:auto;padding-right:4px}
-.fld{display:flex;flex-direction:column;gap:6px}
-.fld label{font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint)}
-.fld>input,.fld textarea{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);font:inherit;font-size:13px;outline:none}
-.fld textarea{min-height:92px;resize:vertical;line-height:1.5}
-.fld>input:focus,.fld textarea:focus{border-color:var(--accent)}
-.seg{display:flex;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-.seg button{flex:1;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12px;font-weight:600;padding:8px;cursor:pointer}
-.seg button.on{background:var(--accent);color:#fff}
-.seg button.neg.on{background:#e2483d}
-
-/* block-editor category selector */
-.catselect{position:relative}
-.catselbtn{width:100%;display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);font:inherit;font-size:13px;cursor:pointer}
-.catselbtn:hover{border-color:var(--border-strong)}
-.catselbtn .cdot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
-.catselbtn .cn{flex:1;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.catselbtn .chev{color:var(--text-faint);font-size:11px}
-.catseldrop{position:fixed;z-index:30;background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden;max-height:280px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.45)}
-.catseldrop .co{display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:12.5px;color:var(--text-dim);cursor:pointer}
-.catseldrop .co:hover{background:var(--surface-3)}
-.catseldrop .co .cdot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
-.catseldrop .co.create{color:var(--accent);font-weight:600;border-top:1px dashed var(--border)}
-
-.hexpick{display:inline-flex;align-items:center;gap:6px;margin-left:2px;padding-left:8px;border-left:1px solid var(--border-strong);cursor:pointer}
-.hexpick input[type=color]{width:18px;height:18px;padding:0;border:1px solid var(--border-strong);border-radius:4px;background:none;cursor:pointer}
-.hexval{font-size:11px;font-weight:600;color:var(--text-dim);font-family:ui-monospace,monospace}
-
-.tagedit{display:flex;flex-wrap:wrap;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:7px}
-.tagedit .ti{flex:1;min-width:80px;border:0;background:transparent;color:var(--text);font:inherit;font-size:12px;outline:none}
-.et{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--accent);background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:20px;padding:2px 8px}
-.et b{color:var(--text-faint);font-weight:400;cursor:pointer}
-.accd{margin-top:5px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;max-height:180px;overflow-y:auto}
-.tsopt{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:12px;color:var(--text-dim);cursor:pointer}
-.tsopt:hover{background:var(--surface-3)}
-.tsopt .cn{flex:1}
-.tsopt .cc{font-size:11px;color:var(--text-faint)}
-.tsopt.create{color:var(--accent);font-weight:600;border-top:1px dashed var(--border)}
-.examples{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.examples img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:7px;border:1px solid var(--border);background:var(--surface-2);cursor:zoom-in;transition:border-color .1s}
-.examples img:hover{border-color:var(--accent)}
-.prev{background:var(--surface-2);border:1px dashed var(--border-strong);border-radius:var(--radius);padding:9px 11px;font-size:11.5px;color:var(--text-dim);line-height:1.5}
-.prev b{color:var(--text-faint);font-weight:700;letter-spacing:.3px;text-transform:uppercase;font-size:10px;display:block;margin-bottom:3px}
-.edit-ft{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border)}
-.edit-ft .del{color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--border));background:transparent;border-radius:var(--radius);padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer}
-.edit-ft .del:hover{border-color:var(--danger);color:var(--danger)}
-.edit-ft .sp{flex:1}
-.edit-ft .cancel{border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);border-radius:var(--radius);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
-.edit-ft .save{border:0;background:var(--accent);color:var(--on-accent);border-radius:var(--radius);padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer}
-.edit-ft .save:disabled{opacity:.5;cursor:default}
-.fld label .req{color:var(--text-faint);font-weight:500}
 </style>
 
 <style>
-/* teleported-to-body elements need global (unscoped) styles */
-.lightbox{position:fixed;inset:0;z-index:2500;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:24px;cursor:zoom-out}
-.lightbox img{max-width:min(92vw,900px);max-height:92vh;object-fit:contain;border-radius:8px;box-shadow:0 12px 48px rgba(0,0,0,.6)}
-/* category modal is teleported to <body>, so its styles are global (not scoped to the view) */
-.catmodal-back{position:fixed;inset:0;z-index:1500;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:20px}
-.catmodal{width:min(360px,100%);background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:0 18px 48px rgba(0,0,0,.5);padding:18px 20px;display:flex;flex-direction:column;gap:14px}
-.catmodal .cmhd{font-size:15px;font-weight:650;color:var(--text)}
-.catmodal .fld{display:flex;flex-direction:column;gap:6px}
-.catmodal .fld label{font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint)}
-.catmodal .nameinput{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);font:inherit;font-size:13px;outline:none}
-.catmodal .nameinput:focus{border-color:var(--accent)}
-.catmodal .cmswatches{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
-.catmodal .cmswatches .sw{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer}
-.catmodal .cmswatches .sw.on{border-color:var(--text)}
-.catmodal .hexpick{display:inline-flex;align-items:center;gap:6px;margin-left:2px;padding-left:8px;border-left:1px solid var(--border-strong);cursor:pointer}
-.catmodal .hexpick input[type=color]{width:20px;height:20px;padding:0;border:1px solid var(--border-strong);border-radius:4px;background:none;cursor:pointer}
-.catmodal .hexval{font-size:11px;font-weight:600;color:var(--text-dim);font-family:ui-monospace,monospace}
-.catmodal .cmfoot{display:flex;align-items:center;gap:8px;margin-top:4px}
-.catmodal .cmfoot .del{color:#e8913a;border:1px solid color-mix(in srgb,#b65c02 40%,var(--border));background:transparent;border-radius:var(--radius);padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer}
-.catmodal .cmfoot .sp{flex:1}
-.catmodal .cmfoot .cancel{border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
-.catmodal .cmfoot .save{border:0;background:var(--accent);color:#fff;border-radius:var(--radius);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer}
-
 /* category manager modal (teleported → global) */
 .mng-back{position:fixed;inset:0;z-index:1500;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:24px}
 .mng{width:min(560px,96vw);max-height:88vh;display:flex;flex-direction:column;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface-1);box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden}
