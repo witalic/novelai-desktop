@@ -117,6 +117,13 @@ export async function restoreCategories(slugs: string[]): Promise<{ restored: st
   }), 'Restore failed')
 }
 
+// Persist a user-defined category order (drag-to-reorder); one order shared by every list.
+export async function reorderCategories(slugs: string[]): Promise<{ order: string[] }> {
+  return jsonOrThrow(await fetch('/api/vault/library/categories/order', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slugs }),
+  }), 'Reorder failed')
+}
+
 export async function saveCategory(name: string, color: string, slug?: string): Promise<{ slug: string; name: string; color: string }> {
   const resp = await fetch('/api/vault/library/categories', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

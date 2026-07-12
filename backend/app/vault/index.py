@@ -179,7 +179,7 @@ _BLOCK_SORTS = {  # whitelisted ORDER BY clauses — `sort` is validated at the 
 
 
 def list_blocks(conn, categories: list[str], tags: list[str], search: str | None, sort: str,
-                page: int, per_page: int):
+                page: int, per_page: int, category_order: list[str] | None = None):
     where, params = [], []
     if categories:
         ph = ",".join("?" * len(categories))
@@ -198,14 +198,21 @@ def list_blocks(conn, categories: list[str], tags: list[str], search: str | None
         )
         params += tags + [len(tags)]
     clause = ("WHERE " + " AND ".join(where)) if where else ""
-    order = _BLOCK_SORTS.get(sort, _BLOCK_SORTS["updated"])
+    order_params: list = []
+    if sort == "category" and category_order:
+        # Sections follow the user's category order (one order everywhere), not slug-alphabetical.
+        cases = " ".join(f"WHEN ? THEN {i}" for i in range(len(category_order)))
+        order = f"CASE b.category {cases} ELSE {len(category_order)} END, b.name"
+        order_params = list(category_order)
+    else:
+        order = _BLOCK_SORTS.get(sort, _BLOCK_SORTS["updated"])
     total = conn.execute(f"SELECT COUNT(*) FROM block b {clause}", params).fetchone()[0]
     rows = conn.execute(
         f"SELECT b.id,b.category,b.name,b.text,b.polarity,b.version,b.created_at,b.updated_at, "
         f"(SELECT GROUP_CONCAT(t.name, char(31)) FROM block_tag bt JOIN tag t ON t.id=bt.tag_id "
         f"WHERE bt.block_id=b.id) AS tags FROM block b {clause} "
         f"ORDER BY {order} LIMIT ? OFFSET ?",
-        params + [per_page, (page - 1) * per_page],
+        params + order_params + [per_page, (page - 1) * per_page],
     ).fetchall()
     return total, rows
 

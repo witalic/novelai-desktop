@@ -14,7 +14,7 @@ from app.vault import import_blocks, manager, presets as presets_svc, service
 from app.vault.import_blocks import ImportParseRequest, ImportParseResult, ImportSaveRequest, ImportSaveResult
 from app.vault.models import (
     BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage, MoveStatus, MoveVault,
-    Preset, PresetDoc, RestoreCategories, SaveCategory, SetDefault, SetFavorite, TagCount, VaultConfig,
+    Preset, PresetDoc, ReorderCategories, RestoreCategories, SaveCategory, SetDefault, SetFavorite, TagCount, VaultConfig,
     VaultPath, WorkDoc, WorksPage,
 )
 
@@ -182,6 +182,11 @@ def default_categories() -> list[CategoryDoc]:
 @router.post("/library/categories/restore")
 def restore_categories(body: RestoreCategories, settings: Settings = Depends(get_settings)) -> dict:
     return service.restore_categories(settings, body.slugs)
+
+
+@router.put("/library/categories/order")
+def reorder_categories(body: ReorderCategories, settings: Settings = Depends(get_settings)) -> dict:
+    return service.reorder_categories(settings, body.slugs)
 
 
 @router.delete("/library/categories/{slug}")

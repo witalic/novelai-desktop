@@ -242,3 +242,31 @@ async def test_default_categories_and_restore(client):
     assert res["restored"] == ["pose"]
     present2 = {c["slug"] for c in (await ac.get("/api/vault/library/categories")).json()}
     assert "pose" in present2
+
+
+async def test_reorder_categories(client):
+    ac, _ = client
+    before = [c["slug"] for c in (await ac.get("/api/vault/library/categories")).json()]
+    # Move the last category to the front; the rest keep their relative order.
+    new_order = [before[-1], *before[:-1]]
+    r = await ac.put("/api/vault/library/categories/order", json={"slugs": new_order})
+    assert r.status_code == 200
+    after = [c["slug"] for c in (await ac.get("/api/vault/library/categories")).json()]
+    assert after == new_order
+    # A category added after the reorder isn't in `order` yet → it sorts to the end.
+    made = (await ac.post("/api/vault/library/categories", json={"name": "Zzz", "color": "#2fb8c6"})).json()
+    after2 = [c["slug"] for c in (await ac.get("/api/vault/library/categories")).json()]
+    assert after2[:-1] == new_order and after2[-1] == made["slug"]
+
+
+async def test_reorder_drives_block_sections(client):
+    ac, _ = client
+    await ac.post("/api/vault/library/blocks", json=_block("c1", "character", name="Zed"))
+    await ac.post("/api/vault/library/blocks", json=_block("s1", "style", name="Aria", text="cinematic"))
+    # Default order → character before style.
+    order1 = [i["category"] for i in (await ac.get("/api/vault/library/blocks", params={"sort": "category"})).json()["items"]]
+    assert order1 == ["character", "style"]
+    # Put style first → the block sections follow, so pages arrive in display order.
+    await ac.put("/api/vault/library/categories/order", json={"slugs": ["style", "character"]})
+    order2 = [i["category"] for i in (await ac.get("/api/vault/library/blocks", params={"sort": "category"})).json()["items"]]
+    assert order2 == ["style", "character"]

@@ -163,6 +163,10 @@ class RestoreCategories(BaseModel):
     slugs: list[str]  # built-in category slugs to un-tombstone (bring back after deletion)
 
 
+class ReorderCategories(BaseModel):
+    slugs: list[str]  # the full category order (slugs), top to bottom
+
+
 class BlocksPage(BaseModel):
     items: list[BlockDoc]
     total: int

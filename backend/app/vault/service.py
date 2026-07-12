@@ -281,7 +281,9 @@ def list_blocks(settings: Settings, categories: list[str], tags: list[str], sear
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:
-        total, rows = index.list_blocks(conn, categories, tags, search or None, sort, page, per_page)
+        # Section order follows the category order (one order everywhere), so pages arrive in display order.
+        cat_order = [c.slug for c in catalog.read_all(vault)] if sort == "category" else None
+        total, rows = index.list_blocks(conn, categories, tags, search or None, sort, page, per_page, cat_order)
     finally:
         conn.close()
     items = [
@@ -414,6 +416,13 @@ def restore_categories(settings: Settings, slugs: list[str]) -> dict:
     """Un-tombstone deleted built-in categories the user wants back."""
     _guard_no_move()
     return {"restored": catalog.restore(_vault(settings), slugs)}
+
+
+def reorder_categories(settings: Settings, slugs: list[str]) -> dict:
+    """Persist a user-defined category order — one order shared by every category list."""
+    _guard_no_move()
+    catalog.reorder(_vault(settings), slugs)
+    return {"order": slugs}
 
 
 def image_examples(settings: Settings, tags: list[str], limit: int) -> list[GalleryItem]:

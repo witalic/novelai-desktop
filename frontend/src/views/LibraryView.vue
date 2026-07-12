@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listExamples, listTags, resolveBlocks, restoreCategories, saveBlock, saveCategory, type ExampleImage } from '../api'
+import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listExamples, listTags, reorderCategories, resolveBlocks, restoreCategories, saveBlock, saveCategory, type ExampleImage } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
@@ -305,6 +305,33 @@ async function addCategory() {
 async function restoreDefault(slug: string) {
   try { await restoreCategories([slug]); await refreshAll(); push('Category restored', 'ok') }
   catch (e) { push(e instanceof Error ? e.message : 'Restore failed', 'err') }
+}
+
+// ---- drag-to-reorder categories (persisted as one shared order) ----
+const dragSlug = ref<string | null>(null)
+const dragOverSlug = ref<string | null>(null)
+function onCatDragStart(slug: string, e: DragEvent) {
+  dragSlug.value = slug
+  recolorSlug.value = null
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+function onCatDragOver(slug: string) {
+  if (dragSlug.value && slug !== dragSlug.value) dragOverSlug.value = slug
+}
+function onCatDragEnd() { dragSlug.value = null; dragOverSlug.value = null }
+async function onCatDrop(targetSlug: string) {
+  const from = dragSlug.value
+  dragSlug.value = null; dragOverSlug.value = null
+  if (!from || from === targetSlug) return
+  const order = categories.value.map((c) => c.slug)
+  const fi = order.indexOf(from)
+  if (fi < 0 || !order.includes(targetSlug)) return
+  const [moved] = order.splice(fi, 1)
+  order.splice(order.indexOf(targetSlug), 0, moved) // drop before the target row
+  const bySlug = new Map(categories.value.map((c) => [c.slug, c]))
+  categories.value = order.map((s) => bySlug.get(s)!).filter(Boolean) // optimistic
+  try { await reorderCategories(order) }
+  catch (e) { push(e instanceof Error ? e.message : 'Reorder failed', 'err'); await loadCategories() }
 }
 async function removeCategory(c: CategoryCount) {
   const message = c.count > 0
@@ -647,7 +674,11 @@ async function removeBlock(b: LibraryBlock) {
           </div>
           <div class="mng-list" @scroll="recolorSlug = null">
             <div class="cmlist">
-              <div v-for="c in categories" :key="c.slug" class="cmrow">
+              <div v-for="c in categories" :key="c.slug" class="cmrow"
+                :class="{ dragging: dragSlug === c.slug, dragover: dragOverSlug === c.slug }"
+                @dragover.prevent="onCatDragOver(c.slug)" @drop.prevent="onCatDrop(c.slug)" @dragleave="dragOverSlug = null">
+                <span class="grip" title="Drag to reorder" draggable="true"
+                  @dragstart="onCatDragStart(c.slug, $event)" @dragend="onCatDragEnd">⠿</span>
                 <button class="cdot" :style="{ background: c.color }" title="Recolor" @click.stop="toggleRecolor($event, c.slug)"></button>
                 <input class="nm" :value="c.name" @change="renameCategory(c, ($event.target as HTMLInputElement).value)"
                   @keyup.enter="($event.target as HTMLInputElement).blur()" />
@@ -943,6 +974,11 @@ async function removeBlock(b: LibraryBlock) {
 .mng-list{flex:1;min-height:0;max-height:46vh;overflow-y:auto;padding:12px 18px}
 .mng .cmlist{display:flex;flex-direction:column;gap:4px}
 .mng .cmrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2)}
+.mng .cmrow.dragging{opacity:.45}
+.mng .cmrow.dragover{border-color:var(--accent);box-shadow:0 -2px 0 var(--accent)}
+.mng .cmrow .grip{flex-shrink:0;color:var(--text-faint);font-size:13px;line-height:1;cursor:grab;user-select:none;padding:0 1px}
+.mng .cmrow .grip:hover{color:var(--text-dim)}
+.mng .cmrow .grip:active{cursor:grabbing}
 .mng .cmrow .cdot{width:14px;height:14px;border-radius:50%;flex-shrink:0;cursor:pointer;border:2px solid transparent;padding:0}
 .mng .cmrow .cdot:hover{border-color:var(--text-faint)}
 .mng .cmrow .nm{flex:1;min-width:0;font:inherit;font-size:13px;font-weight:600;color:var(--text);background:transparent;border:1px solid transparent;border-radius:4px;padding:3px 6px;outline:none}
