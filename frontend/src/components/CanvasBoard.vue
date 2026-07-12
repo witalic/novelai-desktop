@@ -488,11 +488,15 @@ function onCompDragEnd() { compDragId.value = null; compDropBefore.value = undef
 
 // The three anchor zones only — the skeleton every work starts from.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// Default sizes are generous (the reworked widgets pack a rail + list) and the three anchors are laid
+// out with clear gaps so a fresh work never opens with them cramped/overlapping. FRESH_VIEWPORT frames
+// the whole spread.
+const FRESH_VIEWPORT = { x: 28, y: 24, zoom: 0.7 }
 function zoneNodes(): any[] {
   return [
-    { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '260px', height: '460px' } },
-    { id: STATION, type: 'station', position: { x: 316, y: 40 }, data: { ratio: 0.3, axis: 'h', genFirst: true }, zIndex: 0, style: { width: '760px', height: '460px' } },
-    { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, data: { role: 'gallery' }, zIndex: 0, style: { width: '320px', height: '440px' } },
+    { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '440px', height: '680px' } },
+    { id: STATION, type: 'station', position: { x: 520, y: 40 }, data: { ratio: 0.3, axis: 'h', genFirst: true }, zIndex: 0, style: { width: '1080px', height: '680px' } },
+    { id: GALLERY, type: 'zone', position: { x: 1640, y: 40 }, data: { role: 'gallery' }, zIndex: 0, style: { width: '460px', height: '680px' } },
   ]
 }
 
@@ -511,7 +515,7 @@ async function newWork() {
   title.value = ''
   setNodes(zoneNodes())
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries
-  setViewport({ x: 40, y: 40, zoom: 0.7 })
+  setViewport(FRESH_VIEWPORT)
   resetBaseline('idle')
   emit('new-work') // GenerateView re-seeds params from the default preset
 }
@@ -519,7 +523,8 @@ async function newWork() {
 onMounted(async () => {
   await checkVault()
   if (props.openWork) loadDoc(props.openWork)
-  else addNodes(zoneNodes()) // fresh start → empty anchor zones (no demo blocks; the Library holds those)
+  else { addNodes(zoneNodes()); setViewport(FRESH_VIEWPORT) } // fresh start → spaced anchor zones, framed
+
 })
 watch(() => props.openWork, (w) => { if (w) loadDoc(w) })
 
