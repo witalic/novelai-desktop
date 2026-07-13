@@ -143,6 +143,21 @@ async def test_save_rejects_future_schema_version(client):
     assert (await ac.put("/api/vault/works", json=w)).status_code == 400
 
 
+async def test_save_optimistic_lock_rejects_stale_base(client):
+    """H3: saving with an older base than the stored copy is a 409; a re-based save still works."""
+    ac, _ = client
+    assert (await ac.put("/api/vault/works", json=_work("w1"))).status_code == 200
+    base = (await ac.get("/api/vault/works/w1")).json()["updated_at"]
+    await asyncio.sleep(0.01)
+    w2 = _work("w1"); w2["updated_at"] = base  # another editor saves from the same base → bumps updated_at
+    assert (await ac.put("/api/vault/works", json=w2)).status_code == 200
+    w3 = _work("w1"); w3["updated_at"] = base  # our save still carries the stale base → conflict
+    assert (await ac.put("/api/vault/works", json=w3)).status_code == 409
+    latest = (await ac.get("/api/vault/works/w1")).json()["updated_at"]
+    w4 = _work("w1"); w4["updated_at"] = latest  # re-based on the latest → succeeds
+    assert (await ac.put("/api/vault/works", json=w4)).status_code == 200
+
+
 async def test_list_works_search_and_sort(client):
     ac, _ = client
     for wid, title, n in [("w1", "Alpha", 1), ("w2", "Beta", 3), ("w3", "alpha two", 2)]:

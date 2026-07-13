@@ -4,7 +4,7 @@
  * loaded WorkDoc (readonly in View); edits mutate the WorkDoc in place and autosave. The Composition
  * facet fills in next. */
 import { computed, nextTick, ref, watch } from 'vue'
-import { loadWork, saveWork, saveDownloads } from '../api'
+import { ApiError, loadWork, saveWork, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePreview } from '../composables/useImagePreview'
@@ -116,7 +116,8 @@ async function onClearQuick(ids: string[]) {
 // ---- autosave: any WorkDoc mutation (gallery structure or images) → debounced save ----
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveReq = 0
-watch(doc, () => { if (ready.value) markDirty() }, { deep: true }) // display prefs (cols/collapse/panels) persist from View too
+let suppressWatch = false // set while writing the server-returned updated_at back (not a user edit)
+watch(doc, () => { if (ready.value && !suppressWatch) markDirty() }, { deep: true }) // display prefs (cols/collapse/panels) persist from View too
 function markDirty() {
   saveState.value = 'saving'
   if (saveTimer) clearTimeout(saveTimer)
@@ -126,10 +127,17 @@ async function flush() {
   if (!doc.value) return
   const req = ++saveReq
   try {
-    await saveWork(doc.value)
-    if (req === saveReq) saveState.value = 'saved'
+    // doc.updated_at is the base the editor loaded — the server 409s if the stored copy is newer (H3).
+    const res = await saveWork(doc.value)
+    if (req !== saveReq) return
+    saveState.value = 'saved'
+    suppressWatch = true
+    doc.value.updated_at = res.updated_at // new base for the next save — must not re-trigger autosave
+    await nextTick(); suppressWatch = false
   } catch (e) {
-    if (req === saveReq) { saveState.value = 'idle'; push(e instanceof Error ? e.message : 'Save failed', 'err') }
+    if (req !== saveReq) return
+    if (e instanceof ApiError && e.status === 409) { push('This work changed elsewhere — reloading.', 'err'); load() }
+    else { saveState.value = 'idle'; push(e instanceof Error ? e.message : 'Save failed', 'err') }
   }
 }
 function onTitleInput(v: string) { if (doc.value) doc.value.title = v } // deep watch autosaves

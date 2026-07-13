@@ -24,7 +24,9 @@ log = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Millisecond precision so two saves in the same second get distinct timestamps — the optimistic-lock
+    # base comparison (H3) needs a strictly newer stored value to detect a concurrent edit.
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _vault(settings: Settings) -> Path:
@@ -47,9 +49,17 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
     try:
         # Full id (not a prefix) in the directory name — a short prefix can collide for two same-title works
         # created close together, and the second write_work would overwrite the first's work.json.
-        dir_name = index.find_work_dir(conn, doc.id) or f"{_now()[:10]}__{layout.slugify(doc.title)}__{doc.id}"
+        existing_dir = index.find_work_dir(conn, doc.id)
+        dir_name = existing_dir or f"{_now()[:10]}__{layout.slugify(doc.title)}__{doc.id}"
         work_dir = layout.safe_join(vault / "works", dir_name)
         doc.slug = layout.slugify(doc.title)
+        # Optimistic concurrency (H3): if the stored copy is newer than the base the client loaded
+        # (its incoming updated_at), another editor saved in between — refuse so it doesn't clobber.
+        # A client that sends no base (empty) opts out (fresh works, best-effort close beacon).
+        if existing_dir and doc.updated_at:
+            stored = index.work_updated_at(conn, doc.id)
+            if stored and stored > doc.updated_at:
+                raise HTTPException(status_code=409, detail="This work was changed elsewhere. Reload to get the latest.")
         doc.updated_at = _now()
         # Server owns the version; the client always sends current-shape data (M1). Refuse a doc claiming a
         # newer schema than this build understands rather than silently downgrading it (data-loss).

@@ -11,7 +11,7 @@ export async function saveWork(doc: WorkDoc): Promise<{ id: string; updated_at: 
   if (!resp.ok) {
     let detail = `Save failed (HTTP ${resp.status})`
     try { const b = await resp.json(); if (b?.detail) detail = b.detail } catch { /* non-JSON */ }
-    throw new Error(detail)
+    throw new ApiError(resp.status, detail) // status carries 409 (concurrent edit) so callers can reload
   }
   return resp.json()
 }

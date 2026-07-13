@@ -278,6 +278,12 @@ def find_work_dir(conn: sqlite3.Connection, work_id: str) -> str | None:
     return row[0] if row else None
 
 
+def work_updated_at(conn: sqlite3.Connection, work_id: str) -> str | None:
+    """The stored work's last-saved timestamp — used for the save-time concurrency check (H3)."""
+    row = conn.execute("SELECT updated_at FROM work WHERE id=?", (work_id,)).fetchone()
+    return row[0] if row else None
+
+
 # Whitelisted ORDER BY columns (the router validates `sort`; this is belt & braces against injection).
 _WORK_SORTS = {
     "updated": "updated_at",

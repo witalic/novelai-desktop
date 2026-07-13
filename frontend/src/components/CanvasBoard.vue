@@ -7,7 +7,7 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { getVaultConfig, listCategories, saveDownloads } from '../api'
+import { getVaultConfig, listCategories, loadWork, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
@@ -138,11 +138,16 @@ const favorites = ref<string[]>([])
 
 // Vault autosave (dirty flag, flush, save state). Owns the state + logic; the lifecycle (window listeners,
 // the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
-const { title, vaultReady, workId, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
+const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
   onBeforeUnload, refreshInterval, stopAutosave, resetBaseline } = useAutosave({
   nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
-  onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls,
+  onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
 })
+// A concurrent edit (409) → pull the authoritative copy and rebuild the canvas from it (H3).
+async function reloadWork() {
+  if (!workId.value) return
+  try { loadDoc(await loadWork(workId.value)) } catch { /* gone / offline — nothing to reload */ }
+}
 // After a save, point kept gallery images at their on-disk vault URL so later saves don't re-serialize their
 // base64 (a 30-image work would otherwise ship hundreds of MB per flush). Display is unaffected — the shown
 // src (shownSrc) still holds the data: URL until the next scale swaps in the sized thumbnail.
@@ -885,6 +890,7 @@ function loadDoc(doc: any) {
   widgetRevalidate.value++ // a freshly opened work re-reads the Library (categories/counts)
   if (vp) setViewport(vp)
   workId.value = doc.id
+  baseUpdatedAt.value = doc.updated_at || '' // optimistic-lock base for the next save (H3)
   title.value = doc.title || ''
   resetBaseline('saved') // the loaded state is the baseline — not dirty
 }

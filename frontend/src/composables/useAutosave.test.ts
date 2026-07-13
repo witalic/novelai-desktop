@@ -5,6 +5,7 @@ const saveWork = vi.fn()
 vi.mock('../api', () => ({
   saveWork: (...a: any[]) => saveWork(...a),
   getAppSettings: vi.fn().mockResolvedValue({ autosave_interval_s: 300 }),
+  ApiError: class ApiError extends Error { constructor(public status: number, msg: string) { super(msg) } },
 }))
 vi.mock('./useToast', () => ({ useToast: () => ({ push: vi.fn() }) }))
 

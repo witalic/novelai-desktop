@@ -2,7 +2,7 @@
  * leaving Generate, app close, and a periodic timer — never on every keystroke, so heavy works don't save
  * every few seconds. Owns the save state + logic; the component wires the lifecycle (listeners, hooks). */
 import { nextTick, ref, type Ref } from 'vue'
-import { getAppSettings, saveWork } from '../api'
+import { ApiError, getAppSettings, saveWork } from '../api'
 import { canvasToWork } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { useToast } from './useToast'
@@ -19,13 +19,15 @@ interface Deps {
   favorites: () => string[] // per-work quick-access set (Library block ids) — persisted with the work
   onNoVault: () => void // no vault configured → route the user to Settings
   onSaved?: (workId: string) => void // after a successful save: swap just-persisted data: URLs for vault URLs
+  onConflict?: () => void // a concurrent edit was detected (409) → the host reloads the work
 }
 
-export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVault, onSaved }: Deps) {
+export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVault, onSaved, onConflict }: Deps) {
   const toast = useToast()
   const title = ref('')
   const vaultReady = ref(false)
   const workId = ref(newId('work'))
+  const baseUpdatedAt = ref('') // updated_at the canvas loaded — sent as the optimistic-lock base (H3)
   const saveState = ref<SaveState>('idle')
   const savedAt = ref('')
 
@@ -71,7 +73,10 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
     if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return true }
     saveState.value = 'saving'
     try {
-      await saveWork(canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites()) as WorkDoc)
+      const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites()) as WorkDoc
+      doc.updated_at = baseUpdatedAt.value // optimistic-lock base — the server 409s if the stored copy is newer
+      const res = await saveWork(doc)
+      baseUpdatedAt.value = res.updated_at // new base for the next save
       lastSig = key
       dirty = false
       saveState.value = 'saved'
@@ -82,6 +87,12 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
       if (onSaved) { ignoreDirty = true; onSaved(workId.value); await nextTick(); ignoreDirty = false }
       return true
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409) { // concurrent edit → let the host reload; don't stay dirty
+        saveState.value = 'idle'
+        toast.push('This work changed elsewhere — reloading.', 'err')
+        onConflict?.()
+        return false
+      }
       dirty = true
       saveState.value = 'dirty'
       toast.push(e instanceof Error ? e.message : 'Save failed', 'err')
@@ -142,7 +153,7 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
   }
 
   return {
-    title, vaultReady, workId, saveState, savedAt,
+    title, vaultReady, workId, baseUpdatedAt, saveState, savedAt,
     changeKey, markDirty, flush, flushIfDirty, manualSave, onBeforeUnload, refreshInterval, stopAutosave, resetBaseline,
   }
 }
