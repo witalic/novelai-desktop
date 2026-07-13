@@ -145,6 +145,7 @@ def load_doc(text: str) -> WorkDoc:
     unknown fields are ignored by validation, so an older app degrades instead of crashing.
     """
     raw = json.loads(text)
+    raw = _sanitize(raw)  # tolerate a corrupt/hand-edited work.json instead of 500-ing the load (rebuild is lenient too)
     version = int(raw.get("schema_version") or 1)
     if version > CURRENT:
         log.warning(
@@ -156,3 +157,19 @@ def load_doc(text: str) -> WorkDoc:
         version += 1
         raw["schema_version"] = version
     return WorkDoc.model_validate(raw)
+
+
+def _sanitize(raw: dict) -> dict:
+    """Make a hostile/partial ``work.json`` loadable: coerce null collections to [], drop entries that
+    aren't dicts or lack an id. The rebuild path already skips such rows, so load should not 500 either."""
+    if not isinstance(raw, dict):
+        return {}
+    if not isinstance(raw.get("canvas"), dict):
+        raw["canvas"] = {}
+    for key in ("snapshots", "images", "stack", "favorites"):
+        v = raw.get(key)
+        if not isinstance(v, list):
+            raw[key] = []
+    for key in ("snapshots", "images", "stack"):
+        raw[key] = [e for e in raw[key] if isinstance(e, dict) and e.get("id")]
+    return raw

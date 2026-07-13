@@ -195,3 +195,15 @@ async def test_v1_on_disk_loads_lazily_and_reindexes(client):
         f.unlink()
     works = (await ac.get("/api/vault/works")).json()
     assert works["total"] == 1 and works["items"][0]["image_count"] == 1
+
+
+def test_load_doc_tolerates_hostile_forms():
+    """A corrupt/hand-edited work.json loads (dropping junk) instead of 500-ing — rebuild is lenient too."""
+    text = json.dumps({
+        "schema_version": CURRENT, "id": "w1", "title": "x",
+        "snapshots": None, "stack": None, "canvas": None, "favorites": None,  # null collections
+        "images": [{"id": "good", "role": "gallery"}, {"role": "gallery"}, "junk"],  # valid + id-less + non-dict
+    })
+    doc = load_doc(text)
+    assert [i.id for i in doc.images] == ["good"]  # the id-less and non-dict entries are dropped
+    assert doc.snapshots == [] and doc.stack == []
