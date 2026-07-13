@@ -124,6 +124,17 @@ function onThumbDrag(id: string, e: DragEvent) {
 // Blocks after a collapsed section are hidden until the next section (v-show, not v-if, so their DOM
 // scroll/focus survives the collapse — UI-design ledger). Range logic is unit-tested in gallerySource.
 const hiddenIds = computed(() => hiddenBlockIds(blocks.value))
+// Every block after a section header belongs to that section (until the next one) — used to draw a
+// left rail + indent so it's visually obvious which blocks a section groups (feedback item 1).
+const sectionMemberIds = computed(() => {
+  const ids = new Set<string>()
+  let open = false
+  for (const b of blocks.value) {
+    if (b.type === 'section') { open = true; continue }
+    if (open) ids.add(b.id)
+  }
+  return ids
+})
 const addOpen = ref<'head' | 'foot' | null>(null) // which ＋ Add block opened the menu — transient
 function toggleAdd(where: 'head' | 'foot') { addOpen.value = addOpen.value === where ? null : where }
 function newBlock(type: BlockType): GalleryBlock {
@@ -251,7 +262,7 @@ function scrollToBlock(id: string) {
     <div ref="bodyEl" class="gnbody nowheel" @scroll="addOpen = null">
       <div class="glist">
         <template v-for="b in blocks" :key="b.id">
-          <div v-show="!hiddenIds.has(b.id)" class="blk" :data-bid="b.id" :class="['blk-' + b.type, { drop: dragOverId === b.id, dragging: dragId === b.id }]"
+          <div v-show="!hiddenIds.has(b.id)" class="blk" :data-bid="b.id" :class="['blk-' + b.type, { drop: dragOverId === b.id, dragging: dragId === b.id, insec: sectionMemberIds.has(b.id) }]"
             @dragover.prevent="onBlkDragOver(b.id)" @drop.prevent="onBlkDrop(b.id)" @dragleave="dragOverId = null">
             <span class="bgrip nodrag" title="Drag to reorder" draggable="true"
               @pointerdown.stop @dragstart="onBlkDragStart(b.id, $event)" @dragend="onBlkDragEnd">⠿</span>
@@ -393,8 +404,14 @@ function scrollToBlock(id: string) {
 .bacts .del:hover{color:var(--danger);border-color:var(--danger)}
 .blk-grid .gridtool{padding-right:24px} /* clear the hover delete over the count */
 
+/* section grouping — a left rail brackets a section header and the blocks it owns (feedback item 1) */
+.blk.blk-section{margin:8px 0 0 9px;border-left:2px solid color-mix(in srgb,var(--accent) 55%,var(--border));border-radius:9px 9px 0 0;padding-left:20px}
+.blk.insec{margin-left:9px;border-left:2px solid color-mix(in srgb,var(--accent) 30%,var(--border));padding-left:20px}
+.blk.insec:hover{background:color-mix(in srgb,var(--surface-2) 45%,transparent)}
+.blk.blk-section .bgrip,.blk.insec .bgrip{left:7px}
+
 /* section — a group boundary bar */
-.b-section{display:flex;align-items:center;gap:8px;padding:8px 2px 7px;border-bottom:1px solid var(--border);margin-top:6px}
+.b-section{display:flex;align-items:center;gap:8px;padding:8px 2px 7px;border-bottom:1px solid var(--border);margin-top:0}
 .b-section .sectw{border:0;background:transparent;color:var(--text-faint);font-size:11px;cursor:pointer;padding:0;width:14px;flex-shrink:0}
 .b-section .sectw:hover{color:var(--text)}
 .b-section .secname{flex:1;min-width:0;border:0;background:transparent;color:var(--text);font:inherit;font-size:13.5px;font-weight:700;outline:none;padding:2px 4px;border-radius:4px}
