@@ -110,48 +110,51 @@ onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
     @back="closeEditor" @open-in-generate="(id) => emit('open', id)" />
 
   <div v-else class="works" @click="sortOpen = false">
-    <header class="head">
-      <h1>Works</h1>
-      <span class="count">{{ total }} saved</span>
-      <span class="hsp"></span>
-      <div class="search">
-        <span class="ic">⌕</span>
-        <input type="text" placeholder="Search by name…" :value="search" @input="onSearch(($event.target as HTMLInputElement).value)" />
-      </div>
-      <div class="sortwrap">
-        <button class="sortbtn" @click.stop="sortOpen = !sortOpen">Sort: {{ sortLabel() }}</button>
-        <div v-if="sortOpen" class="sortmenu" @click.stop>
-          <button v-for="o in SORT_OPTS" :key="o.key" class="srow" :class="{ on: sort === o.key }" @click="setSort(o.key)">{{ o.label }}</button>
+    <div class="whead">
+      <h1>Works</h1><span class="count">· {{ total }} saved</span>
+    </div>
+
+    <div class="wscroll">
+      <div class="wtoolbar">
+        <div class="search">
+          <span class="ic">⌕</span>
+          <input type="text" placeholder="Search by name…" :value="search" @input="onSearch(($event.target as HTMLInputElement).value)" />
         </div>
+        <span class="hsp"></span>
+        <div class="sortwrap">
+          <button class="sortbtn" @click.stop="sortOpen = !sortOpen">Sort: {{ sortLabel() }}</button>
+          <div v-if="sortOpen" class="sortmenu" @click.stop>
+            <button v-for="o in SORT_OPTS" :key="o.key" class="srow" :class="{ on: sort === o.key }" @click="setSort(o.key)">{{ o.label }}</button>
+          </div>
+        </div>
+        <button class="dirbtn" :title="direction === 'asc' ? 'Ascending' : 'Descending'" @click.stop="toggleDir">{{ direction === 'asc' ? '↑' : '↓' }}</button>
       </div>
-      <button class="dirbtn" :title="direction === 'asc' ? 'Ascending' : 'Descending'" @click.stop="toggleDir">{{ direction === 'asc' ? '↑' : '↓' }}</button>
-    </header>
 
-    <div v-if="noVault" class="empty">
-      <div class="emoji">▤</div>
-      <p>No vault folder chosen yet. Pick one in <b>Settings</b> to start saving works to disk.</p>
-    </div>
+      <div v-if="noVault" class="empty">
+        <div class="emoji">▤</div>
+        <p>No vault folder chosen yet. Pick one in <b>Settings</b> to start saving works to disk.</p>
+      </div>
 
-    <div v-else-if="!loading && !items.length && search.trim()" class="empty">
-      <div class="emoji">⌕</div>
-      <p>No works match “{{ search.trim() }}”.<br /><button class="linkbtn" @click="onSearch('')">Clear search</button></p>
-    </div>
+      <div v-else-if="!loading && !items.length && search.trim()" class="empty">
+        <div class="emoji">⌕</div>
+        <p>No works match “{{ search.trim() }}”.<br /><button class="linkbtn" @click="onSearch('')">Clear search</button></p>
+      </div>
 
-    <div v-else-if="!loading && !items.length" class="empty">
-      <div class="emoji">✦</div>
-      <p>No saved works yet. Build a composition in the Generate view — it auto-saves once you add a title or generate an image.</p>
-    </div>
+      <div v-else-if="!loading && !items.length" class="empty">
+        <div class="emoji">✦</div>
+        <p>No saved works yet. Build a composition in the Generate view — it auto-saves once you add a title or generate an image.</p>
+      </div>
 
-    <div v-else class="grid">
+      <div v-else class="grid">
       <div v-for="w in items" :key="w.id" class="card" role="button" tabindex="0"
         @click="openEditor(w.id, 'view')" @keyup.enter="openEditor(w.id, 'view')">
         <div class="thumb">
           <img v-if="w.preview_url" :src="w.preview_url" :alt="w.title" loading="lazy" />
           <span v-else class="ph">✦</span>
-          <div class="acts">
-            <button class="abtn" title="View" @click.stop="openEditor(w.id, 'view')">⤢ View</button>
-            <button class="abtn" title="Edit" @click.stop="openEditor(w.id, 'edit')">✎ Edit</button>
-            <button class="abtn del" title="Delete work" @click.stop="removeWork(w)">🗑</button>
+          <div class="cardacts">
+            <button class="cabtn" title="View" @click.stop="openEditor(w.id, 'view')">⤢</button>
+            <button class="cabtn" title="Open in Generate" @click.stop="emit('open', w.id)">↗</button>
+            <button class="cabtn del" title="Delete work" @click.stop="removeWork(w)">🗑</button>
           </div>
         </div>
         <div class="meta">
@@ -161,19 +164,22 @@ onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
       </div>
     </div>
 
-    <footer v-if="pages() > 1" class="pager">
-      <button :disabled="page <= 1" @click="go(page - 1)">‹ Prev</button>
-      <span>Page {{ page }} / {{ pages() }}</span>
-      <button :disabled="page >= pages()" @click="go(page + 1)">Next ›</button>
-    </footer>
+      <footer v-if="pages() > 1" class="pager">
+        <button :disabled="page <= 1" @click="go(page - 1)">‹ Prev</button>
+        <span>Page {{ page }} / {{ pages() }}</span>
+        <button :disabled="page >= pages()" @click="go(page + 1)">Next ›</button>
+      </footer>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.works { flex: 1; overflow-y: auto; padding: 26px 32px; min-width: 0; }
-.head { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
-.head h1 { font-size: 20px; font-weight: 650; }
-.count { font-size: 13px; color: var(--text-faint); }
+.works { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+.whead { display: flex; align-items: center; gap: 8px; height: 55px; padding: 0 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.whead h1 { font-size: 18px; font-weight: 700; margin: 0; }
+.whead .count { font-size: 13px; color: var(--text-faint); }
+.wscroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px; }
+.wtoolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
 .hsp { flex: 1; }
 .search { position: relative; }
 .search input { width: 240px; font: inherit; font-size: 12.5px; color: var(--text); background: var(--surface-2);
@@ -204,15 +210,12 @@ onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
 .thumb { position: relative; aspect-ratio: 3 / 4; background: var(--surface-3); display: flex; align-items: center; justify-content: center; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .thumb .ph { font-size: 30px; color: var(--text-faint); }
-.acts { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
-  background: linear-gradient(0deg, rgba(0,0,0,.5), rgba(0,0,0,.15)); opacity: 0; transition: opacity .12s; }
-.card:hover .acts { opacity: 1; }
-.abtn { border: 1px solid rgba(255,255,255,.35); background: rgba(0,0,0,.45); color: #fff; border-radius: 6px;
-  height: 30px; padding: 0 11px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 5px; }
-.abtn:hover { border-color: #fff; }
-.abtn.del { padding: 0 10px; }
-.abtn.del:hover { border-color: var(--danger, #e2483d); color: var(--danger, #e2483d); }
+.cardacts { position: absolute; top: 8px; right: 8px; display: flex; gap: 5px; opacity: 0; transition: opacity .12s; }
+.card:hover .cardacts { opacity: 1; }
+.cabtn { width: 28px; height: 28px; border: 1px solid rgba(255,255,255,.3); background: rgba(0,0,0,.55); color: #fff;
+  border-radius: 6px; font-size: 13px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.cabtn:hover { border-color: #fff; }
+.cabtn.del:hover { border-color: var(--danger, #e2483d); color: var(--danger, #e2483d); }
 .meta { padding: 10px 12px 12px; }
 .title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub { font-size: 11px; color: var(--text-faint); margin-top: 3px; }

@@ -21,7 +21,6 @@ const doc = ref<WorkDoc | null>(null)
 const loading = ref(true)
 const ready = ref(false) // gate autosave until the initial load (+ heal) settles
 const mode = ref<'view' | 'edit'>(props.initialMode ?? 'view')
-const facet = ref<'gallery' | 'composition'>('gallery')
 const saveState = ref<'idle' | 'saving' | 'saved'>('idle')
 
 async function load() {
@@ -107,7 +106,7 @@ async function onClearQuick(ids: string[]) {
 // ---- autosave: any WorkDoc mutation (gallery structure or images) → debounced save ----
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveReq = 0
-watch(doc, () => { if (ready.value && mode.value === 'edit') markDirty() }, { deep: true }) // View never persists
+watch(doc, () => { if (ready.value) markDirty() }, { deep: true }) // display prefs (cols/collapse/panels) persist from View too
 function markDirty() {
   saveState.value = 'saving'
   if (saveTimer) clearTimeout(saveTimer)
@@ -154,35 +153,26 @@ function downloadAll() { downloadUrls(galleryImages.value.map((im) => im.data.ur
           @input="onTitleInput(($event.target as HTMLInputElement).value)" />
         <span v-else class="wt">{{ doc.title || 'Untitled' }}</span>
         <span class="wc">· {{ galleryCount() }} image{{ galleryCount() === 1 ? '' : 's' }}</span>
+        <span class="saved" :class="saveState">{{ saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : '' }}</span>
       </template>
       <span v-else class="wt">Loading…</span>
 
       <span class="sp"></span>
 
       <div class="seg">
-        <button :class="{ on: facet === 'gallery' }" @click="facet = 'gallery'">Gallery</button>
-        <button :class="{ on: facet === 'composition' }" @click="facet = 'composition'">Composition</button>
-      </div>
-      <div class="seg">
         <button :class="{ on: mode === 'view' }" @click="mode = 'view'">View</button>
         <button :class="{ on: mode === 'edit' }" @click="mode = 'edit'">Edit</button>
       </div>
-      <span v-if="mode === 'edit'" class="saved" :class="saveState">{{ saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : '' }}</span>
       <button class="ic" title="Open in the Generate canvas" @click="emit('openInGenerate', workId)">↗ Generate</button>
       <button class="ic" title="Download all gallery images" @click="downloadAll">⤓</button>
     </div>
 
     <div v-if="loading" class="wstate">Loading work…</div>
     <div v-else-if="doc" class="wbody">
-      <!-- Gallery facet: the shared block-stack (readonly in View). -->
-      <div v-show="facet === 'gallery'" class="facet">
-        <GalleryStack v-if="galleryData" :data="galleryData" :images="galleryImages" :readonly="mode === 'view'"
-          @favorite="onFavorite" @preview="preview" @to-quick="onToQuick" @delete-img="onDeleteImg"
-          @clear-quick="onClearQuick" @download="downloadUrls" @drop-on-grid="onDropOnGrid" @drop-on-quick="onDropOnQuick" />
-        <div v-else class="placeholder">This work has no gallery zone.</div>
-      </div>
-      <!-- Composition facet: the prompt composition, full-page. -->
-      <div v-show="facet === 'composition'" class="facet placeholder">Composition facet — the prompt composition lands here (increment 6).</div>
+      <GalleryStack v-if="galleryData" :data="galleryData" :images="galleryImages" :readonly="mode === 'view'" embedded
+        @favorite="onFavorite" @preview="preview" @to-quick="onToQuick" @delete-img="onDeleteImg"
+        @clear-quick="onClearQuick" @download="downloadUrls" @drop-on-grid="onDropOnGrid" @drop-on-quick="onDropOnQuick" />
+      <div v-else class="placeholder">This work has no gallery zone.</div>
     </div>
   </div>
 </template>
@@ -207,7 +197,6 @@ function downloadAll() { downloadUrls(galleryImages.value.map((im) => im.data.ur
 .ic:hover { color: var(--accent); border-color: var(--accent); }
 .wstate { padding: 40px; text-align: center; color: var(--text-faint); }
 .wbody { flex: 1; min-height: 0; display: flex; }
-.facet { flex: 1; min-width: 0; display: flex; }
-.facet > * { flex: 1; min-width: 0; }
+.wbody > * { flex: 1; min-width: 0; }
 .placeholder { display: flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: 13px; padding: 40px; text-align: center; }
 </style>

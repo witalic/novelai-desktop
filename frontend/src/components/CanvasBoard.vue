@@ -611,7 +611,7 @@ function zoneNodes(): any[] {
   return [
     { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '440px', height: '680px' } },
     { id: STATION, type: 'station', position: { x: 520, y: 40 }, data: { ratio: 0.3, axis: 'h', genFirst: true }, zIndex: 0, style: { width: '1080px', height: '680px' } },
-    { id: GALLERY, type: 'zone', position: { x: 1640, y: 40 }, data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', source: 'all', cols: 3 }] }, zIndex: 0, style: { width: '760px', height: '640px' } },
+    { id: GALLERY, type: 'zone', position: { x: 1640, y: 40 }, data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }] }, zIndex: 0, style: { width: '760px', height: '680px' } },
   ]
 }
 

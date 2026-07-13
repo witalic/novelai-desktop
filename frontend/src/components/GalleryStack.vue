@@ -18,6 +18,7 @@ const props = defineProps<{
   title?: string
   selected?: boolean // host selection → accent border (matches the other canvas widgets)
   readonly?: boolean // View mode: hide add/edit/delete/drag affordances (Phase 2 Works view)
+  embedded?: boolean // full-page host (Works): drop the node chrome (border/radius) + the duplicated title
 }>()
 const emit = defineEmits<{
   favorite: [string]; preview: [string]
@@ -76,13 +77,16 @@ function gridHidden(b: GalleryBlock): number {
 
 const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
 // Server-sized thumbnail for a cell; a fresh `data:` URL can't be resized so it's used as-is.
+// View mode serves the full-resolution original — the `?w=` downscaling is a canvas-perf trade-off,
+// not something to inflict on a full-page reading view (the earlier softness was a bug there).
 function thumbSrc(url: string | undefined, cols: number): string {
   if (!url || url.startsWith('data:')) return url || ''
+  if (props.embedded) return url // full-page Works host (view or edit): full-resolution, no downscale
   const cellPx = Math.round(700 / cols) // node ≈ 700px wide inside padding
   return `${url}?w=${Math.round(cellPx * dpr * 1.4)}`
 }
 
-function setCols(b: GalleryBlock, cols: 2 | 3 | 4) { if (b.type === 'grid') b.cols = cols } // in-place → tracked + autosaved
+function setCols(b: GalleryBlock, cols: 2 | 3 | 4 | 5 | 6 | 7 | 8) { if (b.type === 'grid') b.cols = cols } // in-place → tracked + autosaved
 
 // ---- compose the block stack (add / delete; drag-reorder lands in a later increment) ----
 type BlockType = GalleryBlock['type']
@@ -357,12 +361,14 @@ function onOutDrop(targetId: string) {
 </script>
 
 <template>
-  <div class="gnode" :class="{ selected, readonly }" @click="addOpen = false; metaScopeOpen = null">
+  <div class="gnode" :class="{ selected, readonly, embedded }" @click="addOpen = false; metaScopeOpen = null">
     <div class="gnhd">
-      <span class="ic">▦</span>
-      <span class="ttl">Gallery</span>
-      <span v-if="title" class="ctx">· {{ title }}</span>
-      <span class="ctx">· {{ total }} image{{ total === 1 ? '' : 's' }}</span>
+      <template v-if="!embedded">
+        <span class="ic">▦</span>
+        <span class="ttl">Gallery</span>
+        <span v-if="title" class="ctx">· {{ title }}</span>
+        <span class="ctx">· {{ total }} image{{ total === 1 ? '' : 's' }}</span>
+      </template>
       <span class="hsp"></span>
       <button class="qtoggle nodrag" :class="{ on: outlineOpen }" title="Outline — navigate blocks" @pointerdown.stop @click.stop="outlineOpen = !outlineOpen">
         ☰ Outline
@@ -403,6 +409,7 @@ function onOutDrop(targetId: string) {
           <div v-show="!hiddenIds.has(b.id)" class="blk" :data-bid="b.id"
             :class="['blk-' + b.type, { drop: dragOverId === b.id, dragging: dragId === b.id, sel: selectedId === b.id,
               sechead: sectionInfo.get(b.id)?.head, seccollapsed: b.type === 'section' && b.collapsed,
+              secempty: sectionInfo.get(b.id)?.head && sectionMemberCount(b.id) === 0,
               insec: sectionInfo.get(b.id)?.member, seclast: sectionInfo.get(b.id)?.last }]"
             :style="{ '--sec': secColor(b.id) }" @click.stop="selectBlock(b.id)"
             @dragover.prevent="onBlkDragOver(b.id)" @drop.prevent="onBlkDrop(b.id)" @dragleave="dragOverId = null">
@@ -428,7 +435,7 @@ function onOutDrop(targetId: string) {
                 <button class="ctgl nodrag" :title="b.collapsed ? 'Expand grid' : 'Collapse to one row'"
                   @pointerdown.stop @mousedown.stop @click.stop="b.collapsed = !b.collapsed"><span class="chev">{{ b.collapsed ? '▸' : '▾' }}</span></button>
                 <div class="cols">
-                  <button v-for="n in ([2, 3, 4] as const)" :key="n" class="nodrag" :class="{ on: b.cols === n }"
+                  <button v-for="n in ([2, 3, 4, 5, 6, 7, 8] as const)" :key="n" class="nodrag" :class="{ on: b.cols === n }"
                     @pointerdown.stop @click.stop="setCols(b, n)">{{ n }}</button>
                 </div>
                 <span class="gtcount">{{ gridImages(b).length }} image{{ gridImages(b).length === 1 ? '' : 's' }}</span>
@@ -545,19 +552,22 @@ function onOutDrop(targetId: string) {
 .gnode{width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;border:1.5px solid var(--border-strong);border-radius:12px;
   background:color-mix(in srgb,var(--surface-1) 92%,transparent)}
 .gnode.selected{border-color:var(--accent)}
+/* Embedded (full-page Works host): no card chrome — the page's top bar already frames the work. */
+.gnode.embedded{border:0;border-radius:0;background:transparent}
 /* View mode (readonly): hide edit affordances, make inline editors non-interactive. Nav (Outline/Quick,
    collapse toggles), preview, download and favourite-state display stay. */
+/* !important: some of these have hover rules (e.g. `.blk:hover .bacts{display:block}`) of equal
+   specificity that would otherwise re-show the control on hover in View. */
 .gnode.readonly .addwrap,
 .gnode.readonly .bgrip,
 .gnode.readonly .bacts,
 .gnode.readonly .gtdel,
-.gnode.readonly .cols,
 .gnode.readonly .thb.toq,
 .gnode.readonly .thb.del,
 .gnode.readonly .maddfield,
 .gnode.readonly .mrm,
 .gnode.readonly .qpclear,
-.gnode.readonly .msbtn .car{display:none}
+.gnode.readonly .msbtn .car{display:none !important}
 .gnode.readonly .secname,
 .gnode.readonly .b-heading,
 .gnode.readonly .b-text,
@@ -602,7 +612,7 @@ function onOutDrop(targetId: string) {
 /* section grouping (item 1): a tinted, colour-coded band brackets a section header + the blocks it owns.
    Consecutive sections get distinct `--sec` hues; members cancel the list gap so the band is continuous. */
 .blk.sechead{margin:12px 0 0;padding:1px 8px 0 20px;border:1px solid color-mix(in srgb,var(--sec) 42%,var(--border));border-bottom:0;border-radius:11px 11px 0 0;background:color-mix(in srgb,var(--sec) 10%,transparent)}
-.blk.seccollapsed{border-bottom:1px solid color-mix(in srgb,var(--sec) 42%,var(--border));border-radius:11px}
+.blk.seccollapsed,.blk.secempty{border-bottom:1px solid color-mix(in srgb,var(--sec) 42%,var(--border));border-radius:11px}
 .blk.insec{margin:-8px 0 0;padding:3px 8px 3px 20px;border-radius:0;border-left:1px solid color-mix(in srgb,var(--sec) 42%,var(--border));border-right:1px solid color-mix(in srgb,var(--sec) 42%,var(--border));background:color-mix(in srgb,var(--sec) 5%,transparent)}
 .blk.insec:hover{background:color-mix(in srgb,var(--sec) 11%,transparent)}
 .blk.seclast{border-bottom:1px solid color-mix(in srgb,var(--sec) 42%,var(--border));border-radius:0 0 11px 11px;margin-bottom:6px;padding-bottom:8px}
