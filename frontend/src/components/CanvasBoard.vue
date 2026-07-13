@@ -21,6 +21,7 @@ import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
+import GalleryWidget from './GalleryWidget.vue'
 import BlockEditorModal from './BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -117,7 +118,6 @@ const negLimit = computed(() => modelSpec(props.params.model)?.negative_token_li
 // Loose blocks/images not inside any anchor zone are scratch — saved with the work, but with no
 // role in generation or galleries.
 const scratchCount = computed(() => nodes.value.filter((n) => (n.type === 'block' || n.type === 'image') && !ANCHORS.has(n.parentNode ?? '')).length)
-const childCount = (id: string) => nodes.value.filter((n) => n.parentNode === id).length
 
 const flowRef = ref<HTMLElement | null>(null)
 const topSelected = ref(false)
@@ -215,9 +215,8 @@ function onCanvasDrop(e: DragEvent) {
   const gp = gal ? (gal.computedPosition || gal.position) : { x: 0, y: 0 } // top-level → computedPosition == position
   const inGallery = !!gal && pos.x >= gp.x && pos.x <= gp.x + gd.w && pos.y >= gp.y && pos.y <= gp.y + gd.h
   if (inGallery && gal) {
-    addNodes([{ id, type: 'image', parentNode: GALLERY, zIndex: 3, style: { width: `${w}px`, height: `${h}px` },
-      position: { x: pos.x - gp.x - w / 2, y: pos.y - gp.y - h / 2 }, data }])
-    nudgeById(id)
+    // Kept to the gallery → a hidden child rendered inside the gallery widget, not free on the canvas.
+    addNodes([{ id, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
   } else {
     addNodes([{ id, type: 'image', position: { x: pos.x - w / 2, y: pos.y - h / 2 }, zIndex: 3,
       style: { width: `${w}px`, height: `${h}px` }, data }])
@@ -242,9 +241,8 @@ function keepDraftsBatch(ids: string[], pos?: { x: number; y: number }) {
     const { w, h } = spawnSize(ar)
     const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: draft.created_at || new Date().toISOString() }
     if (inGallery && gal) {
-      // Land far below existing gallery images (huge staggered y) so the re-arrange appends them
-      // after what's already kept — never on top of it.
-      addNodes([{ id: did, type: 'image', parentNode: GALLERY, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 12, y: 1e6 + i }, data }])
+      // Kept to the gallery → hidden children rendered inside the gallery widget (no free placement).
+      addNodes([{ id: did, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
     } else {
       const base = pos ?? { x: 60, y: 60 }
       addNodes([{ id: did, type: 'image', zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: base.x - w / 2 + i, y: base.y - h / 2 + i }, data }])
@@ -254,9 +252,8 @@ function keepDraftsBatch(ids: string[], pos?: { x: number; y: number }) {
   })
   if (!placed.length) return
   nextTick(() => {
-    if (inGallery && gal) {
-      arrangeImages(nodes.value.filter((n) => n.type === 'image' && n.parentNode === GALLERY)) // pack the whole gallery
-    } else {
+    // Gallery images are hidden children (the widget lays them out) — only scratch drops need arranging.
+    if (!(inGallery && gal)) {
       arrangeImages(placed.map((id) => findNode(id)).filter(Boolean), pos ? new Map([['', pos]]) : undefined)
     }
     placed.forEach((id) => emit('take', id))
@@ -288,10 +285,6 @@ function nudgeIfOverlapping(live: any) {
   let guard = 0
   while (guard < 80 && hits(pos)) { pos.x += 16; guard += 1 }
   live.position = pos
-}
-function nudgeById(id: string) {
-  const live = findNode(id)
-  if (live) nudgeIfOverlapping(live)
 }
 
 // ---- grid arrange (reference scaling + the image pipeline live in useImagePipeline) ----
@@ -396,6 +389,20 @@ const compRail = computed(() => {
 function hideStationBlocks() {
   for (const n of nodes.value) if (n.parentNode === STATION && n.type === 'block') n.hidden = true
 }
+// Gallery images render only inside the structured gallery widget's grids — the nodes stay (their
+// domain is WorkDoc.images) but are hidden on the canvas, like station composition blocks.
+function hideGalleryImages() {
+  for (const n of nodes.value) if (n.parentNode === GALLERY && n.type === 'image') n.hidden = true
+}
+// The gallery's image nodes, oldest→newest, handed to the GalleryWidget for its grid queries.
+const galleryImages = computed(() =>
+  nodes.value.filter((n) => n.type === 'image' && n.parentNode === GALLERY)
+    .sort((a, b) => String(a.data?.created_at || '').localeCompare(String(b.data?.created_at || ''))),
+)
+function toggleImageFavorite(id: string) {
+  const n = findNode(id)
+  if (n && n.type === 'image') n.data.favorite = !n.data.favorite // mutation → tracked + autosaved
+}
 const nextCompY = () => (compBlocks.value.length ? Math.max(...compBlocks.value.map((n) => n.position.y)) + 10 : 0)
 
 // Edit a composition row via property mutation (Vue Flow tracks node.data mutations, not reassignment).
@@ -495,7 +502,7 @@ function zoneNodes(): any[] {
   return [
     { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '440px', height: '680px' } },
     { id: STATION, type: 'station', position: { x: 520, y: 40 }, data: { ratio: 0.3, axis: 'h', genFirst: true }, zIndex: 0, style: { width: '1080px', height: '680px' } },
-    { id: GALLERY, type: 'zone', position: { x: 1640, y: 40 }, data: { role: 'gallery' }, zIndex: 0, style: { width: '460px', height: '680px' } },
+    { id: GALLERY, type: 'zone', position: { x: 1640, y: 40 }, data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', source: 'all', cols: 3 }] }, zIndex: 0, style: { width: '760px', height: '640px' } },
   ]
 }
 
@@ -555,14 +562,15 @@ function settleNode(node: any) {
   } else if (node.type === 'image') {
     const gal = getIntersectingNodes(node).find((n) => n.type === 'zone' && n.data.role === 'gallery')
     if (gal) {
-      const gp = gal.computedPosition
+      // Into the gallery → a hidden child, surfaced only through the widget's grids (not free on the canvas).
       live.parentNode = gal.id
-      live.position = { x: node.computedPosition.x - gp.x, y: node.computedPosition.y - gp.y }
+      live.hidden = true
     } else if (live.parentNode) {
       live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
       live.parentNode = undefined
+      live.hidden = false // dragged back out of the gallery → a visible scratch image again
+      nudgeIfOverlapping(live)
     }
-    nudgeIfOverlapping(live)
   }
 }
 
@@ -765,6 +773,7 @@ function loadDoc(doc: any) {
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
   favorites.value = [...(doc.favorites || [])] // per-work quick-access set for the widget's ★ filter
   hideStationBlocks() // composition blocks render as the station's list, never free on the canvas
+  hideGalleryImages() // gallery images render inside the structured gallery widget, not free on the canvas
   widgetRevalidate.value++ // a freshly opened work re-reads the Library (categories/counts)
   if (vp) setViewport(vp)
   workId.value = doc.id
@@ -1030,15 +1039,8 @@ function startName(data: any, e: MouseEvent) {
               @use="useLibraryBlock" @new-block="newCompBlock" @toggle-favorite="toggleFavorite" />
           </template>
           <template v-else>
-            <NodeResizer :min-width="200" :min-height="180" :is-visible="selected" color="var(--accent)" />
-            <div class="zonenode" :class="[data.role, { selected }]">
-              <div class="zonehd">
-                <span class="zicon">▤</span>
-                <span class="ztitle">Gallery</span>
-                <span class="anchor-tag">anchor</span>
-              </div>
-              <div v-if="!childCount(id)" class="zhint">Drag kept images here to save them.</div>
-            </div>
+            <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
+            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" />
           </template>
         </template>
 
@@ -1222,12 +1224,6 @@ function startName(data: any, e: MouseEvent) {
 .scalepick button:hover{background:var(--surface-3);color:var(--text)}
 .scalepick button.on{background:var(--accent);color:var(--on-accent)}
 
-.zonenode{width:100%;height:100%;border:1.5px solid var(--border-strong);border-radius:12px;overflow:hidden;background:color-mix(in srgb,var(--surface-1) 60%,transparent)}
-.zonenode.selected{border-color:var(--accent)}
-.zonehd{display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--surface-1);font-weight:600;font-size:13px}
-.zonehd .zicon{font-style:normal}
-.zonehd .anchor-tag{margin-left:auto;font-size:10px;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:20px}
-.zhint{padding:16px;font-size:12px;color:var(--text-faint);text-align:center}
 
 .block{position:relative;width:100%;height:100%;min-height:46px;display:flex;flex-direction:column;border-radius:8px;border:1px solid var(--border);border-left:3px solid var(--cat);background:var(--surface-2);box-shadow:0 1px 4px rgba(0,0,0,.2);overflow:hidden}
 .block.neg{border-left-color:#e2483d}

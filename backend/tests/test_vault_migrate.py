@@ -32,7 +32,7 @@ def _v1_doc() -> dict:
 
 def test_v1_migrates_to_current_with_ar_backfill():
     doc = load_doc(json.dumps(_v1_doc()))
-    assert doc.schema_version == CURRENT == 4
+    assert doc.schema_version == CURRENT == 5
     assert doc.images[0].ar == pytest.approx(832 / 1216)  # backfilled from the snapshot params
     assert doc.images[0].role == "gallery"                # model default covers v1 (no migration needed)
     assert doc.images[1].ar is None                       # dangling snapshot ref -> no backfill, no crash
@@ -58,7 +58,7 @@ def test_v2_palette_pins_become_favorites():
         "snapshots": [], "images": [], "stack": [],
     }
     doc = load_doc(json.dumps(raw))
-    assert doc.schema_version == CURRENT == 4
+    assert doc.schema_version == CURRENT == 5
     assert doc.favorites == ["blk-a"]                     # only the linked pin; the local custom is dropped
     ids = {n["id"] for n in doc.canvas["nodes"]}
     assert ids == {"lib", "st-1"}                         # both palette pins gone; the station copy survives
@@ -80,7 +80,7 @@ def test_v3_station_becomes_two_zone_ordered_list():
         "snapshots": [], "images": [], "stack": [],
     }
     doc = load_doc(json.dumps(raw))
-    assert doc.schema_version == CURRENT == 4
+    assert doc.schema_version == CURRENT == 5
     st = next(n for n in doc.canvas["nodes"] if n["id"] == "station")
     assert st["data"] == {"ratio": 0.35, "axis": "h", "genFirst": True}  # outputRatio→ratio, posRatio dropped
     order = {n["id"]: n["position"]["y"] for n in doc.canvas["nodes"] if n.get("parentNode") == "station"}
@@ -88,6 +88,41 @@ def test_v3_station_becomes_two_zone_ordered_list():
     for n in doc.canvas["nodes"]:
         if n.get("parentNode") == "station":
             assert "xFrac" not in n["data"] and "laneFrac" not in n["data"]
+
+
+def test_v4_gallery_becomes_block_stack():
+    """v5: the gallery zone gains a block stack — a single image-grid (source: all) is seeded so a
+    work's existing gallery-role images still show. A gallery that already has blocks is untouched."""
+    raw = {
+        "schema_version": 4, "id": "w4", "favorites": [],
+        "canvas": {"viewport": {"x": 0, "y": 0, "zoom": 1}, "nodes": [
+            {"id": "gallery", "type": "zone", "position": {"x": 0, "y": 0}, "data": {"role": "gallery"}},
+            {"id": "library", "type": "zone", "position": {"x": 0, "y": 0}, "data": {"role": "library"}},
+            {"id": "img-1", "type": "image", "parentNode": "gallery", "position": {"x": 5, "y": 5}, "data": {}},
+        ]},
+        "snapshots": [], "images": [{"id": "img-1", "snapshot_id": None, "file": "images/img-1.png"}], "stack": [],
+    }
+    doc = load_doc(json.dumps(raw))
+    assert doc.schema_version == CURRENT == 5
+    gal = next(n for n in doc.canvas["nodes"] if n["id"] == "gallery")
+    assert gal["data"]["blocks"] == [{"id": "gb-seed", "type": "grid", "source": "all", "cols": 3}]
+    lib = next(n for n in doc.canvas["nodes"] if n["id"] == "library")
+    assert "blocks" not in lib["data"]                     # only the gallery zone gets a stack
+    assert doc.images[0].role == "gallery"                 # images untouched — still flagged by role
+
+
+def test_v5_gallery_with_blocks_is_untouched():
+    raw = {
+        "schema_version": 5, "id": "w5",
+        "canvas": {"viewport": {"x": 0, "y": 0, "zoom": 1}, "nodes": [
+            {"id": "gallery", "type": "zone", "position": {"x": 0, "y": 0},
+             "data": {"role": "gallery", "blocks": [{"id": "g1", "type": "grid", "source": "favorites", "cols": 2}]}},
+        ]},
+        "snapshots": [], "images": [], "stack": [],
+    }
+    doc = load_doc(json.dumps(raw))
+    gal = next(n for n in doc.canvas["nodes"] if n["id"] == "gallery")
+    assert gal["data"]["blocks"] == [{"id": "g1", "type": "grid", "source": "favorites", "cols": 2}]
 
 
 def test_migration_is_idempotent_on_v2():
@@ -138,7 +173,7 @@ async def test_v1_on_disk_loads_lazily_and_reindexes(client):
     wj.write_text(json.dumps(raw), "utf-8")
 
     body = (await ac.get("/api/vault/works/w1")).json()
-    assert body["schema_version"] == 4
+    assert body["schema_version"] == 5
     assert body["images"][0]["ar"] == pytest.approx(832 / 1216)
     # Lazy migration: reads never rewrite the file — only the next save will.
     assert json.loads(wj.read_text("utf-8"))["schema_version"] == 1

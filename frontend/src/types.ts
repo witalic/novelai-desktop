@@ -193,8 +193,18 @@ export interface ZoneNode extends CanvasNodeBase {
     // library-zone (prompt widget) layout — additive optional fields, no schema bump needed
     collapsed?: boolean
     expandedH?: number // height to restore on expand (style.height holds 38px while collapsed)
+    // gallery-zone (structured gallery widget) layout — the composed block stack (schema v5)
+    blocks?: GalleryBlock[]
   }
 }
+
+// ---- structured gallery: the gallery zone's composed block stack (frontend-owned layout) ----
+// An image-grid references its images by a *query* (all / favorites / tag:x / group:g), never a stored
+// id list — so new images flow in and the same image can appear in several grids. The union grows as
+// block types land (increment by increment). Transient block-UI state (inline-edit, drag) lives in
+// component refs keyed by block id — NEVER inside these objects, or serialize.pick leaks it to disk.
+export interface GalleryGridBlock { id: string; type: 'grid'; source: string; cols: 2 | 3 | 4 }
+export type GalleryBlock = GalleryGridBlock
 
 export interface BlockNodeData {
   // domain — the block's content (a frozen copy even when block_id links it to the Library)

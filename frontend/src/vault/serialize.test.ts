@@ -8,7 +8,7 @@ import { canvasToWork, workToCanvas, workToDrafts, GALLERY, STATION } from './se
 function anchors() {
   return [
     { id: STATION, type: 'station', position: { x: 316, y: 40 }, style: { width: '760px', height: '460px' }, data: { ratio: 0.3, axis: 'h', genFirst: true } },
-    { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, style: { width: '320px', height: '440px' }, data: { role: 'gallery' } },
+    { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, style: { width: '320px', height: '440px' }, data: { role: 'gallery', blocks: [{ id: 'gb-1', type: 'grid', source: 'all', cols: 3 }] } },
   ]
 }
 
@@ -29,7 +29,7 @@ const viewport = { x: 40, y: 40, zoom: 0.7 }
 describe('canvasToWork', () => {
   it('splits a vault-path image into a file ref (no base64) and keeps its recipe', () => {
     const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'Test' })
-    expect(doc.schema_version).toBe(4)
+    expect(doc.schema_version).toBe(5)
     expect(doc.id).toBe('w1')
     expect(doc.title).toBe('Test')
     expect(doc.images).toHaveLength(1)
@@ -201,5 +201,31 @@ describe('round-trip (canvasToWork -> workToCanvas)', () => {
     const { nodes, viewport: vp } = workToCanvas(doc1)
     const doc2 = canvasToWork(nodes, vp, params, { id: 'w1', title: 'T' }, workToDrafts(doc1))
     expect(doc2).toEqual(doc1) // no field drifts or drops across a full save/load/save cycle — scratch included
+  })
+})
+
+describe('structured gallery blocks', () => {
+  it('persists the gallery zone block stack (layout) and round-trips it', () => {
+    const gal = { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, style: { width: '760px', height: '640px' },
+      data: { role: 'gallery', blocks: [{ id: 'g-a', type: 'grid', source: 'favorites', cols: 4 }] } }
+    const doc = canvasToWork([gal, galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'T' })
+    const node = doc.canvas.nodes.find((n) => n.id === GALLERY)!
+    expect((node.data as any).blocks).toEqual([{ id: 'g-a', type: 'grid', source: 'favorites', cols: 4 }])
+    // round-trip idempotent with blocks present
+    const { nodes, viewport: vp } = workToCanvas(doc)
+    const doc2 = canvasToWork(nodes, vp, params, { id: 'w1', title: 'T' })
+    expect(doc2).toEqual(doc)
+  })
+
+  it('heals a gallery zone that has no blocks by seeding one image grid (stable seed id)', () => {
+    const bare = { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, style: { width: '760px', height: '640px' }, data: { role: 'gallery' } }
+    const doc = canvasToWork([bare], viewport, params, { id: 'w1', title: 'T' })
+    expect((doc.canvas.nodes.find((n) => n.id === GALLERY)!.data as any).blocks).toBeUndefined()
+    const healed = workToCanvas(doc).nodes.find((n) => n.id === GALLERY)!
+    expect((healed.data as any).blocks).toEqual([{ id: 'gb-seed', type: 'grid', source: 'all', cols: 3 }])
+    // and once healed it is stable (a second round-trip doesn't drift)
+    const doc2 = canvasToWork(workToCanvas(doc).nodes, viewport, params, { id: 'w1', title: 'T' })
+    const doc3 = canvasToWork(workToCanvas(doc2).nodes, viewport, params, { id: 'w1', title: 'T' })
+    expect(doc3).toEqual(doc2)
   })
 })

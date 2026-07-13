@@ -33,7 +33,7 @@ const BLOCK_FIELDS = [
   // layout: order in the station list is position.y; loose scratch blocks use position — no extra fields
 ] as const
 const STATION_FIELDS = ['ratio', 'axis', 'genFirst'] as const // two-zone layout (Generation | Composition)
-const ZONE_FIELDS = ['role', 'collapsed', 'expandedH'] as const // prompt-widget collapse is layout
+const ZONE_FIELDS = ['role', 'collapsed', 'expandedH', 'blocks'] as const // prompt-widget collapse + gallery block stack are layout
 // image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
 
 function pick(data: Record<string, unknown> | undefined, fields: readonly string[]) {
@@ -123,7 +123,7 @@ export function canvasToWork(
   }))
 
   return {
-    schema_version: 4, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
+    schema_version: 5, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
     canvas: { viewport, nodes: canvasNodes },
     snapshots: [...snapshotsByKey.values()],
     images, stack,
@@ -186,6 +186,13 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
       const style = n.style ? { ...(n.style as NodeStyle) } : undefined
       if (style) delete style.height
       return { ...n, style, data: { ...n.data } } as CanvasNode
+    }
+    if (n.type === 'zone' && (n.data as { role?: string })?.role === 'gallery') {
+      // Heal a gallery zone that never got a block stack (backend migration is authoritative, but a
+      // `--web` dev doc or a hand-edited work might skip it). Deterministic seed id → stable round-trip.
+      const d = { ...(n.data as Record<string, unknown>) }
+      if (!Array.isArray(d.blocks) || !d.blocks.length) d.blocks = [{ id: 'gb-seed', type: 'grid', source: 'all', cols: 3 }]
+      return { ...n, data: d } as CanvasNode
     }
     return { ...n, data: { ...n.data } } as CanvasNode
   })

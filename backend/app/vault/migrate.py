@@ -14,7 +14,7 @@ from app.vault.models import WorkDoc
 
 log = logging.getLogger(__name__)
 
-CURRENT = 4
+CURRENT = 5
 
 
 def _migrate_1_to_2(raw: dict) -> dict:
@@ -84,8 +84,23 @@ def _migrate_3_to_4(raw: dict) -> dict:
     return raw
 
 
+def _migrate_4_to_5(raw: dict) -> dict:
+    """v5: the gallery stops being a free-placed pile of image nodes and becomes a structured,
+    composable widget — a stack of typed blocks stored on the gallery zone node's ``data.blocks``.
+    Seed a single image-grid block (``source: all``) so a work's existing gallery-role images still
+    show. Images themselves are untouched (their ``role: gallery`` already flags them); the now-inert
+    free ``position`` on gallery image nodes is harmless and left as-is."""
+    for node in (raw.get("canvas") or {}).get("nodes", []):
+        if node.get("type") == "zone" and (node.get("data") or {}).get("role") == "gallery":
+            data = node.get("data") or {}
+            if not data.get("blocks"):
+                data["blocks"] = [{"id": "gb-seed", "type": "grid", "source": "all", "cols": 3}]
+            node["data"] = data
+    return raw
+
+
 _MIGRATIONS: dict[int, Callable[[dict], dict]] = {
-    1: _migrate_1_to_2, 2: _migrate_2_to_3, 3: _migrate_3_to_4,
+    1: _migrate_1_to_2, 2: _migrate_2_to_3, 3: _migrate_3_to_4, 4: _migrate_4_to_5,
 }
 
 
