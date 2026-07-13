@@ -1,152 +1,152 @@
 # novelai-desktop
 
-Десктопний застосунок (Electron) — обгортка над **NovelAI image API** з інтегрованим
-**Obsidian-подібним сховищем (vault)** для промптів і робіт та (у планах) інтеграцією **Claude**
-для складання промптів.
+A desktop app (Electron) that wraps the **NovelAI image API** with an integrated, Obsidian-like
+**vault** for your prompts and works — every generation and its exact recipe are saved to disk in a
+structured, searchable store as you create.
 
-> **Статус:** робочий MVP. Генерація зображень, vault (роботи + бібліотека блоків/категорій +
-> менеджер кількох сховищ + мініатюри), канвас-композитор промптів і Electron-оболонка —
-> **реалізовані й покриті тестами**. Claude-асистент відкладено. Обсяг наразі — **лише зображення**.
-> Повний фазовий план — [`ROADMAP.md`](ROADMAP.md); поточна фаза — **Фаза 1 (рецепт як типізований контракт)**.
+> **Status:** v1.0. Image generation, the vault (works · block/category library · multi-vault
+> manager · thumbnails), the Vue-Flow prompt-composition canvas, a structured **gallery** for each
+> work, a full **Works** browser with view/edit, and the Electron shell are implemented and covered
+> by tests. A Claude prompt-authoring assistant is planned. Scope for now is **images only**.
+> The phased plan lives in [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
-## Навіщо це
+## Why
 
-NovelAI чудово генерує зображення, але процес «нагенерував → десь зберіг → загубив вдалий
-промпт» погано керований. Ідея застосунку — **зшити генерацію і зберігання в один цикл**:
+NovelAI generates great images, but the loop of *generate → save somewhere → lose the prompt that
+worked* is hard to manage. This app stitches generation and storage into one cycle:
 
-- єдиний зручний GUI над генерацією зображень NovelAI;
-- кожна робота і промпт одразу лягають у структуроване, придатне для пошуку сховище;
-- Claude (згодом) допомагає складати й доопрацьовувати промпти прямо в процесі.
+- a single, comfortable GUI over NovelAI image generation;
+- every work and prompt lands in a structured, searchable store the moment you make it;
+- a reproducible **recipe** (resolved prompt + params + seed) travels with every image.
 
-## Можливості
+## Features
 
-**Уже працює:**
+- **Image generation** through NovelAI (e.g. `nai-diffusion-4-5-full`) with full parameter control
+  (size, sampler, steps, scale/CFG, seed, negative prompt) and streamed progress. An offline
+  **mock mode** lets you work without spending Anlas.
+- **Prompt-composition canvas** (Vue Flow): a generation station with category-coloured prompt
+  blocks that assemble the prompt live, a **freeze** state to keep a block without sending it, an
+  output stack, and one-click save into the vault.
+- **Vault** — files on disk (a work is a folder with `work.json` + PNGs + thumbnails) over a
+  rebuildable SQLite index: paginated work listing, delete with image garbage-collection, and
+  multiple vaults with safe folder moves.
+- **Prompt library** — categories, tags, and reusable prompt blocks you drop onto the canvas.
+- **Structured gallery** — each work's images organise into a composable stack of typed blocks
+  (sections · headings · notes · image grids/albums · metadata) with an outline and a Quick-access
+  bin, instead of a loose pile.
+- **Works browser** — search, sort, and delete works; open any work in a full-page **view** or
+  **edit** mode that reuses the same gallery stack, with autosave.
+- **Server-side thumbnails** (`?w=`, disk-cached) with crisp rendering at any zoom, and off-viewport
+  node culling for heavy works.
+- **Cost transparency** — NovelAI states (out of Anlas / rate-limited) surface directly in the UI.
 
-- **Генерація зображень** через NovelAI (модель `nai-diffusion-4-5-full` та ін.) з контролем
-  параметрів (розмір, sampler, steps, scale/CFG, seed, negative prompt) і стрімінгом прогресу;
-  mock-режим для роботи офлайн без витрати Anlas.
-- **Канвас-композитор** (Vue Flow): «станція» з лейнами Positive/Negative, кольорові за категоріями
-  блоки промпта, що збирають промпт наживо, LIFO-стек результатів, збереження роботи у vault.
-- **Vault** — файли на диску (робота = тека з `work.json` + PNG + мініатюри) + перебудовуваний
-  SQLite-індекс: список робіт з пагінацією, видалення роботи з GC зображень, кілька сховищ із
-  безпечним переміщенням теки.
-- **Бібліотека промптів** — категорії, теги, приклади-блоки для вставки на канвас.
-- **Мініатюри на боці сервера** (`?w=`, кеш на диску) + чіткий рендер зображень на будь-якому масштабі,
-  з culling позазонних вузлів для важких робіт.
-- **Прозорість витрат** — стани NovelAI (немає Anlas / rate-limit) видно в UI.
+**Planned** (see [`ROADMAP.md`](ROADMAP.md)): an importer for existing generation folders
+(PNG metadata → recipe), a global gallery over the index, a **Claude** prompt assistant, and an open
+recipe-exchange format. Out of scope for now: text/video generation, collaboration, cloud sync.
 
-**Бачення (ще попереду, див. `ROADMAP.md`):**
-
-- типізований, версіонований формат рецепта з міграціями;
-- структуровані галереї та глобальний перегляд поверх індексу;
-- імпортер існуючих тек генерацій (PNG-метадані → рецепт);
-- **Claude-асистент** — генерація та рефакторинг промптів;
-- відкритий формат обміну рецептами.
-
-Поза обсягом поки що: генерація тексту, відео, командна робота, хмарна синхронізація.
-
-## Архітектура
+## Architecture
 
 ```
-┌─────────────────────────────┐
-│  Electron shell (shell/)     │  вантажить UI по http://127.0.0.1:PORT/app/ (вільний порт)
-│                              │  спавнить sidecar; per-launch секрет (cookie) + CSP + nav-lockdown
-└──────────────┬───────────────┘
-               │ localhost HTTP + WebSocket (WS: прогрес генерації)
-┌──────────────▼───────────────┐
-│  FastAPI sidecar (backend/)  │
-│   ├─ novelai/  — тонкий клієнт до image API (+ mock, SSE-стрім)
-│   ├─ vault/    — файли на диску + SQLite-індекс
+┌──────────────────────────────┐
+│  Electron shell (shell/)      │  loads the UI at http://127.0.0.1:PORT/app/ (a free port)
+│                               │  spawns the sidecar; per-launch cookie secret + CSP + nav lockdown
+└──────────────┬────────────────┘
+               │ localhost HTTP + WebSocket (WS: generation progress)
+┌──────────────▼────────────────┐
+│  FastAPI sidecar (backend/)   │
+│   ├─ novelai/  — thin image-API client (+ mock, SSE stream)
+│   ├─ vault/    — files on disk + SQLite index
 │   └─ routers/  — /api/* + /health
-│                              │  сервить зібраний Vue-статик на /app/
-└──────────────┬───────────────┘
+│                               │  serves the built Vue static at /app/
+└──────────────┬────────────────┘
                ▼
-         NovelAI image API      (ai/ — Claude — заплановано, ще не реалізовано)
+         NovelAI image API       (ai/ — Claude — planned, not built yet)
 ```
 
-**Ключові рішення:**
+**Key decisions**
 
-- **Один origin.** FastAPI сервить і API, і зібраний фронтенд на `/app/` — Electron просто
-  відкриває цей URL. Немає CORS, один процес обслуговує все.
-- **Локальний API захищений.** Sidecar слухає лише loopback; оболонка на кожен запуск генерує секрет,
-  передає його як `SameSite=Strict; HttpOnly` cookie, а backend вимагає його на `/api` і відхиляє
-  не-loopback `Host`. `/health` відкритий і повертає `sha256(token)` для звірки ідентичності sidecar.
-- **Vault = файли + індекс.** Джерело істини — файли на диску, тому сховище переживає втрату індексу.
-  SQLite — лише швидкий, перебудовуваний індекс для списків/тегів/пошуку; запис атомарний,
-  шляхи traversal-safe.
-- **Тонкий власний NovelAI-клієнт.** Офіційного REST-API немає; ми б'ємо у той самий приватний
-  ендпоінт, що й вебклієнт, і пишемо свою тонку обгортку (не тягнемо важку залежність). Спільнотні
-  бібліотеки використовуємо як довідник до недокументованих полів. Деталі — `.claude/rules/novelai-api.md`.
+- **Single origin.** FastAPI serves both the API and the built frontend at `/app/`; Electron just
+  opens that URL. No CORS, one process serves everything.
+- **The local API is not open.** The sidecar binds loopback only; the shell mints a fresh secret per
+  launch, delivers it as a `SameSite=Strict; HttpOnly` cookie, and the backend requires it on every
+  `/api` call and rejects non-loopback `Host` headers. `/health` stays open and echoes
+  `sha256(token)` so the shell can confirm it reached its own sidecar.
+- **Vault = files + index.** The source of truth is the files on disk, so the store survives losing
+  the index. SQLite is only a fast, rebuildable index for listing/tags/search; writes are atomic and
+  paths are traversal-safe.
+- **Thin, first-party NovelAI client.** There is no official REST API, so the app calls the same
+  private endpoint the web client uses behind a small wrapper (no heavy dependency); community
+  libraries are used only as a reference for undocumented fields.
 
-## Стек
+## Stack
 
-| Шар | Технологія |
+| Layer | Technology |
 |---|---|
 | Shell | Electron |
-| Бекенд | Python 3.11+ · FastAPI · `httpx` (async) · Pillow · SQLite · pytest |
-| Фронтенд | Vue 3 + Vite + TypeScript (SFC) · `@vue-flow/core` · vitest |
-| Зовнішні API | NovelAI image API (неофіційний) · Anthropic (Claude, згодом) |
+| Backend | Python 3.11+ · FastAPI · `httpx` (async) · Pillow · SQLite · pytest |
+| Frontend | Vue 3 + Vite + TypeScript (SFC) · `@vue-flow/core` · vitest |
+| External APIs | NovelAI image API (unofficial) · Anthropic (Claude, later) |
 
-## Структура проєкту
+## Project layout
 
 ```
 novelai/
 ├─ backend/          # FastAPI sidecar (Python)
 │  └─ app/
-│     ├─ novelai/    # тонкий клієнт до image API (+ mock)
-│     ├─ vault/      # сховище на диску + SQLite-індекс
+│     ├─ novelai/    # thin image-API client (+ mock)
+│     ├─ vault/      # on-disk store + SQLite index
 │     ├─ routers/    # /api/* + /health
 │     └─ …           # appconfig, settings, keychain, main
-├─ frontend/         # Vue 3 + Vite + TS → збірка у frontend/dist
+├─ frontend/         # Vue 3 + Vite + TS → builds to frontend/dist
 │  └─ src/           # views · components · composables · vault (serialize/ids)
 ├─ shell/            # Electron (main · api · preload · config)
-├─ run.py            # dev-лаунчер
-└─ .claude/          # правила, агенти, хуки для роботи з Claude Code
+├─ run.py            # dev launcher
+└─ ROADMAP.md        # phased plan
 ```
 
-Дані користувача (vault, згенеровані зображення) живуть **поза git**.
+User data (the vault, generated images) lives **outside git**.
 
-## Запуск і тести
+## Getting started
 
-Бекенд працює через `.venv` (системний python не має залежностей):
+The backend runs from a `.venv` (the system Python lacks the dependencies):
 
 ```bash
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e backend[dev]
 
-python run.py              # зібрати фронтенд → запустити Electron
-python run.py --web        # backend + браузер
-python run.py --backend    # тільки backend
-python run.py --no-build   # без перезбірки фронтенду
+python run.py              # build the frontend → launch Electron
+python run.py --web        # backend + browser
+python run.py --backend    # backend only
+python run.py --no-build   # skip the frontend rebuild
 
-.venv\Scripts\python.exe -m pytest backend   # тести бекенду (офлайн)
+.venv\Scripts\python.exe -m pytest backend   # backend tests (offline)
 
 cd frontend
 npm install
-npm run dev                # dev-сервер Vite
+npm run dev                # Vite dev server
 npm run build              # vue-tsc --noEmit && vite build
 npm test                   # vitest
 ```
 
-## Безпека і приватність
+You need a NovelAI account with an active subscription (Anlas) to generate real images; without a
+token the app runs in mock mode. Add your **persistent API token** (NovelAI → Account → Get
+Persistent API Token) in the app's Settings — it is stored in the OS keychain, never in files.
 
-- **Секрети — лише в keychain ОС.** Persistent-токен NovelAI і Anthropic-ключ зберігаються через
-  `keyring`, ніколи не потрапляють у код, логи чи git. Локальний `.env` — під `.gitignore`.
-- **Токен, а не пароль.** До NovelAI автентифікуємось persistent-токеном з налаштувань акаунту —
-  застосунок ніколи не бачить пароль.
-- **Локальний API — не відкритий.** Loopback-only + per-launch cookie-секрет на `/api`; деталі вище.
-- **Vault приватний.** Промпти й зображення — контент користувача; нікуди не передаються, окрім
-  API, для якого призначені. Не потрапляють у контроль версій.
-- **Чесний клієнт неофіційного API.** Поважаємо rate-limit (backoff на 429) і вартість в Anlas
-  (402 = Anlas закінчились); без генерації в циклах і масового навантаження.
+## Security & privacy
 
-Повний перелік — `.claude/rules/security.md`.
+- **Secrets live only in the OS keychain.** The NovelAI persistent token and the (future) Anthropic
+  key are stored via `keyring` — never in source, logs, or git.
+- **Token, not password.** The app authenticates to NovelAI with a persistent account token, so it
+  never handles your password.
+- **The local API is not exposed** to the machine — loopback-only, guarded by a per-launch cookie
+  secret (see Architecture).
+- **The vault is private.** Prompts and images are your content; they are never sent anywhere except
+  the API they are bound for, and never committed to version control.
+- **Good API citizen.** The app respects NovelAI rate limits (backs off on 429) and Anlas cost
+  (402 = out of Anlas); it never generates in tight loops.
 
-## Робота з проєктом (для Claude Code)
+## License
 
-Операційне ядро — `CLAUDE.md`; деталізовані правила — `.claude/rules/` (частина вантажиться щосесії:
-`code-style`, `security`, `git`; частина — за шляхами: `backend`, `frontend`, `novelai-api`). Фазовий
-план розвитку — `ROADMAP.md`. Мова спілкування — українська; код, коментарі та документація —
-англійською (цей README — виняток).
+Personal project — no license granted yet.
