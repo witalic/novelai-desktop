@@ -1,137 +1,184 @@
-# План ядра — novelai-desktop
+# Roadmap — novelai-desktop
 
-Логіка плану: ядро продукту — **vault → снапшот → відтворюваний рецепт**. Усе інше (галереї, імпорт, LLM, шеринг, соціальний шар) — споживачі цього ядра, тому спершу воно стабілізується і фіксується як контракт, і лише потім обростає фічами. Фази впорядковані за залежностями; кожна має критерій виходу.
-
----
-
-## Фаза 0 — Стабілізація (виправити те, що підриває довіру до ядра)
-
-Мета: жодного шляху тихої втрати даних; локальний API не є зброєю проти користувача.
-
-- Autosave-гонка (C1): `dirty` скидається лише якщо `changeKey()` не змінився за час `await`; `markDirty` під час збереження ставить `pendingResave`.
-- Після успішного save переписувати `data:` URL збережених зображень на vault-URL (H3) — прибирає багатомегабайтні флаші і звужує вікно C1.
-- `vaultReady` перечитується в `onActivated` / після налаштування vault (H7); keydown-хендлер — в `onActivated`/`onDeactivated` (H8).
-- Vault move: containment-перевірки dst/src, заборона move/delete активного vault (H2).
-- Per-launch shared secret shell ↔ sidecar: env → кастомний заголовок → відхилення без нього; nonce у `/health` (H1, закриває також CSRF/rebinding і port-TOCTOU).
-- `httpx` → runtime deps (H4); повний id у назві директорії роботи (H5); лок на create/rebuild індексу + `INSERT OR IGNORE` для тегів (H6).
-- Catch-all в SSE-генераторі + `mock`-прапорець у стрім-івентах; `reader.cancel()` у finally на фронті.
-
-**Вихід:** усі Critical/High з ревью закриті; тести на конкурентність першого запуску і на autosave-гонку зелені.
+The through-line: the product's core is **vault → snapshot → reproducible recipe**. Everything else
+(galleries, import, LLM, sharing, a social layer) consumes that core, so it stabilises and is pinned as
+a contract first, and only then grows features. Phases are ordered by dependency; each has an exit
+criterion.
 
 ---
 
-## Фаза 1 — Рецепт як контракт (фундамент під усе далі)
+## Phase 0 — Stabilisation (fix what undermines trust in the core)
 
-Мета: схема роботи/снапшота — типізований, версіонований, публічний за духом формат.
+Goal: no path to silent data loss; the local API is not a weapon against the user.
 
-- Типізувати `WorkDoc`: `CanvasNode`, `PersistedImage`, `Snapshot`, `Block` — TS-інтерфейси + Pydantic-моделі, синхронізовані вручну або кодогенерацією. `vue-tsc --noEmit` у build.
-- Явний поділ схеми: **domain** (промпти, параметри, зображення, снапшоти) / **layout** (позиції, зони, розміри) / **transient** (не персиститься ніколи). Whitelist у `serialize.ts` замість «зберегти все data».
-- Семантика зон: зони визначають *роль*, не *виживання* — полотно серіалізується цілком, позазонне живе як scratch.
-- Freeze-семантика снапшота: зафіксувати інваріант «снапшот містить resolved text + params + seed на момент генерації» і додатково block refs («з чого зібрано»). Редагування блоку в Library ніколи не змінює минулі снапшоти.
-- Полагодити multi-sample seed (M3): per-sample `seed + k` у фінальних SSE-івентах і в снапшотах.
-- `schema_version` + мінімальний механізм міграцій (лінійні `migrate_1_to_2`-функції на бекенді, застосовуються при читанні).
-- Персистити `ar` зображень; відновлювати `created_at` драфтів (втратні round-trips з ревью).
-- Юніт-тести round-trip властивостей `serialize.ts` (canvas → doc → canvas без втрат) — перший фронтенд-тестовий кістяк.
+- Autosave race (C1): `dirty` clears only if `changeKey()` did not change across the `await`; a
+  `markDirty` mid-save sets `pendingResave`.
+- After a successful save, rewrite saved images' `data:` URLs to vault URLs — kills multi-MB flushes and
+  narrows the C1 window.
+- `vaultReady` re-read on `onActivated` / after configuring a vault; keydown handler tied to
+  `onActivated`/`onDeactivated`.
+- Vault move: containment checks on dst/src; refuse move/delete of the active vault.
+- Per-launch shared secret shell ↔ sidecar: env → cookie → reject without it; a `/health` identity sig
+  (also closes CSRF/rebinding and the port TOCTOU).
+- `httpx` in runtime deps; full id in the work directory name; a lock on index create/rebuild +
+  `INSERT OR IGNORE` for tags.
+- A catch-all in the SSE generator + a `mock` flag in stream events; `reader.cancel()` in a `finally`
+  on the frontend.
 
-**Вихід:** рецепт, збережений сьогодні, гарантовано читається і відтворюється після будь-яких майбутніх змін схеми; round-trip-тести зелені.
+**Exit:** every Critical/High from review closed; the first-run concurrency and autosave-race tests green.
 
-> ✅ **Закрито 2026-07-10.** Schema v2 + лінійні read-time міграції (`vault/migrate.py`), whitelist
-> domain/layout/transient у `serialize.ts`, scratch-персистенція (`Image.role`), персистентний `ar`,
-> серверний version-бамп блоків, freeze-інваріант і M3 під офлайн-тестами. Понад план: зони тепер
-> визначають *роль*, позазонне живе як scratch (рішення власника, зафіксовано в цій фазі).
-
----
-
-## Фаза 2 — Структуровані галереї та віджети
-
-Мета: роботи — не купа картинок, а документи; одна модель даних під усі подання. Готова структура стає приймачем для імпорту у Фазі 3.
-
-- Принцип: канвас-віджет галереї, Works, глобальна галерея — це **views над одним `WorkDoc`/індексом**, без власних сховищ стану.
-- Галерея-віджет: блочна структура (заголовки, примітки, описи), порядок і групування — частина layout-шару схеми з Фази 1.
-- Промпт-віджет: пошук по vault, фільтри за тегами/категоріями, вставка блоку на полотно (Library-сховище вже готове — категорії, теги, приклади).
-- Глобальна галерея: перегляд зображень за тегами/роботами/категоріями поверх SQLite-індексу (FTS уже є); віртуалізація списків — і в глобальній галереї, і в канвас-віджетах.
-- Явне, видиме правило порядку блоків зони → порядку тегів у промпті.
-- Гонки списків (M13) і `useConfirm` (M14) закриваються тут, бо ця фаза множить асинхронні списки.
-
-**Вихід:** робота з 50+ зображеннями і структурованою галереєю відкривається/скролиться плавно; те саме зображення видно з канви, з Works і з глобальної галереї без розсинхрону.
-
-> 🟡 **Значною мірою реалізовано (v1.0, 2026-07-13).** Галерея-віджет — блочний стек (секції ·
-> заголовки · нотатки · сітки-альбоми · метадані) з Outline і Quick-access, спільний компонент
-> `GalleryStack`. Промпт-віджет — прямий браузер vault (пошук, фільтри тегів/категорій, вставка
-> блоку). Станція — freeze-стан блоку, vault-порядок категорій, підсвітка вже доданих блоків.
-> Повноцінна вкладка **Works** — список (пошук/сорт/видалення) + повносторінковий view/edit над
-> одним `WorkDoc` через той самий `GalleryStack`, з автозбереженням. `useConfirm` і гонки списків
-> закриті.
-> **Лишається:** глобальна галерея поверх індексу + фільтри робіт за тегами/вмістом (потребують
-> індексації галереї в `index.db`); віртуалізація дуже великих списків.
+> ✅ **Closed.** Two independent code-review passes were worked through end-to-end.
 
 ---
 
-## Фаза 3 — Імпортер (vault навколо існуючих бібліотек)
+## Phase 1 — The recipe as a contract (the foundation for everything after)
 
-Мета: «перетягни теку старих генерацій — отримай структурований vault з рецептами». Головний канал адопції. Імпорт лягає на готову структуру Фази 2: результат — не купа файлів, а структуровані галереї.
+Goal: the work/snapshot schema is a typed, versioned, public-in-spirit format.
 
-- Ядро: PNG з валідними метаданими NovelAI — tEXt/iTXt (`Description` = prompt, `Comment` = JSON з uc/seed/sampler/steps/scale/model, v4 per-character структури) → снапшот.
-- Другий прохід: stealth pnginfo (альфа-канал) для файлів із зачищеними чанками.
-- Дедуп за хешем файлу; ідемпотентний повторний імпорт тієї ж теки.
-- Провенанс: `generated` / `imported` / `orphan` (без рецепта). Сироти — окремий статус і природна черга для збагачення у Фазі 4.
-- Мапінг на структуру: імпортована тека → структурована галерея (групування за датою/моделлю/спільним промптом як стартова розкладка, яку користувач далі редагує інструментами Фази 2).
-- Copy-into-vault з оцінкою місця перед стартом; фоновий процес зі статус-полінгом, прогресом і скасуванням (перевикористати патерн move).
-- Чесний звіт після імпорту: скільки з рецептом, скільки сиріт, що не розпарсилось і чому.
-- Поза scope фази: не-PNG формати, EXIF-нормалізація — у беклог.
+- Type `WorkDoc`: `CanvasNode`, `PersistedImage`, `Snapshot`, `Block` — TS interfaces + Pydantic models,
+  kept in sync by hand. `vue-tsc --noEmit` in the build.
+- An explicit schema split: **domain** (prompts, params, images, snapshots) / **layout** (positions,
+  zones, sizes) / **transient** (never persisted). A whitelist in `serialize.ts`, not "save all of data".
+- Zone semantics: zones define *role*, not *survival* — the whole canvas serialises; anything out of a
+  zone lives as scratch.
+- Snapshot freeze semantics: pin the invariant "a snapshot holds resolved text + params + seed at
+  generation time" plus the block refs it was assembled from. Editing a Library block never mutates past
+  snapshots.
+- Fix the multi-sample seed: per-sample `seed + k` in final SSE events and snapshots.
+- `schema_version` + a minimal migration mechanism (linear `migrate_N_to_M` functions on the backend,
+  applied at read time).
+- Persist images' `ar`; restore drafts' `created_at`.
+- Unit tests for `serialize.ts` round-trip properties (canvas → doc → canvas, lossless).
 
-**Вихід:** імпорт теки на кілька тисяч PNG проходить фоново без падінь; кожен файл або має рецепт, або чесно позначений сиротою; результат одразу видно як структуровані галереї.
+**Exit:** a recipe saved today is guaranteed to read and reproduce after any future schema change;
+round-trip tests green.
 
----
-
-## Фаза 4 — LLM-асистент (скіли)
-
-Мета: дешева модель як інструмент над тегами і рецептами, з прозорістю рівня Anlas.
-
-- Тонка абстракція провайдера (щоб «Haiku» не вросло в код); ключ у keychain; модуль `backend/app/ai/` за цільовою архітектурою.
-- Скіли v1 (текстові, дешеві): рефакторинг промпта, варіації блоку, «ідея → набір тегів», критика композиції промпта. Стрімінг токенів через наявний SSE/WS-патерн.
-- Правило прозорості як продуктова вимога: будь-яка відправка назовні — явна дія користувача; видимий лічильник витрат токенів (патерн Anlas-прозорості).
-- Скіли v2 (vision, opt-in, батчем): автотегування і групування сиріт з Фази 3 — зв'язка «імпорт + збагачення».
-
-**Вихід:** користувач без жодного фонового запиту назовні; кожен скіл показує, що саме було відправлено і скільки коштувало.
-
----
-
-## Фаза 5 — Формат обміну рецептами
-
-Мета: рецепт живе поза застосунком; фундамент шеринг-сервісу без самого сервісу.
-
-- Відкритий формат експорту/імпорту рецепта (JSON зі `schema_version` з Фази 1): resolved text, params, seed, опційно block refs і прев'ю.
-- Двостороння сумісність із PNG-метаданими NovelAI: експорт рецепта *в* PNG-чанки власних збережень, імпорт із будь-якої NovelAI-картинки (вже є з Фази 3).
-- Шеринг v0: рецепт як файл/посилання — цінний без жодного бекенда.
-- Документація формату — англійською, публічна: це і специфікація для майбутнього сервісу, і аргумент у розмові з Anlatan.
-
-**Вихід:** рецепт можна передати іншому користувачу файлом, і той відтворює роботу (з поправкою на власні Anlas).
+> ✅ **Closed 2026-07-10.** Read-time migrations (`vault/migrate.py`), the domain/layout/transient
+> whitelist in `serialize.ts`, scratch persistence (`Image.role`), persisted `ar`, server-owned block
+> version bump, the freeze invariant and the multi-sample seed all under offline tests. Beyond plan:
+> zones now define *role*, out-of-zone content lives as scratch (owner decision, pinned in this phase).
+> The schema has since reached **v6** (grids own `imageIds`); the server also stamps `schema_version`.
 
 ---
 
-## Горизонт (поза ядром, рішення пізніше)
+## Phase 2 — Structured galleries and widgets
 
-- **Шеринг-сервіс** рецептів (текст — дешево) → зображень (дорого: хостинг + модерація).
-- **Переговори з Anlatan** — почати рано (легалізація неофіційного API вирішує головний платформний ризик); пропозиція «opt-in шеринг поверх приватного vault».
-- **Соціальний шар** — лише після критичної маси; модерація: класифікація *зображень* (не тегів) локальною моделлю + голосування комʼюніті тільки для нейтральних тем (рейтинги, фічеринг), safety-рішення — за людиною-адміном з жорсткими правилами на аплоаді.
-- Presets-розділ (уже в UI як «soon»), не-PNG імпорт, DELETE робіт + GC зображень (M12 — можливо, підтягнути раніше, якщо vault почне розбухати).
+Goal: works are documents, not piles of images; one data model behind every view. The finished
+structure becomes the sink for the Phase 3 importer.
+
+- Principle: the canvas gallery widget, Works, and the global gallery are **views over one
+  `WorkDoc`/index**, with no state stores of their own.
+- Gallery widget: a block structure (headings, notes, descriptions), order and grouping — part of the
+  layout layer from Phase 1.
+- Prompt widget: search over the vault, filter by tags/categories, drop a block onto the canvas (the
+  Library store is already there — categories, tags, examples).
+- Global gallery: browse images by tag/work/category over the SQLite index (FTS already exists); list
+  virtualization in both the global gallery and the canvas widgets.
+- An explicit, visible rule mapping a zone's block order → the tag order in the prompt.
+- List races and `useConfirm` close here, since this phase multiplies async lists.
+
+**Exit:** a work with 50+ images and a structured gallery opens/scrolls smoothly; the same image is seen
+from the canvas, from Works, and from the global gallery without drift.
+
+> 🟡 **Largely delivered (v1.0, 2026-07-13).** Gallery widget — a block stack (sections · headings ·
+> notes · image-grid albums · metadata) with an Outline and Quick access, extracted as the shared
+> `GalleryStack`. Prompt widget — a direct vault browser (search, tag/category filters, drop a block).
+> The generation station — a per-block freeze state, vault-order category rail, and greying of blocks
+> already in the composition. A full **Works** tab — a list (search/sort/delete) plus a full-page
+> view/edit over one `WorkDoc` through that same `GalleryStack`, with autosave (optimistic-locked
+> against concurrent edits). `useConfirm` and the list races are closed.
+> **Remaining:** the global gallery over the index + work filters by tag/content (need the gallery
+> indexed into `index.db`); virtualization of very large lists.
 
 ---
 
-## Наскрізне (кожна фаза)
+## Phase 3 — Importer (a vault around existing libraries)
 
-- Тести йдуть із фічею, не після: конкурентність, round-trip серіалізації, error-шляхи стрімів.
-- Кожна зміна схеми — міграція + тест міграції.
-- Секрети: keychain-only, прозорість відправок назовні — незмінні інваріанти.
-- Комітна дисципліна за `rules/git.md`: фаза = серія логічно завершених блоків.
+Goal: "drag a folder of old generations, get a structured vault with recipes." The main adoption
+channel. Import lands on the finished Phase 2 structure: the result is structured galleries, not a pile
+of files.
 
-## Порядок і залежності
+- Core: PNGs with valid NovelAI metadata — tEXt/iTXt (`Description` = prompt, `Comment` = JSON with
+  uc/seed/sampler/steps/scale/model, v4 per-character structures) → a snapshot.
+- Second pass: stealth pnginfo (alpha channel) for files with stripped chunks.
+- Dedup by file hash; an idempotent re-import of the same folder.
+- Provenance: `generated` / `imported` / `orphan` (no recipe). Orphans get their own status and a natural
+  queue for enrichment in Phase 4.
+- Structure mapping: an imported folder → a structured gallery (grouping by date/model/shared prompt as
+  a starting layout the user then edits with the Phase 2 tools).
+- Copy-into-vault with a space estimate up front; a background job with status polling, progress, and
+  cancel (reuse the move pattern).
+- An honest post-import report: how many have a recipe, how many orphans, what failed to parse and why.
+- Out of scope for the phase: non-PNG formats, EXIF normalisation — backlog.
+
+**Exit:** importing a folder of several thousand PNGs runs in the background without crashes; each file
+either has a recipe or is honestly flagged an orphan; the result shows immediately as structured
+galleries.
+
+---
+
+## Phase 4 — LLM assistant (skills)
+
+Goal: a cheap model as a tool over tags and recipes, with Anlas-level transparency.
+
+- A thin provider abstraction (so "Haiku" doesn't grow into the code); the key in the keychain; a
+  `backend/app/ai/` module per the target architecture.
+- Skills v1 (text, cheap): refactor a prompt, block variations, "idea → a set of tags", critique a
+  prompt composition. Token streaming over the existing SSE/WS pattern.
+- Transparency as a product requirement: any send off-machine is an explicit user action; a visible
+  token-cost counter (the Anlas-transparency pattern).
+- Skills v2 (vision, opt-in, batched): auto-tagging and grouping the Phase 3 orphans — the "import +
+  enrich" loop.
+
+**Exit:** the user has no background off-machine request; each skill shows exactly what was sent and what
+it cost.
+
+---
+
+## Phase 5 — A recipe-exchange format
+
+Goal: the recipe lives outside the app; the foundation of a sharing service without the service itself.
+
+- An open export/import recipe format (JSON with the Phase 1 `schema_version`): resolved text, params,
+  seed, optional block refs and a preview.
+- Two-way compatibility with NovelAI PNG metadata: export a recipe *into* PNG chunks of our own saves,
+  import from any NovelAI image (already there from Phase 3).
+- Sharing v0: a recipe as a file/link — valuable with no backend at all.
+- Format docs — in English, public: both the spec for a future service and an argument in a conversation
+  with Anlatan.
+
+**Exit:** a recipe can be handed to another user as a file, and they reproduce the work (modulo their own
+Anlas).
+
+---
+
+## Horizon (beyond the core, decide later)
+
+- A **sharing service** for recipes (text — cheap) → images (expensive: hosting + moderation).
+- **Talks with Anlatan** — start early (legalising the unofficial API resolves the main platform risk);
+  the pitch is "opt-in sharing on top of a private vault".
+- A **social layer** — only after critical mass; moderation: classify *images* (not tags) with a local
+  model + community voting only for neutral topics (ratings, featuring), safety decisions with a human
+  admin and strict upload rules.
+
+---
+
+## Cross-cutting (every phase)
+
+- Tests ship with the feature, not after: concurrency, serialization round-trips, stream error paths.
+- Every schema change is a migration + a migration test.
+- Secrets: keychain-only; transparency of off-machine sends — invariant.
+- Commit discipline per `rules/git.md`: a phase is a series of logically-complete blocks.
+
+## Order and dependencies
 
 ```
-Фаза 0 ──► Фаза 1 ──► Фаза 2 ──► Фаза 3 ──► Фаза 4 (vision-частина)
-                │                     └──► Фаза 5
-                └──► Фаза 4 (текстові скіли)
+Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 (vision part)
+                │                        └──► Phase 5
+                └──► Phase 4 (text skills)
 ```
 
-Текстові скіли Фази 4 після Фази 1 можна вести паралельно з 2–3; Фаза 5 залежить від 1 і 3. Найкоротший шлях до «продукту, який хочеться показати спільноті»: 0 → 1 → 2 → 3 — структура спершу, і тоді імпортер стає демо-гачком «твої старі генерації стають структурованою бібліотекою за хвилину», а не купою файлів.
+The Phase 4 text skills, after Phase 1, can run in parallel with 2–3; Phase 5 depends on 1 and 3. The
+shortest path to "a product worth showing the community" is 0 → 1 → 2 → 3 — structure first, so the
+importer becomes the demo hook "your old generations become a structured library in a minute", not a
+pile of files.
