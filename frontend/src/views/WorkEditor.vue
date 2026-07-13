@@ -9,7 +9,8 @@ import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePreview } from '../composables/useImagePreview'
 import GalleryStack from '../components/GalleryStack.vue'
-import type { GalleryBlock, ImageNodeData, WorkDoc, ZoneNode } from '../types'
+import { gridsOf, purgeImages, removeIdFromGrids } from '../vault/workOps'
+import type { ImageNodeData, WorkDoc, ZoneNode } from '../types'
 
 const props = defineProps<{ workId: string; initialMode?: 'view' | 'edit' }>()
 const emit = defineEmits<{ back: []; openInGenerate: [string] }>()
@@ -77,66 +78,59 @@ const galleryImages = computed(() => {
 })
 const galleryCount = () => galleryImages.value.length
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const grids = () => ((galleryData.value?.blocks || []) as GalleryBlock[]).filter((b): b is any => b.type === 'grid')
-function removeFromGrids(id: string) { for (const g of grids()) { const i = g.imageIds.indexOf(id); if (i >= 0) g.imageIds.splice(i, 1) } }
+// Album membership + deletion go through the shared workOps (same invariant as the canvas — no divergence).
+const grids = () => gridsOf(galleryData.value?.blocks)
 function onDropOnGrid(p: { gridId: string; imageId?: string }) {
   if (!p.imageId) return // draft payloads only exist in the Generate canvas, not here
   const grid = grids().find((g) => g.id === p.gridId)
   if (!grid) return
-  removeFromGrids(p.imageId)
+  removeIdFromGrids(galleryData.value?.blocks, p.imageId)
   if (!grid.imageIds.includes(p.imageId)) grid.imageIds.push(p.imageId)
 }
-function onDropOnQuick(p: { imageId?: string }) { if (p.imageId) removeFromGrids(p.imageId) }
-function onToQuick(id: string) { removeFromGrids(id) }
+function onDropOnQuick(p: { imageId?: string }) { if (p.imageId) removeIdFromGrids(galleryData.value?.blocks, p.imageId) }
+function onToQuick(id: string) { removeIdFromGrids(galleryData.value?.blocks, id) }
 function onFavorite(id: string) { const im = doc.value?.images.find((i) => i.id === id); if (im) im.favorite = !im.favorite }
-// Delete images from the work in ALL three structures — the images list, every grid album, AND the
-// canvas node graph — plus clear the preview if it pointed at one (H2: canvas ghost + dangling file).
-function purgeImages(ids: string[]) {
-  const d = doc.value
-  if (!d) return
-  const set = new Set(ids)
-  for (const id of ids) removeFromGrids(id)
-  d.images = d.images.filter((i) => !set.has(i.id))
-  if (d.canvas?.nodes) d.canvas.nodes = d.canvas.nodes.filter((n) => !(n.type === 'image' && set.has(n.id)))
-  // If the preview pointed at a deleted image, promote the next gallery image so the work card keeps a preview.
-  if (d.preview_image_id && set.has(d.preview_image_id)) d.preview_image_id = d.images.find((i) => i.role === 'gallery')?.id ?? null
-}
 async function onDeleteImg(id: string) {
   if (!(await confirm({ title: 'Delete image', danger: true, confirmLabel: 'Delete', message: 'Remove this image from the work? This cannot be undone.' }))) return
-  purgeImages([id])
+  if (doc.value) purgeImages(doc.value, [id])
 }
 async function onClearQuick(ids: string[]) {
   if (!ids.length) return
   if (!(await confirm({ title: 'Clear Quick access', danger: true, confirmLabel: `Delete ${ids.length}`,
     message: `Delete ${ids.length} unsorted image${ids.length === 1 ? '' : 's'} from the work? Favourited images are kept. This cannot be undone.` }))) return
-  purgeImages(ids)
+  if (doc.value) purgeImages(doc.value, ids)
 }
 
 // ---- autosave: any WorkDoc mutation (gallery structure or images) → debounced save ----
+// Coalesced onto ONE in-flight save: an edit landing mid-save re-runs after it, on the fresh base, so
+// a slow save + fast typing never fires a second concurrent PUT that would 409 against our own save.
 let saveTimer: ReturnType<typeof setTimeout> | null = null
-let saveReq = 0
 let suppressWatch = false // set while writing the server-returned updated_at back (not a user edit)
+let inflight: Promise<void> | null = null
+let pending = false
 watch(doc, () => { if (ready.value && !suppressWatch) markDirty() }, { deep: true }) // display prefs (cols/collapse/panels) persist from View too
 function markDirty() {
   saveState.value = 'saving'
   if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(flush, 600)
+  saveTimer = setTimeout(() => { void flush() }, 600)
 }
 async function flush() {
   if (!doc.value) return
-  const req = ++saveReq
+  if (inflight) { pending = true; return } // a save is running → mark another needed, don't start a 2nd
+  inflight = (async () => { do { pending = false; await saveOnce() } while (pending && doc.value) })()
+  try { await inflight } finally { inflight = null }
+}
+async function saveOnce() {
+  if (!doc.value) return
   try {
     // doc.updated_at is the base the editor loaded — the server 409s if the stored copy is newer (H3).
     const res = await saveWork(doc.value)
-    if (req !== saveReq) return
     saveState.value = 'saved'
     suppressWatch = true
     doc.value.updated_at = res.updated_at // new base for the next save — must not re-trigger autosave
     await nextTick(); suppressWatch = false
   } catch (e) {
-    if (req !== saveReq) return
-    if (e instanceof ApiError && e.status === 409) { push('This work changed elsewhere — reloading.', 'err'); load() }
+    if (e instanceof ApiError && e.status === 409) { pending = false; push('This work changed elsewhere — reloading.', 'err'); await load() }
     else { saveState.value = 'idle'; push(e instanceof Error ? e.message : 'Save failed', 'err') }
   }
 }

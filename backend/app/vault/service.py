@@ -56,6 +56,9 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
         # Optimistic concurrency (H3): if the stored copy is newer than the base the client loaded
         # (its incoming updated_at), another editor saved in between — refuse so it doesn't clobber.
         # A client that sends no base (empty) opts out (fresh works, best-effort close beacon).
+        # Accepted limitation: the compare and the write below are not atomic (no per-work lock), so two
+        # PUTs racing with the SAME base can both pass the check → last-writer-wins. That needs a real
+        # concurrent-multi-writer scenario against one loopback backend; not worth a mutex at this scale.
         if existing_dir and doc.updated_at:
             stored = index.work_updated_at(conn, doc.id)
             if stored and stored > doc.updated_at:

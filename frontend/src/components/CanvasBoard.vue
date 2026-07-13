@@ -22,6 +22,7 @@ import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
 import GalleryStack from './GalleryStack.vue'
+import { removeIdFromGrids } from '../vault/workOps'
 import BlockEditorModal from './BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -429,9 +430,8 @@ function toggleImageFavorite(id: string) {
 function galleryGrids(): any[] {
   return (((findNode(GALLERY)?.data.blocks as any[]) || []).filter((b) => b.type === 'grid'))
 }
-function removeImageFromGridAlbums(id: string) {
-  for (const g of galleryGrids()) { const i = g.imageIds.indexOf(id); if (i >= 0) g.imageIds.splice(i, 1) }
-}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function removeImageFromGridAlbums(id: string) { removeIdFromGrids(findNode(GALLERY)?.data?.blocks as any, id) } // shared invariant (workOps)
 // A thumb or kept draft dropped onto a specific grid → joins THAT album (not always the first one).
 function onGalleryGridDrop(p: { gridId: string; imageId?: string; payload?: string }) {
   const grid = galleryGrids().find((g) => g.id === p.gridId)
@@ -632,6 +632,7 @@ async function newWork() {
     if (!proceed) return
   }
   workId.value = newId('work')
+  baseUpdatedAt.value = '' // a fresh work has no stored copy → no optimistic-lock base
   title.value = ''
   setNodes(zoneNodes())
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries

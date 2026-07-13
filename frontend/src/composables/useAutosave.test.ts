@@ -10,6 +10,7 @@ vi.mock('../api', () => ({
 vi.mock('./useToast', () => ({ useToast: () => ({ push: vi.fn() }) }))
 
 import { useAutosave } from './useAutosave'
+import { ApiError } from '../api' // resolves to the mock's ApiError — same class useAutosave checks against
 
 function setup() {
   const nodes = ref<any[]>([])
@@ -60,6 +61,20 @@ describe('useAutosave save coordination', () => {
     saveWork.mockRejectedValueOnce(new Error('boom'))
     a.markDirty()
     expect(await a.flush()).toBe(false)
+  })
+
+  it('on a 409 (concurrent edit) calls onConflict and does not stay dirty (H3)', async () => {
+    const onConflict = vi.fn()
+    const a = useAutosave({
+      nodes: ref<any[]>([]), viewport: ref({ x: 0, y: 0, zoom: 1 }),
+      params: () => ({}) as any, drafts: () => [], favorites: () => [], onNoVault: vi.fn(), onConflict,
+    })
+    a.vaultReady.value = true
+    a.title.value = 'x'
+    saveWork.mockRejectedValueOnce(new ApiError(409, 'changed elsewhere'))
+    a.markDirty()
+    expect(await a.flush()).toBe(false)
+    expect(onConflict).toHaveBeenCalledTimes(1)
   })
 })
 
