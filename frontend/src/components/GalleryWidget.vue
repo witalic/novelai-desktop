@@ -19,7 +19,21 @@ const props = defineProps<{
 const emit = defineEmits<{
   favorite: [string]; preview: [string]; remove: [string]
   dropOnGrid: [{ gridId: string; imageId?: string; payload?: string }] // a thumb or kept-draft dropped onto a specific grid
+  dropOnQuick: [{ imageId?: string; payload?: string }] // dropped onto Quick access → unassigned gallery image
 }>()
+
+// Quick access = the default unordered bin: gallery images not assigned to any grid. New generations and
+// anything dropped outside a specific grid land here; the user drags them into grids to curate. Derived.
+const quickOpen = ref(false)
+const assignedIds = computed(() => new Set(blocks.value.flatMap((b) => (b.type === 'grid' ? b.imageIds : []))))
+const unassigned = computed(() => props.images.filter((im) => !assignedIds.value.has(im.id)))
+const quickDropOver = ref(false)
+function onQuickDrop(e: DragEvent) {
+  quickDropOver.value = false
+  const payload = e.dataTransfer?.getData('text/plain') || ''
+  if (payload.startsWith('nai-galimg:')) emit('dropOnQuick', { imageId: payload.slice('nai-galimg:'.length) })
+  else if (payload === 'nai-draft' || payload.startsWith('nai-draft:') || payload.startsWith('nai-drafts:')) emit('dropOnQuick', { payload })
+}
 
 // A grid is a drop target: a thumbnail dragged from another grid MOVES here; a kept draft dropped
 // here joins this album (CanvasBoard resolves the payload — it owns the drafts + the image nodes).
@@ -171,6 +185,9 @@ function onBlkDrop(targetId: string) {
       <span v-if="title" class="ctx">· {{ title }}</span>
       <span class="ctx">· {{ total }} image{{ total === 1 ? '' : 's' }}</span>
       <span class="hsp"></span>
+      <button class="qtoggle nodrag" :class="{ on: quickOpen }" title="Quick access — unsorted images" @pointerdown.stop @click.stop="quickOpen = !quickOpen">
+        ⧉ Quick<span v-if="unassigned.length" class="qbadge">{{ unassigned.length }}</span>
+      </button>
       <div class="addwrap">
         <button class="addbtn nodrag" @pointerdown.stop @click.stop="toggleAdd('head')"><span>＋</span> Add block</button>
         <div v-if="addOpen === 'head'" class="addmenu nodrag" @pointerdown.stop @click.stop>
@@ -181,6 +198,7 @@ function onBlkDrop(targetId: string) {
       </div>
     </div>
 
+    <div class="gmain">
     <div class="gnbody nowheel" @scroll="addOpen = null">
       <div class="glist">
         <template v-for="b in blocks" :key="b.id">
@@ -256,6 +274,23 @@ function onBlkDrop(targetId: string) {
         </template>
         <div v-if="!blocks.length" class="glhint">Empty gallery — add a block below to start.</div>
       </div>
+    </div>
+
+    <!-- Quick access — the default unsorted bin (right side); drop here to unassign, drag out into grids -->
+    <div v-if="quickOpen" class="quickpanel nowheel" :class="{ droptarget: quickDropOver }"
+      @dragover.prevent="quickDropOver = true" @dragleave="quickDropOver = false" @drop.prevent.stop="onQuickDrop">
+      <div class="qphd">Quick access <span class="qpn">{{ unassigned.length }}</span></div>
+      <div v-if="unassigned.length" class="qpgrid">
+        <div v-for="im in unassigned" :key="im.id" class="gthumb qthumb nodrag" :class="{ fav: im.data.favorite }"
+          :style="{ '--ar': im.data.ar || (3 / 4) }" draggable="true" @dragstart="onThumbDrag(im.id, $event)"
+          @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
+          <img class="im" :src="thumbSrc(im.data.url, 2)" alt="gallery image" loading="lazy" draggable="false" />
+          <button class="star nodrag" title="Toggle favourite" @pointerdown.stop @click.stop="emit('favorite', im.id)">★</button>
+          <button class="tremove nodrag" title="Remove to the canvas" @pointerdown.stop @click.stop="emit('remove', im.id)">✕</button>
+        </div>
+      </div>
+      <div v-else class="qphint">Unsorted images land here — kept generations and anything dropped outside a grid. Drag them into a grid to organise.</div>
+    </div>
     </div>
 
     <div class="gnft">
@@ -353,8 +388,22 @@ function onBlkDrop(targetId: string) {
 .gnft .lbtn{border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;display:inline-flex;gap:5px;align-items:center}
 .gnft .lbtn:hover{color:var(--accent)}
 
-.gnbody{flex:1;min-height:0;overflow-y:auto;padding:10px 12px 14px}
+.gmain{flex:1;min-height:0;display:flex}
+.gnbody{flex:1;min-width:0;min-height:0;overflow-y:auto;padding:10px 12px 14px}
 .glist{display:flex;flex-direction:column;gap:8px}
+
+/* Quick access panel (right) */
+.qtoggle{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:4px 9px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.qtoggle:hover{color:var(--text)}
+.qtoggle.on{background:var(--nav-active);color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
+.qbadge{display:inline-flex;align-items:center;justify-content:center;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--on-accent);font-size:9.5px;font-weight:700}
+.quickpanel{width:212px;flex-shrink:0;border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
+.quickpanel.droptarget{outline:2px dashed var(--accent);outline-offset:-3px;background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.qphd{display:flex;align-items:center;gap:6px;padding:9px 12px;font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);border-bottom:1px solid var(--border);flex-shrink:0}
+.qphd .qpn{margin-left:auto;color:var(--text-dim)}
+.qpgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;padding:8px}
+.qthumb{aspect-ratio:var(--ar,3/4)}
+.qphint{padding:16px 12px;font-size:11px;color:var(--text-faint);line-height:1.5}
 
 .b-grid{display:flex;flex-direction:column;border-radius:8px}
 .b-grid.droptarget{outline:2px dashed var(--accent);outline-offset:2px;background:color-mix(in srgb,var(--accent) 7%,transparent)}

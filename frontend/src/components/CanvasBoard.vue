@@ -219,9 +219,8 @@ function onCanvasDrop(e: DragEvent) {
   const gp = gal ? (gal.computedPosition || gal.position) : { x: 0, y: 0 } // top-level → computedPosition == position
   const inGallery = !!gal && pos.x >= gp.x && pos.x <= gp.x + gd.w && pos.y >= gp.y && pos.y <= gp.y + gd.h
   if (inGallery && gal) {
-    // Kept to the gallery → a hidden child rendered inside the gallery widget, joined to the default album.
+    // Kept to the gallery → a hidden child in the widget's Quick access (unassigned to any grid until curated).
     addNodes([{ id, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
-    addImageToGallery(id)
   } else {
     addNodes([{ id, type: 'image', position: { x: pos.x - w / 2, y: pos.y - h / 2 }, zIndex: 3,
       style: { width: `${w}px`, height: `${h}px` }, data }])
@@ -246,9 +245,8 @@ function keepDraftsBatch(ids: string[], pos?: { x: number; y: number }) {
     const { w, h } = spawnSize(ar)
     const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: draft.created_at || new Date().toISOString() }
     if (inGallery && gal) {
-      // Kept to the gallery → hidden children in the gallery widget, joined to the default album.
+      // Kept to the gallery → hidden children in the widget's Quick access (unassigned until curated).
       addNodes([{ id: did, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
-      addImageToGallery(did)
     } else {
       const base = pos ?? { x: 60, y: 60 }
       addNodes([{ id: did, type: 'image', zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: base.x - w / 2 + i, y: base.y - h / 2 + i }, data }])
@@ -414,36 +412,30 @@ function toggleImageFavorite(id: string) {
 function galleryGrids(): any[] {
   return (((findNode(GALLERY)?.data.blocks as any[]) || []).filter((b) => b.type === 'grid'))
 }
-function addImageToGallery(id: string) {
-  const gal = findNode(GALLERY)
-  if (!gal) return
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const blocks = (gal.data.blocks ??= []) as any[]
-  let grid = blocks.find((b) => b.type === 'grid')
-  if (!grid) { grid = { id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }; blocks.push(grid) } // ensure a default album
-  if (!grid.imageIds.includes(id)) grid.imageIds.push(id)
-}
 function removeImageFromGridAlbums(id: string) {
   for (const g of galleryGrids()) { const i = g.imageIds.indexOf(id); if (i >= 0) g.imageIds.splice(i, 1) }
 }
 // A thumb or kept draft dropped onto a specific grid → joins THAT album (not always the first one).
 function onGalleryGridDrop(p: { gridId: string; imageId?: string; payload?: string }) {
-  if (p.imageId) { // an existing gallery thumbnail moved between albums
+  const grid = galleryGrids().find((g) => g.id === p.gridId)
+  if (!grid) return
+  if (p.imageId) { // an existing gallery thumbnail moved into this album
     const n = findNode(p.imageId)
     if (!n || n.type !== 'image') return
     removeImageFromGridAlbums(p.imageId)
-    const grid = galleryGrids().find((g) => g.id === p.gridId)
-    if (grid && !grid.imageIds.includes(p.imageId)) grid.imageIds.push(p.imageId)
+    if (!grid.imageIds.includes(p.imageId)) grid.imageIds.push(p.imageId)
     n.parentNode = GALLERY; n.hidden = true; n.position = { x: 0, y: 0 } // ensure it's a gallery child
     return
   }
-  // a kept draft (Output slot / Stack) dropped onto this grid → materialise it here
-  const pl = p.payload || ''
+  keepDraftsToGallery(p.payload || '', grid) // a kept draft dropped onto this grid → materialise it here
+}
+// Materialise kept drafts (Output/Stack payload) as gallery children; add to `grid` if given, else
+// leave them unassigned (Quick access).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function keepDraftsToGallery(pl: string, grid?: any) {
   const ids = pl === 'nai-draft' ? (props.drafts[0] ? [props.drafts[0].id] : [])
     : pl.startsWith('nai-draft:') ? [pl.slice('nai-draft:'.length)]
       : pl.startsWith('nai-drafts:') ? pl.slice('nai-drafts:'.length).split(',') : []
-  const grid = galleryGrids().find((g) => g.id === p.gridId)
-  if (!grid) return
   for (const did of ids) {
     const draft = props.drafts.find((d) => d.id === did)
     if (!draft) continue
@@ -451,10 +443,21 @@ function onGalleryGridDrop(p: { gridId: string; imageId?: string; payload?: stri
     const { w, h } = spawnSize(ar)
     const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: draft.created_at || new Date().toISOString() }
     addNodes([{ id: did, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
-    if (!grid.imageIds.includes(did)) grid.imageIds.push(did)
+    if (grid && !grid.imageIds.includes(did)) grid.imageIds.push(did)
     seedSrc(did)
     emit('take', did)
   }
+}
+// Dropped onto Quick access → an unassigned gallery image (a thumb leaves its grid; a draft materialises loose).
+function onGalleryQuickDrop(p: { imageId?: string; payload?: string }) {
+  if (p.imageId) {
+    const n = findNode(p.imageId)
+    if (!n || n.type !== 'image') return
+    removeImageFromGridAlbums(p.imageId)
+    n.parentNode = GALLERY; n.hidden = true; n.position = { x: 0, y: 0 }
+    return
+  }
+  keepDraftsToGallery(p.payload || '')
 }
 
 // Remove a gallery image from its album and float it back onto the canvas as scratch (a move, not a copy).
@@ -629,10 +632,9 @@ function settleNode(node: any) {
   } else if (node.type === 'image') {
     const gal = getIntersectingNodes(node).find((n) => n.type === 'zone' && n.data.role === 'gallery')
     if (gal) {
-      // Into the gallery → a hidden child in the default album, surfaced only through the widget's grids.
+      // Into the gallery → a hidden child in Quick access (unassigned; the user drags it into a grid to curate).
       live.parentNode = gal.id
       live.hidden = true
-      addImageToGallery(live.id)
     } else if (live.parentNode) {
       live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
       live.parentNode = undefined
@@ -1109,7 +1111,7 @@ function startName(data: any, e: MouseEvent) {
           </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" @remove="(id) => moveGalleryImageToScratch(id)" @drop-on-grid="onGalleryGridDrop" />
+            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" @remove="(id) => moveGalleryImageToScratch(id)" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
           </template>
         </template>
 
