@@ -3,7 +3,7 @@
 // images as a composable stack of typed blocks (design/gallery-widget-mockup.html). Increment 1: a
 // single image-grid block over the passed gallery images, with a column control, ★ favourite, and
 // click-to-preview. More block types (Section/Heading/Text/Metadata/Divider) land in later increments.
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { filterBySource } from './gallerySource'
 import type { GalleryBlock, ImageNodeData, ZoneNode } from '../types'
 
@@ -22,6 +22,27 @@ const total = computed(() => props.images.length)
 
 // A grid's images come from a saved query (all / favorites / tag:x / group:g), never a stored id list.
 const sourceImages = (source: string): GalleryImage[] => filterBySource(props.images, source)
+
+// ---- source picker (which images a grid shows) ----
+// The distinct tags/groups present across the work's gallery images, offered as `tag:`/`group:` sources.
+const availableSources = computed(() => {
+  const tags = new Set<string>(), groups = new Set<string>()
+  for (const im of props.images) {
+    for (const t of im.data.tags || []) tags.add(t)
+    if (im.data.group) groups.add(im.data.group)
+  }
+  return { tags: [...tags].sort(), groups: [...groups].sort() }
+})
+function sourceLabel(s: string): string {
+  if (s === 'all') return 'All images'
+  if (s === 'favorites') return 'Favourites'
+  if (s.startsWith('tag:')) return `Tag · ${s.slice(4)}`
+  if (s.startsWith('group:')) return `Group · ${s.slice(6)}`
+  return s
+}
+const sourceOpen = ref<string | null>(null) // block id whose picker is open — transient, kept off the block object
+function toggleSource(id: string) { sourceOpen.value = sourceOpen.value === id ? null : id }
+function pickSource(b: GalleryBlock, s: string) { if (b.type === 'grid') b.source = s; sourceOpen.value = null } // in-place → persists
 
 const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
 // Server-sized thumbnail for a cell; a fresh `data:` URL can't be resized so it's used as-is.
@@ -43,18 +64,33 @@ function setCols(b: GalleryBlock, cols: 2 | 3 | 4) { if (b.type === 'grid') b.co
       <span class="ctx">· {{ total }} image{{ total === 1 ? '' : 's' }}</span>
     </div>
 
-    <div class="gnbody nowheel">
+    <div class="gnbody nowheel" @scroll="sourceOpen = null">
       <div class="glist">
         <template v-for="b in blocks" :key="b.id">
           <!-- image grid -->
           <div v-if="b.type === 'grid'" class="b-grid">
             <div class="gridtool nodrag">
-              <span class="gtsrc">All images</span>
+              <button class="gtsource" title="Which images this grid shows" @pointerdown.stop @click.stop="toggleSource(b.id)">
+                <span class="k">Source:</span> {{ sourceLabel(b.source) }} <span class="car">▾</span>
+              </button>
               <div class="cols">
                 <button v-for="n in ([2, 3, 4] as const)" :key="n" class="nodrag" :class="{ on: b.cols === n }"
                   @pointerdown.stop @click.stop="setCols(b, n)">{{ n }}</button>
               </div>
               <span class="gtcount">{{ sourceImages(b.source).length }} images</span>
+            </div>
+            <!-- inline source menu (inline, not fixed/absolute — a Vue-Flow node's transform breaks fixed and its scroll clips absolute) -->
+            <div v-if="sourceOpen === b.id" class="srcmenu nodrag" @pointerdown.stop @click.stop>
+              <button class="so" :class="{ on: b.source === 'all' }" @click="pickSource(b, 'all')">All images</button>
+              <button class="so" :class="{ on: b.source === 'favorites' }" @click="pickSource(b, 'favorites')">★ Favourites</button>
+              <template v-if="availableSources.tags.length">
+                <div class="sohd">Tags</div>
+                <button v-for="t in availableSources.tags" :key="'t' + t" class="so" :class="{ on: b.source === 'tag:' + t }" @click="pickSource(b, 'tag:' + t)">{{ t }}</button>
+              </template>
+              <template v-if="availableSources.groups.length">
+                <div class="sohd">Groups</div>
+                <button v-for="g in availableSources.groups" :key="'g' + g" class="so" :class="{ on: b.source === 'group:' + g }" @click="pickSource(b, 'group:' + g)">{{ g }}</button>
+              </template>
             </div>
             <div v-if="sourceImages(b.source).length" class="gimgs" :style="{ '--cols': b.cols }">
               <div v-for="im in sourceImages(b.source)" :key="im.id" class="gthumb nodrag" :class="{ fav: im.data.favorite }"
@@ -86,8 +122,18 @@ function setCols(b: GalleryBlock, cols: 2 | 3 | 4) { if (b.type === 'grid') b.co
 
 .b-grid{display:flex;flex-direction:column}
 .gridtool{display:flex;align-items:center;gap:8px;padding:0 1px 8px}
-.gtsrc{display:inline-flex;align-items:center;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);
-  border-radius:var(--radius);padding:4px 9px;font-size:11.5px;font-weight:600}
+.gtsource{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);
+  border-radius:var(--radius);padding:4px 9px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.gtsource:hover{color:var(--text)}
+.gtsource .k{color:var(--text-faint);font-weight:500}
+.gtsource .car{font-size:9px;opacity:.7}
+/* inline source menu — expands in the flow (pushes the grid) so a Vue-Flow node's transform/scroll can't clip it */
+.srcmenu{display:flex;flex-direction:column;gap:1px;margin:0 0 8px;padding:5px;max-height:190px;overflow-y:auto;
+  border:1px solid var(--border-strong);border-radius:var(--radius-lg);background:var(--surface-1)}
+.srcmenu .so{border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12px;font-weight:600;text-align:left;padding:6px 9px;border-radius:var(--radius);cursor:pointer}
+.srcmenu .so:hover{background:var(--surface-3);color:var(--text)}
+.srcmenu .so.on{background:var(--nav-active);color:var(--accent)}
+.srcmenu .sohd{font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:7px 9px 3px}
 .cols{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .cols button{border:0;border-left:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font:inherit;font-size:11px;font-weight:700;padding:4px 8px;cursor:pointer}
 .cols button:first-child{border-left:0}
