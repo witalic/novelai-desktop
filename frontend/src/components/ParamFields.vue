@@ -47,7 +47,18 @@ const samplerOptions = computed(() => {
   return opts
 })
 
-const ucOptions = computed(() => catalog.value?.uc_presets.map((u) => ({ value: u.value, label: u.label })) ?? [])
+// Undesired-content preset, filtered to the selected model's presets (Furry Focus is Full-only).
+const ucOptions = computed(() => {
+  const cat = catalog.value
+  if (!cat) return []
+  const allowed = currentModel.value?.uc_presets ?? cat.uc_presets.map((u) => u.value)
+  const opts = cat.uc_presets.filter((u) => allowed.includes(u.value)).map((u) => ({ value: u.value, label: u.label }))
+  if (!opts.some((o) => o.value === props.params.uc_preset)) { // a stale/foreign value stays selectable, marked
+    const known = cat.uc_presets.find((u) => u.value === props.params.uc_preset)
+    opts.unshift({ value: props.params.uc_preset, label: known ? `${known.label} (unavailable)` : `(unavailable) ${props.params.uc_preset}` })
+  }
+  return opts
+})
 const noiseOptions = computed(() => catalog.value?.noise_schedules.map((n) => ({ value: n.value, label: n.label })) ?? [])
 
 const sizeOptions = computed(() => {

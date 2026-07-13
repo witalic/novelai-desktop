@@ -42,6 +42,7 @@ export interface CatalogModel {
   token_limit: number
   negative_token_limit: number
   samplers: string[] // sampler ids offered for this model
+  uc_presets: number[] // ucPreset values offered for this model (Furry Focus is Full-only)
   steps: CatalogRange
   scale: CatalogRange
 }

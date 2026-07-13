@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 import httpx
 
 from app.novelai._png import unzip_pngs
+from app.novelai.catalog import get_catalog
 from app.novelai.errors import map_response_error
 from app.novelai.models import GenerateParams
 
@@ -36,6 +37,15 @@ def parse_subscription(data: dict) -> dict:
     }
 
 
+def _uc_preset_for(model: str, uc_preset: int) -> int:
+    """Clamp the ucPreset to one the model actually offers (M3: Curated has no Furry Focus=7 — sending it
+    is undefined). Falls back to None (3) or the first offered preset."""
+    spec = next((m for m in get_catalog().models if m.id == model), None)
+    if spec and uc_preset not in spec.uc_presets:
+        return 3 if 3 in spec.uc_presets else spec.uc_presets[0]
+    return uc_preset
+
+
 def build_body(params: GenerateParams) -> dict:
     """Assemble the NovelAI generate-image body (v4/v4.5 shape) from flat params."""
     seed = params.seed if params.seed is not None else secrets.randbelow(2**32)
@@ -47,7 +57,7 @@ def build_body(params: GenerateParams) -> dict:
         "sampler": params.sampler,
         "steps": params.steps,
         "n_samples": params.n_samples,
-        "ucPreset": params.uc_preset,
+        "ucPreset": _uc_preset_for(params.model, params.uc_preset),
         "qualityToggle": params.quality_toggle,
         "dynamic_thresholding": False,
         "cfg_rescale": params.cfg_rescale,

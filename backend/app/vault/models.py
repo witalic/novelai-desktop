@@ -188,7 +188,7 @@ class PresetParams(BaseModel):
     width: int = Field(default=832, ge=64, le=2048)
     height: int = Field(default=1216, ge=64, le=2048)
     steps: int = Field(default=28, ge=1, le=50)
-    scale: float = Field(default=5.0, ge=0, le=30)
+    scale: float = Field(default=5.0, ge=0, le=10)  # matches the catalog's _SCALE (the single source of truth)
     sampler: str = "k_euler_ancestral"
     n_samples: int = Field(default=1, ge=1, le=4)
     noise_schedule: str = "karras"

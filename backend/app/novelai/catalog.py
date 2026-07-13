@@ -56,6 +56,7 @@ class ModelSpec(BaseModel):
     token_limit: int = 512  # positive budget (base caption + character captions share it)
     negative_token_limit: int = 512  # the negative prompt is counted separately
     samplers: list[str]  # sampler ids offered for this model (SMEA variants only exist on v3)
+    uc_presets: list[int]  # ucPreset values offered for this model (Furry Focus is Full-only, not Curated)
     steps: Range
     scale: Range
 
@@ -103,6 +104,8 @@ _UC_PRESETS = [
     UcPreset(value=6, label="Human Focus"),
     UcPreset(value=3, label="None"),
 ]
+_UC_FULL = [4, 5, 7, 6, 3]      # Full offers Furry Focus
+_UC_CURATED = [4, 5, 6, 3]      # Curated has no Furry Focus (sending ucPreset 7 to it is undefined)
 
 _NOISE = [
     Labeled(value="karras", label="karras (recommended)"),
@@ -115,9 +118,9 @@ _SCALE = Range(min=0, max=10, step=0.5, default=5)
 
 _MODELS = [
     ModelSpec(id="nai-diffusion-4-5-full", label="NAI Diffusion 4.5 — Full",
-              family="v4", tokenizer="t5", samplers=_V45_SAMPLERS, steps=_STEPS, scale=_SCALE),
+              family="v4", tokenizer="t5", samplers=_V45_SAMPLERS, uc_presets=_UC_FULL, steps=_STEPS, scale=_SCALE),
     ModelSpec(id="nai-diffusion-4-5-curated", label="NAI Diffusion 4.5 — Curated",
-              family="v4", tokenizer="t5", samplers=_V45_SAMPLERS, steps=_STEPS, scale=_SCALE),
+              family="v4", tokenizer="t5", samplers=_V45_SAMPLERS, uc_presets=_UC_CURATED, steps=_STEPS, scale=_SCALE),
 ]
 
 _DEFAULT_MODEL = "nai-diffusion-4-5-full"

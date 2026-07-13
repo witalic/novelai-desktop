@@ -24,6 +24,16 @@ def test_build_body_v4_shape():
     assert isinstance(body["parameters"]["seed"], int)  # random seed filled in
 
 
+def test_uc_preset_clamped_to_model_offering():
+    # Curated has no Furry Focus (7) → build_body must not send it (undefined on that model, M3).
+    curated = build_body(GenerateParams(prompt="x", model="nai-diffusion-4-5-curated", uc_preset=7))
+    assert curated["parameters"]["ucPreset"] != 7
+    # Full offers Furry Focus → it passes through unchanged.
+    assert build_body(GenerateParams(prompt="x", model="nai-diffusion-4-5-full", uc_preset=7))["parameters"]["ucPreset"] == 7
+    # A valid preset on Curated is untouched.
+    assert build_body(GenerateParams(prompt="x", model="nai-diffusion-4-5-curated", uc_preset=5))["parameters"]["ucPreset"] == 5
+
+
 @pytest.mark.parametrize(
     "status,exc",
     [
