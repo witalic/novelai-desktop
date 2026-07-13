@@ -124,6 +124,32 @@ async def test_scratch_images_persist_but_never_surface(client):
     assert [e["image_id"] for e in ex] == ["img-w1"]
 
 
+async def test_list_works_search_and_sort(client):
+    ac, _ = client
+    for wid, title, n in [("w1", "Alpha", 1), ("w2", "Beta", 3), ("w3", "alpha two", 2)]:
+        w = _work(wid)
+        w["title"] = title
+        base = w["images"][0]
+        w["images"] = [dict(base, id=f"img-{wid}-{i}") for i in range(n)]  # n gallery images
+        w["preview_image_id"] = f"img-{wid}-0"
+        assert (await ac.put("/api/vault/works", json=w)).status_code == 200
+
+    # search by title (case-insensitive substring): "Alpha" + "alpha two"
+    hit = (await ac.get("/api/vault/works", params={"search": "alpha"})).json()
+    assert hit["total"] == 2 and {i["id"] for i in hit["items"]} == {"w1", "w3"}
+
+    # sort by name ascending (COLLATE NOCASE)
+    names = (await ac.get("/api/vault/works", params={"sort": "name", "direction": "asc"})).json()
+    assert [i["title"] for i in names["items"]] == ["Alpha", "alpha two", "Beta"]
+
+    # sort by gallery image count, descending
+    counts = (await ac.get("/api/vault/works", params={"sort": "image_count", "direction": "desc"})).json()
+    assert [i["image_count"] for i in counts["items"]] == [3, 2, 1]
+
+    # an out-of-whitelist sort is rejected by the router
+    assert (await ac.get("/api/vault/works", params={"sort": "bogus"})).status_code == 422
+
+
 async def test_image_thumbnail_resized_and_capped(client):
     ac, vault = client
     work = _work("w1")

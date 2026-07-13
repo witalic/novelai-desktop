@@ -115,11 +115,12 @@ def delete_work(settings: Settings, work_id: str) -> dict:
     return {"deleted": work_id}
 
 
-def list_works(settings: Settings, page: int, per_page: int) -> WorksPage:
+def list_works(settings: Settings, page: int, per_page: int,
+               search: str | None = None, sort: str = "updated", direction: str = "desc") -> WorksPage:
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:
-        total, rows = index.list_works(conn, page, per_page)
+        total, rows = index.list_works(conn, page, per_page, search, sort, direction)
     finally:
         conn.close()
     items = [

@@ -61,9 +61,12 @@ def save_work(doc: WorkDoc, settings: Settings = Depends(get_settings)) -> dict:
 @router.get("/works", response_model=WorksPage)
 def list_works(
     page: int = Query(1, ge=1), per_page: int = Query(24, ge=1, le=100),
+    search: str = Query("", max_length=200),
+    sort: str = Query("updated", pattern="^(updated|created|name|image_count)$"),
+    direction: str = Query("desc", pattern="^(asc|desc)$"),
     settings: Settings = Depends(get_settings),
 ) -> WorksPage:
-    return service.list_works(settings, page, per_page)
+    return service.list_works(settings, page, per_page, search.strip() or None, sort, direction)
 
 
 @router.get("/works/{work_id}", response_model=WorkDoc)

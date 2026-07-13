@@ -278,11 +278,29 @@ def find_work_dir(conn: sqlite3.Connection, work_id: str) -> str | None:
     return row[0] if row else None
 
 
-def list_works(conn: sqlite3.Connection, page: int, per_page: int):
-    total = conn.execute("SELECT COUNT(*) FROM work").fetchone()[0]
+# Whitelisted ORDER BY columns (the router validates `sort`; this is belt & braces against injection).
+_WORK_SORTS = {
+    "updated": "updated_at",
+    "created": "created_at",
+    "name": "title COLLATE NOCASE",
+    "image_count": "image_count",
+}
+
+
+def list_works(conn: sqlite3.Connection, page: int, per_page: int,
+               search: str | None = None, sort: str = "updated", direction: str = "desc"):
+    where, params = [], []
+    if search:
+        where.append("title LIKE ? COLLATE NOCASE")
+        params.append(f"%{search}%")
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    col = _WORK_SORTS.get(sort, _WORK_SORTS["updated"])
+    dir_sql = "ASC" if direction == "asc" else "DESC"
+    total = conn.execute(f"SELECT COUNT(*) FROM work {clause}", params).fetchone()[0]
     rows = conn.execute(
-        "SELECT id,title,updated_at,image_count,preview_image_id FROM work ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-        (per_page, (page - 1) * per_page),
+        f"SELECT id,title,updated_at,image_count,preview_image_id FROM work {clause} "
+        f"ORDER BY {col} {dir_sql}, id LIMIT ? OFFSET ?",  # `id` tiebreak keeps paging deterministic
+        params + [per_page, (page - 1) * per_page],
     ).fetchall()
     return total, rows
 

@@ -23,8 +23,15 @@ export class ApiError extends Error {
   }
 }
 
-export async function listWorks(page = 1, perPage = 24): Promise<WorksPage> {
-  const resp = await fetch(`/api/vault/works?page=${page}&per_page=${perPage}`)
+export type WorkSort = 'updated' | 'created' | 'name' | 'image_count'
+export async function listWorks(
+  opts: { page?: number; perPage?: number; search?: string; sort?: WorkSort; direction?: 'asc' | 'desc' } = {},
+): Promise<WorksPage> {
+  const p = new URLSearchParams({ page: String(opts.page ?? 1), per_page: String(opts.perPage ?? 24) })
+  if (opts.search) p.set('search', opts.search)
+  if (opts.sort) p.set('sort', opts.sort)
+  if (opts.direction) p.set('direction', opts.direction)
+  const resp = await fetch(`/api/vault/works?${p}`)
   if (!resp.ok) throw new ApiError(resp.status, `Failed to list works (HTTP ${resp.status})`)
   return resp.json()
 }
