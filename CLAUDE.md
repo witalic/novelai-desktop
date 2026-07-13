@@ -19,7 +19,7 @@ test. **Phase 2 (structured galleries + widgets) is largely delivered**; the tai
 gallery + tag/content work filters (need the gallery indexed into `index.db`).
 
 ## Working rules
-- **Language:** converse in Ukrainian; code, comments, UI copy, and docs in English. `README` may be Ukrainian.
+- **Language:** converse in Ukrainian; code, comments, UI copy, and docs in English.
 - **Design first:** UI features start as a mockup the owner approves. Mockups live in `design/` as
   self-contained HTML on the app's `tokens.css` palette (PNGs stay untracked — `.gitignore`).
 - **Don't repeat past UI mistakes:** before building or changing any UI, read `rules/ui-design.md` — a
