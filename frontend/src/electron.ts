@@ -9,8 +9,6 @@ declare global {
   interface Window { electronAPI?: ElectronAPI }
 }
 
-export const hasElectron = typeof window !== 'undefined' && !!window.electronAPI
-
 // Register a flush-on-close handler (Electron only). Main waits for it before the app exits.
 // Returns a disposer to unregister on unmount (no-op outside Electron) so listeners never stack.
 export function onBeforeQuit(handler: () => Promise<void> | void): () => void {

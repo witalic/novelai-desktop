@@ -96,7 +96,6 @@ class Image(BaseModel):
     role: Literal["gallery", "scratch"] = "gallery"
     ar: float | None = None  # true source aspect ratio (v2) — outlives a lost/dangling snapshot
     file: str = ""
-    params: dict[str, Any] = Field(default_factory=dict)
     group: str | None = None
     favorite: bool = False
     tags: list[str] = Field(default_factory=list)      # manual tags (inherited come from the snapshot)

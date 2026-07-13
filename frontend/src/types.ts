@@ -190,22 +190,17 @@ export interface ZoneNode extends CanvasNodeBase {
   type: 'zone'
   data: {
     role: 'library' | 'gallery'
-    // library-zone (prompt widget) layout — additive optional fields, no schema bump needed
-    collapsed?: boolean
-    expandedH?: number // height to restore on expand (style.height holds 38px while collapsed)
-    // gallery-zone (structured gallery widget) layout — the composed block stack (schema v5)
-    blocks?: GalleryBlock[]
+    // gallery-zone (structured gallery widget) layout — additive optional fields, backend stores canvas opaquely
+    blocks?: GalleryBlock[] // the composed block stack (schema v6 — grids own imageIds)
     outlineOpen?: boolean // Outline nav panel open (persisted layout)
     quickOpen?: boolean // Quick access panel open (persisted layout)
   }
 }
 
 // ---- structured gallery: the gallery zone's composed block stack (frontend-owned layout) ----
-// An image-grid references its images by a *query* (all / favorites / tag:x / group:g), never a stored
-// id list — so new images flow in and the same image can appear in several grids. The union grows as
-// block types land (increment by increment). Transient block-UI state (inline-edit, drag) lives in
-// component refs keyed by block id — NEVER inside these objects, or serialize.pick leaks it to disk.
-// A grid is an album: it owns an ordered list of image ids; each gallery image belongs to exactly one grid.
+// A grid is an ALBUM: it owns an ordered `imageIds` list, and each gallery image belongs to exactly one
+// grid (images not in any grid surface in Quick access). Transient block-UI state (inline-edit, drag)
+// lives in component refs keyed by block id — NEVER inside these objects, or serialize.pick leaks it to disk.
 export interface GalleryGridBlock { id: string; type: 'grid'; imageIds: string[]; cols: 2 | 3 | 4 | 5 | 6 | 7 | 8; collapsed?: boolean }
 export interface GallerySectionBlock { id: string; type: 'section'; title: string; collapsed: boolean } // collapsed = layout, persists
 export interface GalleryHeadingBlock { id: string; type: 'heading'; text: string; level: 1 | 2 }

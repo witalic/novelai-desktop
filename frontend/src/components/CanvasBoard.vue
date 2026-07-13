@@ -711,14 +711,6 @@ function toggleFavorite(blockId: string) {
   else favorites.value.push(blockId)
 }
 
-// Collapse persists with the work (layout layer). Height must be written to BOTH the node's
-// numeric size (what NodeResizer mutates — a stale style.height would otherwise be ignored) and
-// its style, or the expanded height won't restore.
-function setZoneHeight(zone: any, h: number) {
-  zone.style = { ...(zone.style as object), height: `${h}px` }
-  zone.height = h
-  if (zone.dimensions) zone.dimensions = { ...zone.dimensions, height: h }
-}
 // ---- copy semantics: every block that enters the work is an independent copy ----
 // A block already contributes to the prompt if the composition holds one with the same polarity +
 // text (its identity for generation). Copying an identical one adds nothing, so we warn instead of

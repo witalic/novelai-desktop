@@ -10,11 +10,13 @@ A desktop app (Electron) wrapping the **NovelAI image API**, with an integrated 
 integration for authoring prompts. Scope for now: **images only**.
 
 Image generation, the vault (works + Library blocks/categories + multi-vault manager + thumbnails),
-the Vue-Flow canvas composer, and the Electron shell are **implemented and tested**; Claude
-prompt-authoring is deferred. The full phased plan is `ROADMAP.md`; **Phase 1 (recipe as a typed,
-versioned contract) closed 2026-07-10** — schema v2 + read-time migrations, domain/layout/transient
-whitelist, scratch persistence, server-owned block versioning, freeze invariant under test. Current
-work = **Phase 2**, starting with the Prompt widget (`design/prompt-widget-mockup.html`, design locked).
+the Vue-Flow canvas composer, the structured gallery, the full Works browser (view/edit), and the
+Electron shell are **implemented and tested** (v1.0); Claude prompt-authoring is deferred. The full
+phased plan is `ROADMAP.md`. **Phase 1 (recipe as a typed, versioned contract) closed 2026-07-10**;
+schema is now at **v6** (grids own `imageIds`) with read-time migrations, a domain/layout/transient
+whitelist, scratch persistence, server-owned block + schema versioning, and a freeze invariant under
+test. **Phase 2 (structured galleries + widgets) is largely delivered**; the tail is the global
+gallery + tag/content work filters (need the gallery indexed into `index.db`).
 
 ## Working rules
 - **Language:** converse in Ukrainian; code, comments, UI copy, and docs in English. `README` may be Ukrainian.
