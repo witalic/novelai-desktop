@@ -10,3 +10,16 @@ export function filterBySource<T extends GalleryImageLike>(images: T[], source: 
   if (source.startsWith('group:')) { const g = source.slice(6); return images.filter((i) => i.data.group === g) }
   return images // 'all' (and any unknown source) shows everything
 }
+
+// A collapsed Section hides every block after it up to the next Section (section headers always show).
+// Returns the ids to hide (rendered with v-show so their DOM/scroll survives the collapse).
+export interface BlockLike { id: string; type: string; collapsed?: boolean }
+export function hiddenBlockIds<T extends BlockLike>(blocks: T[]): Set<string> {
+  const set = new Set<string>()
+  let hiding = false
+  for (const b of blocks) {
+    if (b.type === 'section') { hiding = !!b.collapsed; continue }
+    if (hiding) set.add(b.id)
+  }
+  return set
+}

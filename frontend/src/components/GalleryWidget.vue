@@ -4,7 +4,7 @@
 // single image-grid block over the passed gallery images, with a column control, ★ favourite, and
 // click-to-preview. More block types (Section/Heading/Text/Metadata/Divider) land in later increments.
 import { computed, ref } from 'vue'
-import { filterBySource } from './gallerySource'
+import { filterBySource, hiddenBlockIds } from './gallerySource'
 import { newId } from '../vault/ids'
 import type { GalleryBlock, ImageNodeData, ZoneNode } from '../types'
 
@@ -58,15 +58,20 @@ function setCols(b: GalleryBlock, cols: 2 | 3 | 4) { if (b.type === 'grid') b.co
 // ---- compose the block stack (add / delete; drag-reorder lands in a later increment) ----
 type BlockType = GalleryBlock['type']
 const ADD_TYPES: { type: BlockType; label: string; glyph: string; hint: string }[] = [
+  { type: 'section', label: 'Section', glyph: '▤', hint: 'a collapsible group' },
   { type: 'heading', label: 'Heading', glyph: 'H', hint: 'a title' },
   { type: 'text', label: 'Text', glyph: '¶', hint: 'a description / note' },
   { type: 'grid', label: 'Image grid', glyph: '▦', hint: 'images in fixed cells' },
   { type: 'divider', label: 'Divider', glyph: '—', hint: 'a thin rule' },
 ]
+// Blocks after a collapsed section are hidden until the next section (v-show, not v-if, so their DOM
+// scroll/focus survives the collapse — UI-design ledger). Range logic is unit-tested in gallerySource.
+const hiddenIds = computed(() => hiddenBlockIds(blocks.value))
 const addOpen = ref<'head' | 'foot' | null>(null) // which ＋ Add block opened the menu — transient
 function toggleAdd(where: 'head' | 'foot') { addOpen.value = addOpen.value === where ? null : where }
 function newBlock(type: BlockType): GalleryBlock {
   const id = newId('gb')
+  if (type === 'section') return { id, type, title: 'Section', collapsed: false }
   if (type === 'heading') return { id, type, text: 'Heading', level: 2 }
   if (type === 'text') return { id, type, text: '' }
   if (type === 'grid') return { id, type, source: 'all', cols: 3 }
@@ -86,6 +91,26 @@ function autogrow(e: Event) {
   const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = `${el.scrollHeight}px`
+}
+
+// ---- drag-to-reorder the block stack (HTML5 drag off a grip; the node itself never moves) ----
+const dragId = ref<string | null>(null)
+const dragOverId = ref<string | null>(null)
+function onBlkDragStart(id: string, e: DragEvent) {
+  dragId.value = id; addOpen.value = null; sourceOpen.value = null
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+function onBlkDragOver(id: string) { if (dragId.value && id !== dragId.value) dragOverId.value = id }
+function onBlkDragEnd() { dragId.value = null; dragOverId.value = null }
+function onBlkDrop(targetId: string) {
+  const from = dragId.value
+  dragId.value = null; dragOverId.value = null
+  const arr = props.data.blocks
+  if (!from || from === targetId || !arr) return
+  const fi = arr.findIndex((b) => b.id === from)
+  if (fi < 0 || !arr.some((b) => b.id === targetId)) return
+  const [moved] = arr.splice(fi, 1)
+  arr.splice(arr.findIndex((b) => b.id === targetId), 0, moved) // drop before the target → in-place, persists
 }
 </script>
 
@@ -110,13 +135,22 @@ function autogrow(e: Event) {
     <div class="gnbody nowheel" @scroll="sourceOpen = null; addOpen = null">
       <div class="glist">
         <template v-for="b in blocks" :key="b.id">
-          <div class="blk" :class="'blk-' + b.type">
+          <div v-show="!hiddenIds.has(b.id)" class="blk" :class="['blk-' + b.type, { drop: dragOverId === b.id, dragging: dragId === b.id }]"
+            @dragover.prevent="onBlkDragOver(b.id)" @drop.prevent="onBlkDrop(b.id)" @dragleave="dragOverId = null">
+            <span class="bgrip nodrag" title="Drag to reorder" draggable="true"
+              @pointerdown.stop @dragstart="onBlkDragStart(b.id, $event)" @dragend="onBlkDragEnd">⠿</span>
             <div class="bacts nodrag">
               <button class="del nodrag" title="Delete block" @pointerdown.stop @click.stop="deleteBlock(b.id)">🗑</button>
             </div>
 
+            <!-- section — a collapsible group boundary -->
+            <div v-if="b.type === 'section'" class="b-section">
+              <button class="sectw nodrag" :title="b.collapsed ? 'Expand' : 'Collapse'" @pointerdown.stop @click.stop="b.collapsed = !b.collapsed">{{ b.collapsed ? '▸' : '▾' }}</button>
+              <input class="secname nodrag" v-model="b.title" placeholder="Section" @pointerdown.stop />
+            </div>
+
             <!-- image grid -->
-            <div v-if="b.type === 'grid'" class="b-grid">
+            <div v-else-if="b.type === 'grid'" class="b-grid">
             <div class="gridtool nodrag">
               <button class="gtsource" title="Which images this grid shows" @pointerdown.stop @click.stop="toggleSource(b.id)">
                 <span class="k">Source:</span> {{ sourceLabel(b.source) }} <span class="car">▾</span>
@@ -202,15 +236,29 @@ function autogrow(e: Event) {
 .addmenu .amrow .aml{display:flex;flex-direction:column;line-height:1.25}
 .addmenu .amrow .aml small{font-weight:500;color:var(--text-faint);font-size:11px}
 
-/* block wrapper: hover background + a hover delete (grip/drag-reorder land in a later increment) */
-.blk{position:relative;border-radius:8px;padding:3px 6px}
+/* block wrapper: a hover grip (drag-reorder) on the left, a hover delete on the right */
+.blk{position:relative;border-radius:8px;padding:3px 6px 3px 22px}
 .blk:hover{background:color-mix(in srgb,var(--surface-2) 45%,transparent)}
 .blk-grid:hover,.blk-divider:hover{background:transparent}
+.blk.dragging{opacity:.45}
+.blk.drop{box-shadow:0 -2px 0 0 var(--accent)}
+.bgrip{position:absolute;left:4px;top:8px;width:14px;text-align:center;color:var(--text-faint);font-size:12px;line-height:1;cursor:grab;opacity:0;user-select:none}
+.blk:hover .bgrip{opacity:1}
+.bgrip:active{cursor:grabbing}
 .bacts{position:absolute;right:4px;top:4px;display:none;z-index:4}
 .blk:hover .bacts{display:block}
 .bacts .del{border:1px solid var(--border);background:var(--surface-1);color:var(--text-faint);border-radius:5px;height:22px;min-width:22px;font-size:11px;cursor:pointer;padding:0 4px}
 .bacts .del:hover{color:var(--danger);border-color:var(--danger)}
 .blk-grid .gridtool{padding-right:24px} /* clear the hover delete over the count */
+
+/* section — a group boundary bar */
+.b-section{display:flex;align-items:center;gap:8px;padding:8px 2px 7px;border-bottom:1px solid var(--border);margin-top:6px}
+.b-section .sectw{border:0;background:transparent;color:var(--text-faint);font-size:11px;cursor:pointer;padding:0;width:14px;flex-shrink:0}
+.b-section .sectw:hover{color:var(--text)}
+.b-section .secname{flex:1;min-width:0;border:0;background:transparent;color:var(--text);font:inherit;font-size:13.5px;font-weight:700;outline:none;padding:2px 4px;border-radius:4px}
+.b-section .secname:hover{background:var(--surface-3)}
+.b-section .secname:focus{background:var(--surface-1)}
+.b-section .secname::placeholder{color:var(--text-faint);font-weight:600}
 
 /* copy blocks — borderless inline editors */
 .b-heading{width:100%;border:0;background:transparent;color:var(--text);font:inherit;font-weight:750;outline:none;padding:6px 30px 4px 2px}

@@ -204,10 +204,11 @@ export interface ZoneNode extends CanvasNodeBase {
 // block types land (increment by increment). Transient block-UI state (inline-edit, drag) lives in
 // component refs keyed by block id — NEVER inside these objects, or serialize.pick leaks it to disk.
 export interface GalleryGridBlock { id: string; type: 'grid'; source: string; cols: 2 | 3 | 4 }
+export interface GallerySectionBlock { id: string; type: 'section'; title: string; collapsed: boolean } // collapsed = layout, persists
 export interface GalleryHeadingBlock { id: string; type: 'heading'; text: string; level: 1 | 2 }
 export interface GalleryTextBlock { id: string; type: 'text'; text: string }
 export interface GalleryDividerBlock { id: string; type: 'divider' }
-export type GalleryBlock = GalleryGridBlock | GalleryHeadingBlock | GalleryTextBlock | GalleryDividerBlock
+export type GalleryBlock = GalleryGridBlock | GallerySectionBlock | GalleryHeadingBlock | GalleryTextBlock | GalleryDividerBlock
 
 export interface BlockNodeData {
   // domain — the block's content (a frozen copy even when block_id links it to the Library)
