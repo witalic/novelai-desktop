@@ -131,7 +131,12 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
   function onBeforeUnload() {
     if (!vaultReady.value || !dirty || inflight || !isMeaningful() || changeKey() === lastSig) return
     const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites())
+    doc.updated_at = baseUpdatedAt.value // keep the optimistic-lock base so the beacon still yields to a concurrent edit
     try { navigator.sendBeacon('/api/vault/works', new Blob([JSON.stringify(doc)], { type: 'application/json' })) } catch { /* best-effort */ }
+    // The beacon bumps the stored stamp but returns nothing, so our base is now stale. If the close is
+    // cancelled, opt the surviving session out of the lock on its next save (empty base) rather than let
+    // it 409 against its own beacon and reload away later edits (#2).
+    baseUpdatedAt.value = ''
   }
 
   // Periodic auto-save; interval comes from Settings and is re-read when returning to Generate.
