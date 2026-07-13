@@ -667,6 +667,11 @@ function gridUnderPoint(p: { x: number; y: number } | undefined): string | null 
   }
   return null
 }
+// Is the drop pointer actually over the gallery widget (not just the dragged node's box grazing the zone
+// edge)? Requiring this stops an image that merely clipped the corner from vanishing into Quick access (M9).
+function pointerOverGallery(p: { x: number; y: number } | undefined): boolean {
+  return !!p && document.elementsFromPoint(p.x, p.y).some((el) => !!(el as HTMLElement).closest?.('.gnode'))
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function settleNode(node: any, dropXY?: { x: number; y: number }) {
@@ -688,7 +693,9 @@ function settleNode(node: any, dropXY?: { x: number; y: number }) {
     }
   } else if (node.type === 'image') {
     const gal = getIntersectingNodes(node).find((n) => n.type === 'zone' && n.data.role === 'gallery')
-    if (gal) {
+    // Single drag → require the pointer to actually be over the widget (M9); a multi-drag (no single
+    // pointer) falls back to box intersection so a group still lands in the gallery.
+    if (gal && (!dropXY || pointerOverGallery(dropXY))) {
       // Into the gallery → a hidden gallery child. If dropped precisely over a grid, join THAT album
       // (item 2); otherwise it lands unassigned in Quick access. Deselect so no scale-picker lingers (item 5).
       live.parentNode = gal.id

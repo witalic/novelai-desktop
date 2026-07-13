@@ -67,7 +67,7 @@ const { preview } = useImagePreview()
 function onThumbMenu(e: MouseEvent, d: GenResult) {
   openMenu(e, [
     { label: 'Preview', icon: '⤢', onClick: () => preview(d.url) },
-    { label: 'Move to canvas', icon: '⤒', onClick: () => emit('keep-many', [d.id]) },
+    { label: 'Move to Quick access', icon: '⤒', onClick: () => emit('keep-many', [d.id]) },
     { label: 'Remove from stack', icon: '🗑', danger: true, onClick: () => emit('remove-many', [d.id]) },
   ])
 }
@@ -189,10 +189,10 @@ watch(() => props.drafts, (ds) => {
           <div v-if="selected.size" class="selbar">
             <span class="selcnt">{{ selected.size }} selected</span>
             <div class="sp"></div>
-            <button class="stackbtn" @click="keepSelected">⤒ Keep on canvas</button>
+            <button class="stackbtn" @click="keepSelected">⤒ Move to Quick access</button>
             <button class="stackbtn danger" @click="removeSelected">Remove</button>
           </div>
-          <div v-else class="hint">Click to select · drag a thumbnail onto the canvas to keep just that one.</div>
+          <div v-else class="hint">Click to select · drag a thumbnail onto the canvas to place it, or onto the gallery to keep it.</div>
 
           <div class="thumbs">
             <div v-for="(d, i) in drafts" :key="d.id" class="thumb" :class="{ top: i === 0, on: selected.has(d.id) }"
