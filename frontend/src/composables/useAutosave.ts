@@ -44,12 +44,16 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
       || (n.type === 'block' && String(n.data?.text || '').trim().length > 0))
   }
 
-  // Cheap change signature (excludes image bytes) so an unchanged work is never re-written.
+  // Cheap change signature (excludes image *bytes*, keeps their domain fields) so an unchanged work is
+  // never re-written, but favourite/tags/group/description edits on an image DO trigger a save (H1).
   function changeKey(): string {
     const sig = nodes.value.map((n) => ({
       i: n.id, p: n.parentNode ?? null,
       x: Math.round(n.position?.x ?? 0), y: Math.round(n.position?.y ?? 0),
-      s: n.style, d: n.type === 'image' ? (n.data?.url ? 1 : 0) : n.data,
+      s: n.style,
+      d: n.type === 'image'
+        ? { u: n.data?.url ? 1 : 0, f: !!n.data?.favorite, t: n.data?.tags, g: n.data?.group ?? null, ds: n.data?.description ?? '' }
+        : n.data,
     }))
     return JSON.stringify({ t: title.value, params: params(), nodes: sig, stack: drafts().map((d) => d.id), favs: favorites() })
   }

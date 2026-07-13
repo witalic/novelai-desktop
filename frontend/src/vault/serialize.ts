@@ -12,7 +12,6 @@ import type {
 export const STATION = 'station'
 export const LIBRARY = 'library'
 export const GALLERY = 'gallery'
-const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
 
 // What serialize reads off a live Vue Flow node (or a persisted CanvasNode being re-saved);
 // runtime-only fields stay unread. `data` is unknown on purpose: each node type casts to its
@@ -34,7 +33,7 @@ const BLOCK_FIELDS = [
   // layout: order in the station list is position.y; loose scratch blocks use position — no extra fields
 ] as const
 const STATION_FIELDS = ['ratio', 'axis', 'genFirst'] as const // two-zone layout (Generation | Composition)
-const ZONE_FIELDS = ['role', 'collapsed', 'expandedH', 'blocks', 'outlineOpen', 'quickOpen'] as const // prompt-widget collapse + gallery block stack & panel state are layout
+const ZONE_FIELDS = ['role', 'blocks', 'outlineOpen', 'quickOpen'] as const // gallery block stack + panel open-state are layout
 // image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
 
 function pick(data: Record<string, unknown> | undefined, fields: readonly string[]) {
@@ -193,18 +192,19 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
       // hand-edited work might skip it): seed one album grid owning every gallery image, oldest→newest.
       // Deterministic seed id → stable round-trip.
       const d = { ...(n.data as Record<string, unknown>) }
+      const galleryIds = (doc.images || []).filter((im) => im.role === 'gallery')
+        .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))).map((im) => im.id)
       if (!Array.isArray(d.blocks) || !d.blocks.length) {
-        const galleryIds = (doc.images || []).filter((im) => im.role === 'gallery')
-          .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))).map((im) => im.id)
         d.blocks = [{ id: 'gb-seed', type: 'grid', imageIds: galleryIds, cols: 3 }]
+      } else {
+        // Prune image ids that no longer exist (deleted/moved-to-scratch) so counts don't drift (M8).
+        const live = new Set(galleryIds)
+        d.blocks = (d.blocks as { type?: string; imageIds?: string[] }[]).map((b) =>
+          b.type === 'grid' && Array.isArray(b.imageIds) ? { ...b, imageIds: b.imageIds.filter((id) => live.has(id)) } : b)
       }
       return { ...n, data: d } as CanvasNode
     }
     return { ...n, data: { ...n.data } } as CanvasNode
   })
   return { nodes, viewport: doc.canvas?.viewport || { x: 0, y: 0, zoom: 1 } }
-}
-
-export function isAnchor(id: string) {
-  return ANCHORS.has(id)
 }

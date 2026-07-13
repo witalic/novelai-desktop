@@ -14,7 +14,7 @@ from PIL import Image as PILImage
 
 from app import appconfig
 from app.settings import Settings
-from app.vault import catalog, index, layout, manager, store
+from app.vault import catalog, index, layout, manager, migrate, store
 from app.vault.models import (
     BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage,
     SaveCategory, TagCount, WorkDoc, WorkListItem, WorksPage,
@@ -51,6 +51,7 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
         work_dir = layout.safe_join(vault / "works", dir_name)
         doc.slug = layout.slugify(doc.title)
         doc.updated_at = _now()
+        doc.schema_version = migrate.CURRENT  # server owns the version; the client always sends current-shape data (M1)
         if not doc.created_at:
             doc.created_at = doc.updated_at
         # Stamp creation time on images/snapshots that don't have one yet (kept stable across re-saves).

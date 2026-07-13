@@ -38,6 +38,14 @@ const assignedIds = computed(() => new Set(blocks.value.flatMap((b) => (b.type =
 const unassigned = computed(() => props.images.filter((im) => !assignedIds.value.has(im.id)))
 const clearableQuick = computed(() => unassigned.value.filter((im) => !im.data.favorite).map((im) => im.id)) // deletable = unsorted & not favourited
 function urlsOf(imgs: GalleryImage[]): string[] { return imgs.map((im) => im.data.url).filter((u): u is string => !!u) }
+// Imprecise drops inside the widget (on a section header, heading/text/meta block, the outline, or a
+// gap) would otherwise bubble to the canvas and yank the thumbnail into a hidden scratch node (H4).
+// Swallow stray `nai-galimg` moves as a no-op; let draft payloads fall through (dropping a kept draft
+// onto the gallery still adds it via the canvas handler).
+function onRootDrop(e: DragEvent) {
+  const payload = e.dataTransfer?.getData('text/plain') || ''
+  if (payload.startsWith('nai-galimg:')) { e.preventDefault(); e.stopPropagation() }
+}
 const quickDropOver = ref(false)
 function onQuickDrop(e: DragEvent) {
   quickDropOver.value = false
@@ -188,10 +196,16 @@ function onThumbOver(targetId: string, e: DragEvent) {
   imgDropAfter.value = e.clientX > r.left + r.width / 2
 }
 // Commit the move at the caret: reorder within this grid, or pull in from another grid / Quick, then place.
-function onThumbDrop(b: GalleryBlock, targetId: string) {
+function onThumbDrop(b: GalleryBlock, targetId: string, e: DragEvent) {
   const from = imgDragId.value, after = imgDropAfter.value
   imgDragId.value = null; imgDropId.value = null
-  if (b.type !== 'grid' || !from || targetId === from || !Array.isArray(b.imageIds)) return
+  if (b.type !== 'grid' || !Array.isArray(b.imageIds)) return
+  if (!from) { // not an internal thumb drag → a kept draft dropped exactly on a tile joins this album (M6)
+    const payload = e.dataTransfer?.getData('text/plain') || ''
+    if (payload === 'nai-draft' || payload.startsWith('nai-draft:') || payload.startsWith('nai-drafts:')) emit('dropOnGrid', { gridId: b.id, payload })
+    return
+  }
+  if (targetId === from) return
   const place = () => {
     const fi = b.imageIds.indexOf(from)
     if (fi >= 0) b.imageIds.splice(fi, 1) // lift out of its current slot (same grid)
@@ -361,7 +375,7 @@ function onOutDrop(targetId: string) {
 </script>
 
 <template>
-  <div class="gnode" :class="{ selected, readonly, embedded }" @click="addOpen = false; metaScopeOpen = null">
+  <div class="gnode" :class="{ selected, readonly, embedded }" @click="addOpen = false; metaScopeOpen = null" @dragover.prevent @drop="onRootDrop">
     <div class="gnhd">
       <template v-if="!embedded">
         <span class="ic">▦</span>
@@ -448,7 +462,7 @@ function onOutDrop(targetId: string) {
                   :class="{ fav: im.data.favorite, dropbefore: imgDropId === im.id && !imgDropAfter, dropafter: imgDropId === im.id && imgDropAfter }"
                   :style="{ '--ar': im.data.ar || (3 / 4) }" :draggable="!readonly"
                   @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
-                  @dragover.prevent.stop="onThumbOver(im.id, $event)" @drop.prevent.stop="onThumbDrop(b, im.id)"
+                  @dragover.prevent.stop="onThumbOver(im.id, $event)" @drop.prevent.stop="onThumbDrop(b, im.id, $event)"
                   @pointerdown.stop @click.stop="gridHidden(b) && i === b.cols - 1 ? (b.collapsed = false) : emit('preview', im.data.url || '')">
                   <img class="im" :src="thumbSrc(im.data.url, b.cols)" alt="gallery image" loading="lazy" draggable="false" />
                   <div class="thbar nodrag">

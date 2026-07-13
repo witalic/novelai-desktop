@@ -89,10 +89,10 @@ describe('canvasToWork', () => {
     expect(node.data).toEqual({})
   })
 
-  it('persists the widget collapse state (layout) but never the runtime hidden flag', () => {
+  it('strips non-whitelisted zone fields and the runtime hidden flag', () => {
     const lib = {
       id: 'library', type: 'zone', position: { x: 40, y: 40 }, style: { width: '244px', height: '38px' },
-      data: { role: 'library', collapsed: true, expandedH: 440 },
+      data: { role: 'library', collapsed: true, expandedH: 440 }, // collapse feature removed → not whitelisted
     }
     const child = {
       id: 'block-1', type: 'block', parentNode: 'library', hidden: true, position: { x: 12, y: 50 },
@@ -100,10 +100,10 @@ describe('canvasToWork', () => {
     }
     const doc = canvasToWork([...anchors(), lib, child], viewport, params, { id: 'w1', title: '' })
     const zone = doc.canvas.nodes.find((n) => n.id === 'library')!
-    expect(zone.data).toEqual({ role: 'library', collapsed: true, expandedH: 440 })
+    expect(zone.data).toEqual({ role: 'library' })
     expect(doc.canvas.nodes.find((n) => n.id === 'block-1')).not.toHaveProperty('hidden')
     const restored = workToCanvas(doc).nodes.find((n) => n.id === 'library')!
-    expect(restored.data).toEqual({ role: 'library', collapsed: true, expandedH: 440 })
+    expect(restored.data).toEqual({ role: 'library' })
   })
 
   it('persists out-of-zone content as scratch — zones define role, not survival', () => {

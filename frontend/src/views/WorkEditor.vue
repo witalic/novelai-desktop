@@ -90,17 +90,26 @@ function onDropOnGrid(p: { gridId: string; imageId?: string }) {
 function onDropOnQuick(p: { imageId?: string }) { if (p.imageId) removeFromGrids(p.imageId) }
 function onToQuick(id: string) { removeFromGrids(id) }
 function onFavorite(id: string) { const im = doc.value?.images.find((i) => i.id === id); if (im) im.favorite = !im.favorite }
+// Delete images from the work in ALL three structures — the images list, every grid album, AND the
+// canvas node graph — plus clear the preview if it pointed at one (H2: canvas ghost + dangling file).
+function purgeImages(ids: string[]) {
+  const d = doc.value
+  if (!d) return
+  const set = new Set(ids)
+  for (const id of ids) removeFromGrids(id)
+  d.images = d.images.filter((i) => !set.has(i.id))
+  if (d.canvas?.nodes) d.canvas.nodes = d.canvas.nodes.filter((n) => !(n.type === 'image' && set.has(n.id)))
+  if (d.preview_image_id && set.has(d.preview_image_id)) d.preview_image_id = null
+}
 async function onDeleteImg(id: string) {
   if (!(await confirm({ title: 'Delete image', danger: true, confirmLabel: 'Delete', message: 'Remove this image from the work? This cannot be undone.' }))) return
-  removeFromGrids(id)
-  if (doc.value) doc.value.images = doc.value.images.filter((i) => i.id !== id)
+  purgeImages([id])
 }
 async function onClearQuick(ids: string[]) {
   if (!ids.length) return
   if (!(await confirm({ title: 'Clear Quick access', danger: true, confirmLabel: `Delete ${ids.length}`,
     message: `Delete ${ids.length} unsorted image${ids.length === 1 ? '' : 's'} from the work? Favourited images are kept. This cannot be undone.` }))) return
-  const set = new Set(ids)
-  if (doc.value) doc.value.images = doc.value.images.filter((i) => !set.has(i.id))
+  purgeImages(ids)
 }
 
 // ---- autosave: any WorkDoc mutation (gallery structure or images) → debounced save ----
