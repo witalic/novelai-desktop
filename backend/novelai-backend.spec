@@ -41,7 +41,9 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="novelai-backend",
-    console=True,          # a headless sidecar — stdout/stderr are piped to the Electron main process
+    console=False,         # windowless: a GUI-subsystem binary so the packaged Electron app doesn't pop a
+                           # console window when it spawns the sidecar. Logs still flow over inherited stdio
+                           # handles (visible when the shell itself is launched from a terminal, e.g. dev).
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,      # the runner's arch (macOS matrix builds x64 + arm64 separately)
