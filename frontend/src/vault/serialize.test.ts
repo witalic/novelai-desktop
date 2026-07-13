@@ -135,6 +135,15 @@ describe('canvasToWork', () => {
     const doc = canvasToWork([...anchors()], viewport, params, { id: 'w1', title: '' }, [], ['b1', 'b2', 'b1'])
     expect(doc.favorites).toEqual(['b1', 'b2'])
   })
+
+  it('prunes grid imageIds that no longer resolve to a gallery image (M8)', () => {
+    const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: '' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(doc.canvas.nodes.find((n) => n.id === GALLERY)!.data as any).blocks[0].imageIds = ['img-1', 'ghost']
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const restored = workToCanvas(doc).nodes.find((n) => n.id === GALLERY)!.data as any
+    expect(restored.blocks[0].imageIds).toEqual(['img-1']) // the dangling 'ghost' id is dropped
+  })
 })
 
 describe('workToDrafts', () => {

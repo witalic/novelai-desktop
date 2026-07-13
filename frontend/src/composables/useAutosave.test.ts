@@ -61,3 +61,29 @@ describe('useAutosave save coordination', () => {
     expect(await a.flush()).toBe(false)
   })
 })
+
+describe('useAutosave.changeKey — image domain fields (H1)', () => {
+  function withImage(data: any) {
+    const { nodes, a } = setup()
+    nodes.value = [{ id: 'img-1', type: 'image', parentNode: 'gallery', position: { x: 0, y: 0 }, style: {}, data }]
+    return { nodes, a }
+  }
+  it('reacts to a favourite toggle', () => {
+    const { nodes, a } = withImage({ url: 'u', favorite: false })
+    const before = a.changeKey()
+    nodes.value[0].data.favorite = true
+    expect(a.changeKey()).not.toBe(before)
+  })
+  it('reacts to a tag/description edit', () => {
+    const { nodes, a } = withImage({ url: 'u', tags: [], description: '' })
+    const before = a.changeKey()
+    nodes.value[0].data.tags = ['portrait']; nodes.value[0].data.description = 'note'
+    expect(a.changeKey()).not.toBe(before)
+  })
+  it('still ignores the image url value — bytes stay out of the signature', () => {
+    const { nodes, a } = withImage({ url: 'data:image/png;base64,AAAA', favorite: false })
+    const before = a.changeKey()
+    nodes.value[0].data.url = '/api/vault/works/w1/images/img-1'
+    expect(a.changeKey()).toBe(before)
+  })
+})

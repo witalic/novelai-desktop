@@ -1,6 +1,7 @@
 """Vault store + index: save/load/list/serve/gallery/rebuild — fully offline (tmp vault)."""
 import asyncio
 import base64
+import json
 import os
 from io import BytesIO
 
@@ -122,6 +123,24 @@ async def test_scratch_images_persist_but_never_surface(client):
     # Examples exclude scratch too — img-scr shares the same snapshot (and thus its block tags).
     ex = (await ac.get("/api/vault/library/examples", params={"tags": ["silver hair", "night"]})).json()
     assert [e["image_id"] for e in ex] == ["img-w1"]
+
+
+async def test_save_stamps_schema_version(client):
+    """The server owns schema_version: a client sending a stale value must not trigger a re-migration."""
+    ac, vault = client
+    w = _work("w1")
+    w["schema_version"] = 3  # wrong on purpose — the client never dictates the schema
+    assert (await ac.put("/api/vault/works", json=w)).status_code == 200
+    raw = json.loads(list((vault / "works").glob("*/work.json"))[0].read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 6  # stamped to CURRENT on disk, not left at 3
+
+
+async def test_save_rejects_future_schema_version(client):
+    """A doc claiming a newer schema than this build is refused, not silently downgraded (data-loss)."""
+    ac, _ = client
+    w = _work("w1")
+    w["schema_version"] = 999
+    assert (await ac.put("/api/vault/works", json=w)).status_code == 400
 
 
 async def test_list_works_search_and_sort(client):

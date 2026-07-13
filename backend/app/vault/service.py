@@ -51,7 +51,11 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
         work_dir = layout.safe_join(vault / "works", dir_name)
         doc.slug = layout.slugify(doc.title)
         doc.updated_at = _now()
-        doc.schema_version = migrate.CURRENT  # server owns the version; the client always sends current-shape data (M1)
+        # Server owns the version; the client always sends current-shape data (M1). Refuse a doc claiming a
+        # newer schema than this build understands rather than silently downgrading it (data-loss).
+        if doc.schema_version and doc.schema_version > migrate.CURRENT:
+            raise HTTPException(status_code=400, detail=f"schema_version {doc.schema_version} is newer than this build supports ({migrate.CURRENT}).")
+        doc.schema_version = migrate.CURRENT
         if not doc.created_at:
             doc.created_at = doc.updated_at
         # Stamp creation time on images/snapshots that don't have one yet (kept stable across re-saves).

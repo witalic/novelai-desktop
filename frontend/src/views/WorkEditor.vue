@@ -99,7 +99,8 @@ function purgeImages(ids: string[]) {
   for (const id of ids) removeFromGrids(id)
   d.images = d.images.filter((i) => !set.has(i.id))
   if (d.canvas?.nodes) d.canvas.nodes = d.canvas.nodes.filter((n) => !(n.type === 'image' && set.has(n.id)))
-  if (d.preview_image_id && set.has(d.preview_image_id)) d.preview_image_id = null
+  // If the preview pointed at a deleted image, promote the next gallery image so the work card keeps a preview.
+  if (d.preview_image_id && set.has(d.preview_image_id)) d.preview_image_id = d.images.find((i) => i.role === 'gallery')?.id ?? null
 }
 async function onDeleteImg(id: string) {
   if (!(await confirm({ title: 'Delete image', danger: true, confirmLabel: 'Delete', message: 'Remove this image from the work? This cannot be undone.' }))) return
