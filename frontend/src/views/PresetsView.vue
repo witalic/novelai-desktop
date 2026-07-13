@@ -174,8 +174,8 @@ async function onSave(payload: { id: string | null; name: string; params: Preset
 
 <style scoped>
 .presets{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
-.phead{display:flex;align-items:center;gap:10px;padding:14px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
-.phead h1{font-size:18px;font-weight:600;margin:0}
+.phead{display:flex;align-items:center;gap:10px;height:55px;padding:0 20px;border-bottom:1px solid var(--border);flex-shrink:0}
+.phead h1{font-size:18px;font-weight:700;margin:0}
 .phead .count{font-size:12px;color:var(--text-faint)}
 .spacer{flex:1}
 .search{width:240px;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;outline:none}

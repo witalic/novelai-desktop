@@ -532,7 +532,7 @@ async function removeBlock(b: LibraryBlock) {
 .library{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
 
 /* clean title row */
-.lhead{display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
+.lhead{display:flex;align-items:center;gap:8px;height:55px;padding:0 18px;border-bottom:1px solid var(--border);flex-shrink:0}
 .lhead h1{font-size:18px;font-weight:700;margin:0}
 .lhead .count{font-size:13px;color:var(--text-faint)}
 

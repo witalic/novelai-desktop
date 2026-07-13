@@ -232,8 +232,8 @@ async function changeInterval(v: number) {
 
 <style scoped>
 .settings{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
-.hd{padding:15px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
-.hd h2{margin:0;font-size:15px;font-weight:600}
+.hd{display:flex;align-items:center;height:55px;padding:0 20px;border-bottom:1px solid var(--border);flex-shrink:0}
+.hd h2{margin:0;font-size:18px;font-weight:700}
 .body{padding:24px;overflow:auto;display:flex;flex-direction:column;gap:18px}
 .card{max-width:620px;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-lg)}
 .card-hd{padding:14px 18px;border-bottom:1px solid var(--border);font-weight:600}
