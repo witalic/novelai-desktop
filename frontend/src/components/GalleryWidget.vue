@@ -3,7 +3,7 @@
 // images as a composable stack of typed blocks (design/gallery-widget-mockup.html). Increment 1: a
 // single image-grid block over the passed gallery images, with a column control, ★ favourite, and
 // click-to-preview. More block types (Section/Heading/Text/Metadata/Divider) land in later increments.
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { hiddenBlockIds } from './galleryBlocks'
 import { newId } from '../vault/ids'
 import type { GalleryBlock, GalleryMetaField, ImageNodeData, ZoneNode } from '../types'
@@ -175,6 +175,40 @@ function onBlkDrop(targetId: string) {
   const [moved] = arr.splice(fi, 1)
   arr.splice(arr.findIndex((b) => b.id === targetId), 0, moved) // drop before the target → in-place, persists
 }
+
+// ---- outline navigation (left panel): a scroll-to index of the block stack (mirrors Quick access) ----
+const outlineOpen = ref(false)
+const bodyEl = ref<HTMLElement | null>(null)
+const OUT_GLYPH: Record<BlockType, string> = { section: '▤', heading: 'H', text: '¶', grid: '▦', meta: '≣', divider: '—' }
+function blockLabel(b: GalleryBlock): string {
+  if (b.type === 'section') return b.title || 'Section'
+  if (b.type === 'heading') return b.text || 'Heading'
+  if (b.type === 'text') return (b.text.split('\n')[0] || '').slice(0, 42) || 'Text'
+  if (b.type === 'grid') return `Grid · ${Array.isArray(b.imageIds) ? b.imageIds.length : 0}`
+  if (b.type === 'meta') return 'Metadata'
+  return 'Divider'
+}
+// One entry per navigable block (dividers are structural noise — skipped). Blocks under a section indent.
+interface OutlineEntry { id: string; type: BlockType; label: string; glyph: string; depth: 0 | 1 }
+const outline = computed<OutlineEntry[]>(() => {
+  let inSection = false
+  return blocks.value.flatMap((b): OutlineEntry[] => {
+    if (b.type === 'section') { inSection = true; return [{ id: b.id, type: b.type, label: blockLabel(b), glyph: OUT_GLYPH[b.type], depth: 0 }] }
+    if (b.type === 'divider') return []
+    return [{ id: b.id, type: b.type, label: blockLabel(b), glyph: OUT_GLYPH[b.type], depth: inSection ? 1 : 0 }]
+  })
+})
+// Scroll a block into view; if it's folded inside a collapsed section, expand that section first.
+function scrollToBlock(id: string) {
+  if (hiddenIds.value.has(id)) {
+    const arr = blocks.value
+    for (let i = arr.findIndex((b) => b.id === id); i >= 0; i--) {
+      const b = arr[i]
+      if (b.type === 'section') { if (b.collapsed) b.collapsed = false; break }
+    }
+  }
+  nextTick(() => bodyEl.value?.querySelector(`.blk[data-bid="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+}
 </script>
 
 <template>
@@ -184,6 +218,9 @@ function onBlkDrop(targetId: string) {
       <span class="ttl">Gallery</span>
       <span v-if="title" class="ctx">· {{ title }}</span>
       <span class="ctx">· {{ total }} image{{ total === 1 ? '' : 's' }}</span>
+      <button class="qtoggle ntoggle nodrag" :class="{ on: outlineOpen }" title="Outline — navigate blocks" @pointerdown.stop @click.stop="outlineOpen = !outlineOpen">
+        ☰ Outline
+      </button>
       <span class="hsp"></span>
       <button class="qtoggle nodrag" :class="{ on: quickOpen }" title="Quick access — unsorted images" @pointerdown.stop @click.stop="quickOpen = !quickOpen">
         ⧉ Quick<span v-if="unassigned.length" class="qbadge">{{ unassigned.length }}</span>
@@ -199,10 +236,22 @@ function onBlkDrop(targetId: string) {
     </div>
 
     <div class="gmain">
-    <div class="gnbody nowheel" @scroll="addOpen = null">
+    <!-- Outline — a scroll-to index of the block stack (left side); navigation counterpart to Quick access -->
+    <div v-if="outlineOpen" class="navpanel nowheel">
+      <div class="nphd">Outline</div>
+      <div v-if="outline.length" class="nplist">
+        <button v-for="o in outline" :key="o.id" class="nprow nodrag" :class="['d' + o.depth, { sec: o.type === 'section' }]"
+          @pointerdown.stop @click.stop="scrollToBlock(o.id)">
+          <span class="npg">{{ o.glyph }}</span><span class="npl">{{ o.label }}</span>
+        </button>
+      </div>
+      <div v-else class="npempty">No blocks yet — add one to build the outline.</div>
+    </div>
+
+    <div ref="bodyEl" class="gnbody nowheel" @scroll="addOpen = null">
       <div class="glist">
         <template v-for="b in blocks" :key="b.id">
-          <div v-show="!hiddenIds.has(b.id)" class="blk" :class="['blk-' + b.type, { drop: dragOverId === b.id, dragging: dragId === b.id }]"
+          <div v-show="!hiddenIds.has(b.id)" class="blk" :data-bid="b.id" :class="['blk-' + b.type, { drop: dragOverId === b.id, dragging: dragId === b.id }]"
             @dragover.prevent="onBlkDragOver(b.id)" @drop.prevent="onBlkDrop(b.id)" @dragleave="dragOverId = null">
             <span class="bgrip nodrag" title="Drag to reorder" draggable="true"
               @pointerdown.stop @dragstart="onBlkDragStart(b.id, $event)" @dragend="onBlkDragEnd">⠿</span>
@@ -404,6 +453,19 @@ function onBlkDrop(targetId: string) {
 .qpgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;padding:8px}
 .qthumb{aspect-ratio:var(--ar,3/4)}
 .qphint{padding:16px 12px;font-size:11px;color:var(--text-faint);line-height:1.5}
+
+/* Outline navigation panel (left) */
+.navpanel{width:190px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;background:color-mix(in srgb,var(--surface-2) 40%,transparent)}
+.nphd{padding:9px 12px;font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);border-bottom:1px solid var(--border);flex-shrink:0}
+.nplist{display:flex;flex-direction:column;gap:1px;padding:6px 6px 10px}
+.nprow{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12px;text-align:left;padding:5px 8px;border-radius:6px;cursor:pointer;overflow:hidden}
+.nprow:hover{background:var(--surface-3);color:var(--text)}
+.nprow.sec{font-weight:700;color:var(--text);margin-top:4px}
+.nprow.d1{padding-left:20px}
+.nprow .npg{width:15px;flex-shrink:0;text-align:center;color:var(--text-faint);font-size:11px}
+.nprow.sec .npg{color:var(--text-dim)}
+.nprow .npl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.npempty{padding:16px 12px;font-size:11px;color:var(--text-faint);line-height:1.5}
 
 .b-grid{display:flex;flex-direction:column;border-radius:8px}
 .b-grid.droptarget{outline:2px dashed var(--accent);outline-offset:2px;background:color-mix(in srgb,var(--accent) 7%,transparent)}
