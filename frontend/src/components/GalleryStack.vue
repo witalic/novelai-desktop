@@ -1,21 +1,23 @@
 <script setup lang="ts">
-// Structured gallery — a canvas node (in the `gallery` zone) that renders the work's gallery-role
-// images as a composable stack of typed blocks (design/gallery-widget-mockup.html). Increment 1: a
-// single image-grid block over the passed gallery images, with a column control, ★ favourite, and
-// click-to-preview. More block types (Section/Heading/Text/Metadata/Divider) land in later increments.
+// Structured gallery block-stack — a REUSABLE renderer of a work's gallery-role images as a composable
+// stack of typed blocks (Section/Heading/Text/Image-grid/Metadata/Divider) plus Outline + Quick access.
+// Hosted by the canvas node (GalleryWidget usage in CanvasBoard) and, from Phase 2, the full-page Works
+// view/edit. The host owns the data (`data.blocks` + `images`) and handles the emitted ops; `readonly`
+// (View mode) suppresses the editing affordances. Design: design/gallery-widget-mockup.html.
 import { computed, nextTick, ref } from 'vue'
 import { hiddenBlockIds } from './galleryBlocks'
 import { newId } from '../vault/ids'
 import type { GalleryBlock, GalleryMetaField, ImageNodeData, ZoneNode } from '../types'
 
-// Minimal shape the widget reads off a gallery image node (avoids coupling to Vue Flow's node type).
+// Minimal shape the stack reads off a gallery image node (avoids coupling to Vue Flow's node type).
 interface GalleryImage { id: string; data: Partial<ImageNodeData> }
 
 const props = defineProps<{
-  data: ZoneNode['data'] // the gallery zone's reactive data (holds `blocks`) — mutated in place, Vue-Flow-tracked
-  images: GalleryImage[] // the work's gallery-role image nodes
+  data: ZoneNode['data'] // holds `blocks` — mutated in place (host tracks + persists)
+  images: GalleryImage[] // the work's gallery-role images
   title?: string
-  selected?: boolean // Vue-Flow node selection → accent border (matches the other canvas widgets)
+  selected?: boolean // host selection → accent border (matches the other canvas widgets)
+  readonly?: boolean // View mode: hide add/edit/delete/drag affordances (Phase 2 Works view)
 }>()
 const emit = defineEmits<{
   favorite: [string]; preview: [string]
@@ -355,7 +357,7 @@ function onOutDrop(targetId: string) {
 </script>
 
 <template>
-  <div class="gnode" :class="{ selected }" @click="addOpen = false; metaScopeOpen = null">
+  <div class="gnode" :class="{ selected, readonly }" @click="addOpen = false; metaScopeOpen = null">
     <div class="gnhd">
       <span class="ic">▦</span>
       <span class="ttl">Gallery</span>
@@ -383,7 +385,7 @@ function onOutDrop(targetId: string) {
     <div v-if="outlineOpen" class="navpanel nowheel">
       <div class="nphd">Outline</div>
       <div v-if="outline.length" class="nplist">
-        <button v-for="o in outline" :key="o.id" class="nprow nodrag" draggable="true"
+        <button v-for="o in outline" :key="o.id" class="nprow nodrag" :draggable="!readonly"
           :class="['d' + o.depth, { sec: o.type === 'section', selrow: selectedId === o.id, odrag: outDragId === o.id, odrop: outOverId === o.id }]"
           :style="{ '--sec': secColor(o.id) }"
           @pointerdown.stop @click.stop="scrollToBlock(o.id)"
@@ -404,7 +406,7 @@ function onOutDrop(targetId: string) {
               insec: sectionInfo.get(b.id)?.member, seclast: sectionInfo.get(b.id)?.last }]"
             :style="{ '--sec': secColor(b.id) }" @click.stop="selectBlock(b.id)"
             @dragover.prevent="onBlkDragOver(b.id)" @drop.prevent="onBlkDrop(b.id)" @dragleave="dragOverId = null">
-            <span class="bgrip nodrag" title="Drag to reorder" draggable="true"
+            <span class="bgrip nodrag" title="Drag to reorder" :draggable="!readonly"
               @pointerdown.stop @dragstart="onBlkDragStart(b.id, $event)" @dragend="onBlkDragEnd">⠿</span>
             <div v-if="b.type !== 'grid'" class="bacts nodrag">
               <button class="del nodrag" title="Delete block" @pointerdown.stop @click.stop="deleteBlock(b.id)">🗑</button>
@@ -437,7 +439,7 @@ function onOutDrop(targetId: string) {
               <div v-if="gridImages(b).length" class="gimgs" :style="{ '--cols': b.cols }">
                 <div v-for="(im, i) in gridVisible(b)" :key="im.id" class="gthumb nodrag"
                   :class="{ fav: im.data.favorite, dropbefore: imgDropId === im.id && !imgDropAfter, dropafter: imgDropId === im.id && imgDropAfter }"
-                  :style="{ '--ar': im.data.ar || (3 / 4) }" draggable="true"
+                  :style="{ '--ar': im.data.ar || (3 / 4) }" :draggable="!readonly"
                   @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
                   @dragover.prevent.stop="onThumbOver(im.id, $event)" @drop.prevent.stop="onThumbDrop(b, im.id)"
                   @pointerdown.stop @click.stop="gridHidden(b) && i === b.cols - 1 ? (b.collapsed = false) : emit('preview', im.data.url || '')">
@@ -518,7 +520,7 @@ function onOutDrop(targetId: string) {
       </div>
       <div v-if="unassigned.length" class="qpgrid">
         <div v-for="im in unassigned" :key="im.id" class="gthumb qthumb nodrag" :class="{ fav: im.data.favorite }"
-          :style="{ '--ar': im.data.ar || (3 / 4) }" draggable="true" @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
+          :style="{ '--ar': im.data.ar || (3 / 4) }" :draggable="!readonly" @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
           @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
           <img class="im" :src="thumbSrc(im.data.url, 2)" alt="gallery image" loading="lazy" draggable="false" />
           <div class="thbar nodrag">
@@ -543,6 +545,28 @@ function onOutDrop(targetId: string) {
 .gnode{width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;border:1.5px solid var(--border-strong);border-radius:12px;
   background:color-mix(in srgb,var(--surface-1) 92%,transparent)}
 .gnode.selected{border-color:var(--accent)}
+/* View mode (readonly): hide edit affordances, make inline editors non-interactive. Nav (Outline/Quick,
+   collapse toggles), preview, download and favourite-state display stay. */
+.gnode.readonly .addwrap,
+.gnode.readonly .bgrip,
+.gnode.readonly .bacts,
+.gnode.readonly .gtdel,
+.gnode.readonly .cols,
+.gnode.readonly .thb.toq,
+.gnode.readonly .thb.del,
+.gnode.readonly .maddfield,
+.gnode.readonly .mrm,
+.gnode.readonly .qpclear,
+.gnode.readonly .msbtn .car{display:none}
+.gnode.readonly .secname,
+.gnode.readonly .b-heading,
+.gnode.readonly .b-text,
+.gnode.readonly .fk-edit,
+.gnode.readonly .fv-edit,
+.gnode.readonly .msbtn,
+.gnode.readonly .star{pointer-events:none}
+.gnode.readonly .gthumb:not(.fav) .star{display:none}
+.gnode.readonly .gthumb{cursor:zoom-in}
 .gnhd{display:flex;align-items:center;gap:8px;height:40px;flex-shrink:0;padding:0 12px;border-bottom:1px solid var(--border);background:var(--surface-1)}
 .gnhd .ic{color:var(--text-faint);font-size:14px}
 .gnhd .ttl{font-weight:650;font-size:13px}

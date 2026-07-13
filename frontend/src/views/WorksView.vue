@@ -3,9 +3,15 @@ import { onActivated, onUnmounted, ref } from 'vue'
 import { ApiError, deleteWork, listWorks, type WorkSort } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import WorkEditor from './WorkEditor.vue'
 import type { WorkListItem } from '../types'
 
 const emit = defineEmits<{ open: [string] }>()
+
+// The Works tab shows either the list or a single work's view/editor (full-bleed).
+const openWork = ref<{ id: string; mode: 'view' | 'edit' } | null>(null)
+function openEditor(id: string, mode: 'view' | 'edit') { openWork.value = { id, mode } }
+function closeEditor() { openWork.value = null; fetchPage() } // returning may have changed titles/counts
 const { push } = useToast()
 const { confirm } = useConfirm()
 
@@ -100,7 +106,10 @@ onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
 </script>
 
 <template>
-  <div class="works" @click="sortOpen = false">
+  <WorkEditor v-if="openWork" :work-id="openWork.id" :initial-mode="openWork.mode"
+    @back="closeEditor" @open-in-generate="(id) => emit('open', id)" />
+
+  <div v-else class="works" @click="sortOpen = false">
     <header class="head">
       <h1>Works</h1>
       <span class="count">{{ total }} saved</span>
@@ -135,11 +144,15 @@ onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
 
     <div v-else class="grid">
       <div v-for="w in items" :key="w.id" class="card" role="button" tabindex="0"
-        @click="emit('open', w.id)" @keyup.enter="emit('open', w.id)">
+        @click="openEditor(w.id, 'view')" @keyup.enter="openEditor(w.id, 'view')">
         <div class="thumb">
           <img v-if="w.preview_url" :src="w.preview_url" :alt="w.title" loading="lazy" />
           <span v-else class="ph">✦</span>
-          <button class="del" title="Delete work" @click.stop="removeWork(w)">🗑</button>
+          <div class="acts">
+            <button class="abtn" title="View" @click.stop="openEditor(w.id, 'view')">⤢ View</button>
+            <button class="abtn" title="Edit" @click.stop="openEditor(w.id, 'edit')">✎ Edit</button>
+            <button class="abtn del" title="Delete work" @click.stop="removeWork(w)">🗑</button>
+          </div>
         </div>
         <div class="meta">
           <div class="title">{{ w.title || 'Untitled' }}</div>
@@ -191,11 +204,15 @@ onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
 .thumb { position: relative; aspect-ratio: 3 / 4; background: var(--surface-3); display: flex; align-items: center; justify-content: center; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .thumb .ph { font-size: 30px; color: var(--text-faint); }
-.del { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border: 0; border-radius: 7px;
-  background: color-mix(in srgb, #000 55%, transparent); color: #fff; font-size: 12px; cursor: pointer;
-  opacity: 0; transition: opacity .12s; }
-.card:hover .del { opacity: 1; }
-.del:hover { background: var(--danger, #e2483d); }
+.acts { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: linear-gradient(0deg, rgba(0,0,0,.5), rgba(0,0,0,.15)); opacity: 0; transition: opacity .12s; }
+.card:hover .acts { opacity: 1; }
+.abtn { border: 1px solid rgba(255,255,255,.35); background: rgba(0,0,0,.45); color: #fff; border-radius: 6px;
+  height: 30px; padding: 0 11px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px; }
+.abtn:hover { border-color: #fff; }
+.abtn.del { padding: 0 10px; }
+.abtn.del:hover { border-color: var(--danger, #e2483d); color: var(--danger, #e2483d); }
 .meta { padding: 10px 12px 12px; }
 .title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub { font-size: 11px; color: var(--text-faint); margin-top: 3px; }

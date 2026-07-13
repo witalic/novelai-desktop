@@ -21,7 +21,7 @@ import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
-import GalleryWidget from './GalleryWidget.vue'
+import GalleryStack from './GalleryStack.vue'
 import BlockEditorModal from './BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
@@ -410,7 +410,7 @@ function hideStationBlocks() {
 function hideGalleryImages() {
   for (const n of nodes.value) if (n.parentNode === GALLERY && n.type === 'image') n.hidden = true
 }
-// The gallery's image nodes, oldest→newest, handed to the GalleryWidget for its grid queries.
+// The gallery's image nodes, oldest→newest, handed to the GalleryStack for its grids.
 const galleryImages = computed(() =>
   nodes.value.filter((n) => n.type === 'image' && n.parentNode === GALLERY)
     .sort((a, b) => String(a.data?.created_at || '').localeCompare(String(b.data?.created_at || ''))),
@@ -1162,7 +1162,7 @@ function startName(data: any, e: MouseEvent) {
           </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryWidget :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadImages" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
+            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadImages" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
           </template>
         </template>
 
