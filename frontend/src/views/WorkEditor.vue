@@ -4,10 +4,11 @@
  * loaded WorkDoc (readonly in View); edits mutate the WorkDoc in place and autosave. The Composition
  * facet fills in next. */
 import { computed, nextTick, ref, watch } from 'vue'
-import { ApiError, loadWork, saveWork, saveDownloads } from '../api'
+import { ApiError, loadWork, saveWork } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePreview } from '../composables/useImagePreview'
+import { useImageDownload } from '../composables/useImageDownload'
 import GalleryStack from '../components/GalleryStack.vue'
 import { gridsOf, purgeImages, removeIdFromGrids } from '../vault/workOps'
 import type { ImageNodeData, WorkDoc, ZoneNode } from '../types'
@@ -136,23 +137,8 @@ async function saveOnce() {
 }
 function onTitleInput(v: string) { if (doc.value) doc.value.title = v } // deep watch autosaves
 
-// ---- download (reuses the save-to-Downloads pipeline) ----
-async function toBase64(url: string): Promise<string> {
-  if (url.startsWith('data:')) return url.slice(url.indexOf(',') + 1)
-  const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer())
-  let bin = ''
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(bin)
-}
-async function downloadUrls(urls: string[]) {
-  if (!urls.length) return
-  try {
-    await saveDownloads(await Promise.all(urls.map(toBase64)))
-    push(`Saved ${urls.length} image${urls.length === 1 ? '' : 's'} to Downloads`, 'ok')
-  } catch (e) {
-    push(e instanceof Error ? e.message : 'Download failed', 'err')
-  }
-}
+// ---- download (shared save-to-Downloads pipeline) ----
+const { downloadUrls } = useImageDownload()
 function downloadAll() { downloadUrls(galleryImages.value.map((im) => im.data.url || '').filter(Boolean)) }
 </script>
 

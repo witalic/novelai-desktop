@@ -7,7 +7,7 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { getVaultConfig, listCategories, saveDownloads } from '../api'
+import { getVaultConfig, listCategories } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
@@ -16,6 +16,7 @@ import { useCatalog, modelSpec } from '../composables/useCatalog'
 import { useTokenCount } from '../composables/useTokenCount'
 import { useContextMenu, type MenuItem } from '../composables/useContextMenu'
 import { useImagePreview } from '../composables/useImagePreview'
+import { useImageDownload } from '../composables/useImageDownload'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
 import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
@@ -905,6 +906,7 @@ function loadDoc(doc: any) {
 // Right-click menu for images + prompt blocks (shared ContextMenu): preview, arrange, download, delete.
 const { open: openMenu, close: closeMenu } = useContextMenu()
 const { preview: openPreview } = useImagePreview() // `preview` is already a prop (the live generation image)
+const { downloadUrls } = useImageDownload()
 const REMOVABLE = new Set(['image', 'block'])
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function openNodeMenu(event: MouseEvent, targets: any[]) {
@@ -916,28 +918,11 @@ function openNodeMenu(event: MouseEvent, targets: any[]) {
   const items: MenuItem[] = []
   if (urls.length === 1) items.push({ label: 'Preview', icon: '⤢', onClick: () => openPreview(urls[0]) })
   if (imgs.length > 1) items.push({ label: 'Arrange evenly', icon: '▦', onClick: () => arrangeImages(imgs.map((n) => findNode(n.id)).filter(Boolean)) })
-  if (urls.length) items.push({ label: `Download${urls.length > 1 ? ` ${urls.length} images` : ' image'}`, icon: '⤓', onClick: () => downloadImages(urls) })
+  if (urls.length) items.push({ label: `Download${urls.length > 1 ? ` ${urls.length} images` : ' image'}`, icon: '⤓', onClick: () => downloadUrls(urls) })
   // Anchor zones / the station are never removable — filter them from the delete set.
   items.push({ label: `Delete${ids.length > 1 ? ` ${ids.length} items` : ' item'}`, icon: '🗑', danger: true,
     onClick: () => { const del = ids.filter((id) => !ANCHORS.has(id)); if (del.length) removeNodes(del) } })
   openMenu(event, items)
-}
-// Vault-stored images serve as URLs (not data: URIs); fetch and re-encode so /api/download gets raw base64.
-async function toBase64(url: string): Promise<string> {
-  if (url.startsWith('data:')) return url.slice(url.indexOf(',') + 1)
-  const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer())
-  let bin = ''
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(bin)
-}
-async function downloadImages(urls: string[]) {
-  const n = urls.length
-  try {
-    await saveDownloads(await Promise.all(urls.map(toBase64)))
-    toast.push(`Saved ${n} image${n > 1 ? 's' : ''} to Downloads`, 'ok')
-  } catch (e) {
-    toast.push(e instanceof Error ? e.message : 'Download failed', 'err')
-  }
 }
 // Right-click the station Output image → same actions as a stack thumbnail (top draft).
 function onStationMenu(e: MouseEvent) {
@@ -1167,7 +1152,7 @@ function startName(data: any, e: MouseEvent) {
           </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadImages" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
+            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
           </template>
         </template>
 
