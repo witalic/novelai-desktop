@@ -67,6 +67,19 @@ async def test_parse_from_folder_path(client):
     assert len(res["candidates"]) == 2
 
 
+async def test_parse_nonexistent_path_is_400(client):
+    ac, _, tmp_path = client
+    r = await ac.post("/api/vault/library/import/parse", json={"path": str(tmp_path / "nope")})
+    assert r.status_code == 400
+
+
+async def test_parse_malformed_zip_is_400(client):
+    ac, _, _ = client
+    bad = base64.b64encode(b"definitely not a zip archive").decode("ascii")
+    r = await ac.post("/api/vault/library/import/parse", json={"zip_b64": bad})
+    assert r.status_code == 400
+
+
 async def test_parse_flags_duplicate_of_existing_block(client):
     ac, _, _ = client
     # An existing library block.

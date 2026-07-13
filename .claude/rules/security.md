@@ -22,3 +22,10 @@ private creative work — leaking a token or the vault is the core risk.
   (back off on 429), mind **Anlas** cost (402 = out of Anlas), and never generate in tight loops or bulk-hammer.
 - **Transparency to the user:** anything sent to an external service (a prompt to Claude, an image for img2img)
   leaves the machine — surface it in the UI; don't silently exfiltrate the vault.
+- **Local-FS reach is a trusted-input primitive.** A few endpoints take a filesystem path from the user
+  (the block importer's `path`, the vault folder picker, the downloads dir). They read/write arbitrary
+  paths on the machine — the guard is that the path comes from a user action (an Electron dialog), NOT
+  from untrusted content. In dev (`python -m app`, no per-launch secret) the `/api` guard is a
+  pass-through, so any local process on loopback can drive them: treat these as trusted-input, bound their
+  work (the importer caps files scanned, entries walked, and total bytes inflated), and never widen them
+  to accept a path from a request body without that user-action framing.

@@ -15,6 +15,7 @@ import binascii
 import io
 import json
 import logging
+import os
 import zipfile
 from pathlib import Path
 
@@ -30,6 +31,8 @@ _POLARITIES = {"positive", "negative"}
 _MAX_FILES = 2000               # sanity cap on json files scanned per import
 _MAX_ZIP_BYTES = 50 * 1024 * 1024      # compressed zip payload
 _MAX_MEMBER_BYTES = 5 * 1024 * 1024    # per-file uncompressed guard (a block json is tiny)
+_MAX_TOTAL_BYTES = 100 * 1024 * 1024   # cumulative uncompressed guard (zip-bomb: 50 MB zip -> ~10 GB)
+_MAX_SCAN = 50_000                     # directory entries examined before a folder import bails (walk-DoS)
 
 
 class ImportCandidate(BaseModel):
@@ -137,10 +140,15 @@ def _collect(req: ImportParseRequest) -> tuple[list[tuple[str, object]], list[Im
             with zipfile.ZipFile(io.BytesIO(payload)) as zf:
                 members = [m for m in zf.infolist()
                            if m.filename.lower().endswith(".json") and not m.is_dir()]
+                total = 0
                 for m in members[:_MAX_FILES]:
                     if m.file_size > _MAX_MEMBER_BYTES:
                         skips.append(ImportSkip(source=m.filename, error="file too large"))
                         continue
+                    total += m.file_size  # trust the declared size we already guarded per-member
+                    if total > _MAX_TOTAL_BYTES:  # zip-bomb: stop before inflating gigabytes into memory
+                        skips.append(ImportSkip(source=m.filename, error="import size limit reached"))
+                        break
                     try:
                         _add_text(m.filename, zf.read(m).decode("utf-8"), raws, skips)
                     except (OSError, UnicodeDecodeError) as exc:
@@ -153,7 +161,17 @@ def _collect(req: ImportParseRequest) -> tuple[list[tuple[str, object]], list[Im
         if p.is_file() and p.suffix.lower() == ".json":
             files = [p]
         elif p.is_dir():
-            files = sorted(p.glob("**/*.json"))[:_MAX_FILES]
+            # Bounded walk: cap both the matches (_MAX_FILES) AND the entries examined (_MAX_SCAN) so a
+            # huge tree (e.g. a drive root) can't tie up the worker for minutes enumerating everything.
+            files, scanned = [], 0
+            for root, _dirs, names in os.walk(p):
+                for name in names:
+                    scanned += 1
+                    if name.lower().endswith(".json"):
+                        files.append(Path(root) / name)
+                if len(files) >= _MAX_FILES or scanned >= _MAX_SCAN:
+                    break
+            files = sorted(files)[:_MAX_FILES]
         else:
             raise HTTPException(status_code=400, detail="Path is not a folder or a .json file.")
         for f in files:
