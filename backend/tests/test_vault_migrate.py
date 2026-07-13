@@ -32,7 +32,7 @@ def _v1_doc() -> dict:
 
 def test_v1_migrates_to_current_with_ar_backfill():
     doc = load_doc(json.dumps(_v1_doc()))
-    assert doc.schema_version == CURRENT == 5
+    assert doc.schema_version == CURRENT == 6
     assert doc.images[0].ar == pytest.approx(832 / 1216)  # backfilled from the snapshot params
     assert doc.images[0].role == "gallery"                # model default covers v1 (no migration needed)
     assert doc.images[1].ar is None                       # dangling snapshot ref -> no backfill, no crash
@@ -58,7 +58,7 @@ def test_v2_palette_pins_become_favorites():
         "snapshots": [], "images": [], "stack": [],
     }
     doc = load_doc(json.dumps(raw))
-    assert doc.schema_version == CURRENT == 5
+    assert doc.schema_version == CURRENT == 6
     assert doc.favorites == ["blk-a"]                     # only the linked pin; the local custom is dropped
     ids = {n["id"] for n in doc.canvas["nodes"]}
     assert ids == {"lib", "st-1"}                         # both palette pins gone; the station copy survives
@@ -80,7 +80,7 @@ def test_v3_station_becomes_two_zone_ordered_list():
         "snapshots": [], "images": [], "stack": [],
     }
     doc = load_doc(json.dumps(raw))
-    assert doc.schema_version == CURRENT == 5
+    assert doc.schema_version == CURRENT == 6
     st = next(n for n in doc.canvas["nodes"] if n["id"] == "station")
     assert st["data"] == {"ratio": 0.35, "axis": "h", "genFirst": True}  # outputRatio→ratio, posRatio dropped
     order = {n["id"]: n["position"]["y"] for n in doc.canvas["nodes"] if n.get("parentNode") == "station"}
@@ -103,26 +103,38 @@ def test_v4_gallery_becomes_block_stack():
         "snapshots": [], "images": [{"id": "img-1", "snapshot_id": None, "file": "images/img-1.png"}], "stack": [],
     }
     doc = load_doc(json.dumps(raw))
-    assert doc.schema_version == CURRENT == 5
+    assert doc.schema_version == CURRENT == 6
     gal = next(n for n in doc.canvas["nodes"] if n["id"] == "gallery")
-    assert gal["data"]["blocks"] == [{"id": "gb-seed", "type": "grid", "source": "all", "cols": 3}]
+    # v5 seeds an "all" grid; v6 turns it into an album owning the gallery image ids.
+    assert gal["data"]["blocks"] == [{"id": "gb-seed", "type": "grid", "cols": 3, "imageIds": ["img-1"]}]
     lib = next(n for n in doc.canvas["nodes"] if n["id"] == "library")
     assert "blocks" not in lib["data"]                     # only the gallery zone gets a stack
     assert doc.images[0].role == "gallery"                 # images untouched — still flagged by role
 
 
-def test_v5_gallery_with_blocks_is_untouched():
+def test_v5_grid_query_becomes_album_by_membership():
+    """v6: each grid's source query resolves to an ordered imageIds album; every gallery image is
+    assigned to the first grid whose query it matches, ordered by created_at."""
     raw = {
         "schema_version": 5, "id": "w5",
         "canvas": {"viewport": {"x": 0, "y": 0, "zoom": 1}, "nodes": [
-            {"id": "gallery", "type": "zone", "position": {"x": 0, "y": 0},
-             "data": {"role": "gallery", "blocks": [{"id": "g1", "type": "grid", "source": "favorites", "cols": 2}]}},
+            {"id": "gallery", "type": "zone", "position": {"x": 0, "y": 0}, "data": {"role": "gallery", "blocks": [
+                {"id": "g-fav", "type": "grid", "source": "favorites", "cols": 2},
+                {"id": "g-all", "type": "grid", "source": "all", "cols": 3},
+            ]}},
         ]},
-        "snapshots": [], "images": [], "stack": [],
+        "snapshots": [], "stack": [],
+        "images": [
+            {"id": "a", "role": "gallery", "favorite": True, "created_at": "2026-01-02"},
+            {"id": "b", "role": "gallery", "favorite": False, "created_at": "2026-01-01"},
+            {"id": "c", "role": "gallery", "favorite": True, "created_at": "2026-01-03"},
+        ],
     }
     doc = load_doc(json.dumps(raw))
-    gal = next(n for n in doc.canvas["nodes"] if n["id"] == "gallery")
-    assert gal["data"]["blocks"] == [{"id": "g1", "type": "grid", "source": "favorites", "cols": 2}]
+    grids = {g["id"]: g for g in next(n for n in doc.canvas["nodes"] if n["id"] == "gallery")["data"]["blocks"]}
+    assert "source" not in grids["g-fav"] and "source" not in grids["g-all"]
+    assert grids["g-fav"]["imageIds"] == ["a", "c"]        # favourites, oldest→newest; each image in ONE grid
+    assert grids["g-all"]["imageIds"] == ["b"]             # the non-favourite lands in the "all" grid
 
 
 def test_migration_is_idempotent_on_v2():
@@ -173,7 +185,7 @@ async def test_v1_on_disk_loads_lazily_and_reindexes(client):
     wj.write_text(json.dumps(raw), "utf-8")
 
     body = (await ac.get("/api/vault/works/w1")).json()
-    assert body["schema_version"] == 5
+    assert body["schema_version"] == 6
     assert body["images"][0]["ar"] == pytest.approx(832 / 1216)
     # Lazy migration: reads never rewrite the file — only the next save will.
     assert json.loads(wj.read_text("utf-8"))["schema_version"] == 1

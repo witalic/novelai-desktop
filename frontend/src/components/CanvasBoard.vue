@@ -190,15 +190,8 @@ function onCanvasDrop(e: DragEvent) {
     if (src) dropBlockAt({ ...src.data, expanded: false, editing: false }, toFlow(e.clientX, e.clientY))
     return
   }
-  if (payload.startsWith('nai-galimg:')) { // a gallery thumbnail dragged out → a loose (scratch) copy; the gallery keeps the original
-    const src = findNode(payload.slice('nai-galimg:'.length))
-    if (src && src.type === 'image') {
-      const pos = toFlow(e.clientX, e.clientY)
-      const { w, h } = spawnSize((src.data.ar as number) || 3 / 4)
-      const id = newId('img')
-      addNodes([{ id, type: 'image', position: { x: pos.x - w / 2, y: pos.y - h / 2 }, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, data: { ...src.data } }])
-      seedSrc(id)
-    }
+  if (payload.startsWith('nai-galimg:')) { // a gallery thumbnail dragged out → MOVE it to the canvas as scratch
+    moveGalleryImageToScratch(payload.slice('nai-galimg:'.length), toFlow(e.clientX, e.clientY))
     return
   }
   if (payload.startsWith('nai-drafts:')) { // a multi-selected group of drafts dragged out
@@ -226,8 +219,9 @@ function onCanvasDrop(e: DragEvent) {
   const gp = gal ? (gal.computedPosition || gal.position) : { x: 0, y: 0 } // top-level → computedPosition == position
   const inGallery = !!gal && pos.x >= gp.x && pos.x <= gp.x + gd.w && pos.y >= gp.y && pos.y <= gp.y + gd.h
   if (inGallery && gal) {
-    // Kept to the gallery → a hidden child rendered inside the gallery widget, not free on the canvas.
+    // Kept to the gallery → a hidden child rendered inside the gallery widget, joined to the default album.
     addNodes([{ id, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
+    addImageToGallery(id)
   } else {
     addNodes([{ id, type: 'image', position: { x: pos.x - w / 2, y: pos.y - h / 2 }, zIndex: 3,
       style: { width: `${w}px`, height: `${h}px` }, data }])
@@ -252,8 +246,9 @@ function keepDraftsBatch(ids: string[], pos?: { x: number; y: number }) {
     const { w, h } = spawnSize(ar)
     const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: draft.created_at || new Date().toISOString() }
     if (inGallery && gal) {
-      // Kept to the gallery → hidden children rendered inside the gallery widget (no free placement).
+      // Kept to the gallery → hidden children in the gallery widget, joined to the default album.
       addNodes([{ id: did, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
+      addImageToGallery(did)
     } else {
       const base = pos ?? { x: 60, y: 60 }
       addNodes([{ id: did, type: 'image', zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: base.x - w / 2 + i, y: base.y - h / 2 + i }, data }])
@@ -414,6 +409,36 @@ function toggleImageFavorite(id: string) {
   const n = findNode(id)
   if (n && n.type === 'image') n.data.favorite = !n.data.favorite // mutation → tracked + autosaved
 }
+// ---- gallery grid albums: each gallery image belongs to exactly one grid (data.blocks) ----
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function galleryGrids(): any[] {
+  return (((findNode(GALLERY)?.data.blocks as any[]) || []).filter((b) => b.type === 'grid'))
+}
+function addImageToGallery(id: string) {
+  const gal = findNode(GALLERY)
+  if (!gal) return
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const blocks = (gal.data.blocks ??= []) as any[]
+  let grid = blocks.find((b) => b.type === 'grid')
+  if (!grid) { grid = { id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }; blocks.push(grid) } // ensure a default album
+  if (!grid.imageIds.includes(id)) grid.imageIds.push(id)
+}
+function removeImageFromGridAlbums(id: string) {
+  for (const g of galleryGrids()) { const i = g.imageIds.indexOf(id); if (i >= 0) g.imageIds.splice(i, 1) }
+}
+// Remove a gallery image from its album and float it back onto the canvas as scratch (a move, not a copy).
+function moveGalleryImageToScratch(id: string, pos?: { x: number; y: number }) {
+  const n = findNode(id)
+  if (!n || n.type !== 'image') return
+  removeImageFromGridAlbums(id)
+  const { w, h } = spawnSize((n.data.ar as number) || 3 / 4)
+  const base = pos ?? { x: (findNode(GALLERY)?.position.x ?? 0) - w - 60, y: (findNode(GALLERY)?.position.y ?? 0) + 40 }
+  n.parentNode = undefined
+  n.hidden = false
+  n.position = { x: base.x - (pos ? w / 2 : 0), y: base.y - (pos ? h / 2 : 0) }
+  nudgeIfOverlapping(n)
+  seedSrc(id)
+}
 const nextCompY = () => (compBlocks.value.length ? Math.max(...compBlocks.value.map((n) => n.position.y)) + 10 : 0)
 
 // Edit a composition row via property mutation (Vue Flow tracks node.data mutations, not reassignment).
@@ -573,13 +598,15 @@ function settleNode(node: any) {
   } else if (node.type === 'image') {
     const gal = getIntersectingNodes(node).find((n) => n.type === 'zone' && n.data.role === 'gallery')
     if (gal) {
-      // Into the gallery → a hidden child, surfaced only through the widget's grids (not free on the canvas).
+      // Into the gallery → a hidden child in the default album, surfaced only through the widget's grids.
       live.parentNode = gal.id
       live.hidden = true
+      addImageToGallery(live.id)
     } else if (live.parentNode) {
       live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
       live.parentNode = undefined
       live.hidden = false // dragged back out of the gallery → a visible scratch image again
+      removeImageFromGridAlbums(live.id)
       nudgeIfOverlapping(live)
     }
   }
@@ -1051,7 +1078,7 @@ function startName(data: any, e: MouseEvent) {
           </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" />
+            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" @remove="(id) => moveGalleryImageToScratch(id)" />
           </template>
         </template>
 

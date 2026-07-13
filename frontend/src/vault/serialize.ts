@@ -123,7 +123,7 @@ export function canvasToWork(
   }))
 
   return {
-    schema_version: 5, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
+    schema_version: 6, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
     canvas: { viewport, nodes: canvasNodes },
     snapshots: [...snapshotsByKey.values()],
     images, stack,
@@ -189,9 +189,14 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
     }
     if (n.type === 'zone' && (n.data as { role?: string })?.role === 'gallery') {
       // Heal a gallery zone that never got a block stack (backend migration is authoritative, but a
-      // `--web` dev doc or a hand-edited work might skip it). Deterministic seed id → stable round-trip.
+      // hand-edited work might skip it): seed one album grid owning every gallery image, oldest→newest.
+      // Deterministic seed id → stable round-trip.
       const d = { ...(n.data as Record<string, unknown>) }
-      if (!Array.isArray(d.blocks) || !d.blocks.length) d.blocks = [{ id: 'gb-seed', type: 'grid', source: 'all', cols: 3 }]
+      if (!Array.isArray(d.blocks) || !d.blocks.length) {
+        const galleryIds = (doc.images || []).filter((im) => im.role === 'gallery')
+          .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))).map((im) => im.id)
+        d.blocks = [{ id: 'gb-seed', type: 'grid', imageIds: galleryIds, cols: 3 }]
+      }
       return { ...n, data: d } as CanvasNode
     }
     return { ...n, data: { ...n.data } } as CanvasNode

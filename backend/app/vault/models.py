@@ -115,7 +115,7 @@ class StackItem(BaseModel):
 
 
 class WorkDoc(BaseModel):
-    schema_version: int = 5  # bump together with a migrate.py step + frontend serialize.ts
+    schema_version: int = 6  # bump together with a migrate.py step + frontend serialize.ts
     id: str
     title: str = ""
     slug: str = ""

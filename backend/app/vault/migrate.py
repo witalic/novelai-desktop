@@ -14,7 +14,7 @@ from app.vault.models import WorkDoc
 
 log = logging.getLogger(__name__)
 
-CURRENT = 5
+CURRENT = 6
 
 
 def _migrate_1_to_2(raw: dict) -> dict:
@@ -99,8 +99,42 @@ def _migrate_4_to_5(raw: dict) -> dict:
     return raw
 
 
+def _migrate_5_to_6(raw: dict) -> dict:
+    """v6: image grids become albums — each grid owns an ordered ``imageIds`` list instead of a
+    shared ``source`` query, so every gallery image belongs to exactly one grid. Resolve each
+    grid's old query against the gallery images (ordered by created_at) and assign each image to
+    the FIRST grid whose query it matches (leftovers → the first grid), then drop ``source``."""
+    nodes = (raw.get("canvas") or {}).get("nodes", [])
+    gal = next((n for n in nodes if n.get("type") == "zone" and (n.get("data") or {}).get("role") == "gallery"), None)
+    if not gal:
+        return raw
+    grids = [b for b in ((gal.get("data") or {}).get("blocks") or []) if b.get("type") == "grid"]
+    if not grids:
+        return raw
+    imgs = [im for im in raw.get("images", []) if (im.get("role") or "gallery") == "gallery"]
+    imgs.sort(key=lambda im: im.get("created_at") or "")
+
+    def matches(src: str, im: dict) -> bool:
+        if src == "favorites":
+            return bool(im.get("favorite"))
+        if src.startswith("tag:"):
+            return src[4:] in (im.get("tags") or [])
+        if src.startswith("group:"):
+            return im.get("group") == src[6:]
+        return True  # "all" (and anything unknown) matches everything
+
+    for g in grids:
+        g["imageIds"] = []
+    for im in imgs:
+        target = next((g for g in grids if matches(g.get("source", "all"), im)), grids[0])
+        target["imageIds"].append(im["id"])
+    for g in grids:
+        g.pop("source", None)
+    return raw
+
+
 _MIGRATIONS: dict[int, Callable[[dict], dict]] = {
-    1: _migrate_1_to_2, 2: _migrate_2_to_3, 3: _migrate_3_to_4, 4: _migrate_4_to_5,
+    1: _migrate_1_to_2, 2: _migrate_2_to_3, 3: _migrate_3_to_4, 4: _migrate_4_to_5, 5: _migrate_5_to_6,
 }
 
 
