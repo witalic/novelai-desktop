@@ -159,20 +159,25 @@ function onWorkSaved(workId: string) {
     : d))
 }
 
-// Open a saved work: pull its doc, restore params, hand the doc to the canvas to rebuild.
-watch(() => props.openWorkId, async (raw) => {
-  if (!raw) return
-  cancelGenerate() // opening a work must not inherit an in-flight generation's output
-  const id = raw.split('#')[0] // App appends '#<ts>' to force reopen of the same work
+// Open a saved work: pull its doc, restore params + the generation stack, hand the doc to the canvas to
+// rebuild. Shared by the open-work signal and the canvas's conflict reload (so the FULL work refreshes).
+async function loadWorkIntoView(id: string) {
+  cancelGenerate() // opening/reloading a work must not inherit an in-flight generation's output
   try {
     const doc = await loadWork(id)
     Object.assign(params, (doc.params as Partial<PanelParams>) || {})
-    drafts.value = workToDrafts(doc) // restore the generation stack
-    loadedWork.value = doc
+    drafts.value = workToDrafts(doc)
+    loadedWork.value = doc // the canvas watches this and rebuilds
   } catch (e) {
     push(e instanceof Error ? e.message : 'Could not open work', 'err')
   }
+}
+watch(() => props.openWorkId, (raw) => {
+  if (!raw) return
+  loadWorkIntoView(raw.split('#')[0]) // App appends '#<ts>' to force reopen of the same work
 })
+// A concurrent edit was detected on save (409) → re-fetch the whole work, params/stack included (#4).
+function onReloadWork() { if (loadedWork.value) loadWorkIntoView(loadedWork.value.id) }
 </script>
 
 <template>
@@ -180,7 +185,7 @@ watch(() => props.openWorkId, async (raw) => {
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
       :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
-      @new-work="onNewWork" />
+      @new-work="onNewWork" @reload-work="onReloadWork" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
       @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
       @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @navigate="emit('navigate', $event)" />

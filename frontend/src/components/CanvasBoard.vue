@@ -7,7 +7,7 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { getVaultConfig, listCategories, loadWork, saveDownloads } from '../api'
+import { getVaultConfig, listCategories, saveDownloads } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
@@ -43,6 +43,7 @@ const emit = defineEmits<{
   navigate: [string]
   'open-library': [{ category: string; tags: string[] }] // widget footer → Library, pre-filtered
   'new-work': []
+  'reload-work': [] // a concurrent edit (409) → the view re-fetches the full work (params + stack + canvas)
 }>()
 
 const {
@@ -144,11 +145,9 @@ const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty,
   nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
   onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
 })
-// A concurrent edit (409) → pull the authoritative copy and rebuild the canvas from it (H3).
-async function reloadWork() {
-  if (!workId.value) return
-  try { loadDoc(await loadWork(workId.value)) } catch { /* gone / offline — nothing to reload */ }
-}
+// A concurrent edit (409) → the view re-fetches the FULL work (params + draft stack + canvas doc), not
+// just the canvas nodes, so the next save doesn't write stale params/stack over the fresh version (H3/#4).
+function reloadWork() { emit('reload-work') }
 // After a save, point kept gallery images at their on-disk vault URL so later saves don't re-serialize their
 // base64 (a 30-image work would otherwise ship hundreds of MB per flush). Display is unaffected — the shown
 // src (shownSrc) still holds the data: URL until the next scale swaps in the sized thumbnail.
