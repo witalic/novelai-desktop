@@ -77,7 +77,7 @@ def _norm(text: str) -> str:
 
 def _existing_index(settings) -> dict[str, tuple[str, str]]:  # noqa: ANN001
     """``"<polarity>|<normalised text>" -> (id, name)`` over every block on disk (files are truth)."""
-    root = service._blocks_root(service._vault(settings))
+    root = service.blocks_root(settings)
     idx: dict[str, tuple[str, str]] = {}
     if not root.is_dir():
         return idx

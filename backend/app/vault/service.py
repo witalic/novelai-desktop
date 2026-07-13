@@ -14,7 +14,7 @@ from PIL import Image as PILImage
 
 from app import appconfig
 from app.settings import Settings
-from app.vault import catalog, index, layout, manager, migrate, store
+from app.vault import categories, index, layout, manager, migrate, store
 from app.vault.models import (
     BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage,
     SaveCategory, TagCount, WorkDoc, WorkListItem, WorksPage,
@@ -231,6 +231,11 @@ def _blocks_root(vault: Path) -> Path:
     return vault / "library" / "blocks"
 
 
+def blocks_root(settings: Settings) -> Path:
+    """Public: the on-disk library blocks directory for the active vault (used by the importer)."""
+    return _blocks_root(_vault(settings))
+
+
 def save_block(settings: Settings, block: BlockDoc) -> dict:
     if not layout.valid_id(block.id):
         raise HTTPException(status_code=400, detail="Invalid block id.")
@@ -295,14 +300,14 @@ def delete_block(settings: Settings, block_id: str) -> dict:
     return {"id": block_id, "deleted": True}
 
 
-def list_blocks(settings: Settings, categories: list[str], tags: list[str], search: str, sort: str,
+def list_blocks(settings: Settings, category_slugs: list[str], tags: list[str], search: str, sort: str,
                 page: int, per_page: int) -> BlocksPage:
     vault = _vault(settings)
     conn = index.open_index(vault)
     try:
         # Section order follows the category order (one order everywhere), so pages arrive in display order.
-        cat_order = [c.slug for c in catalog.read_all(vault)] if sort == "category" else None
-        total, rows = index.list_blocks(conn, categories, tags, search or None, sort, page, per_page, cat_order)
+        cat_order = [c.slug for c in categories.read_all(vault)] if sort == "category" else None
+        total, rows = index.list_blocks(conn, category_slugs, tags, search or None, sort, page, per_page, cat_order)
     finally:
         conn.close()
     items = [
@@ -344,13 +349,13 @@ def list_categories(settings: Settings, tags: list[str] | None = None) -> list[C
         counts = index.category_counts(conn, tags or None)
     finally:
         conn.close()
-    cats = catalog.read_all(vault)
+    cats = categories.read_all(vault)
     known = {c.slug for c in cats}
     result = [
-        CategoryCount(**c.model_dump(), count=counts.get(c.slug, 0), builtin=c.slug in catalog.DEFAULT_SLUGS)
+        CategoryCount(**c.model_dump(), count=counts.get(c.slug, 0), builtin=c.slug in categories.DEFAULT_SLUGS)
         for c in cats
     ]
-    # Surface any category a block references but the catalog doesn't know (fallback color).
+    # Surface any category a block references but the categories doesn't know (fallback color).
     for slug, cnt in counts.items():
         if slug not in known:
             result.append(CategoryCount(slug=slug, name=slug.replace("-", " ").title(), color="#738496", count=cnt))
@@ -391,7 +396,7 @@ def delete_category(settings: Settings, slug: str) -> dict:
         raise HTTPException(status_code=400, detail="The Custom category is the fallback and can't be deleted.")
     vault = _vault(settings)
     moved = _reassign_blocks_to_custom(vault, slug)
-    removed = catalog.remove(vault, slug)
+    removed = categories.remove(vault, slug)
     if not removed and not moved:
         raise HTTPException(status_code=404, detail="Category not found.")
     conn = index.open_index(vault)
@@ -419,28 +424,28 @@ def save_category(settings: Settings, body: SaveCategory) -> CategoryDoc:
     if body.slug:
         slug = body.slug  # update (rename/recolor) — the id is stable, independent of the name
     else:
-        existing = {c.slug for c in catalog.read_all(vault)} | catalog.DEFAULT_SLUGS
+        existing = {c.slug for c in categories.read_all(vault)} | categories.DEFAULT_SLUGS
         slug = _new_category_id(existing)  # opaque id, not derived from the (possibly non-Latin) name
     cat = CategoryDoc(slug=slug, name=body.name.strip(), color=body.color)
-    catalog.upsert(vault, cat)
+    categories.upsert(vault, cat)
     return cat
 
 
 def default_categories() -> list[CategoryDoc]:
     """The built-in category set — drives the 'restore defaults' picker (shows which are missing)."""
-    return [c.model_copy() for c in catalog.DEFAULTS]
+    return [c.model_copy() for c in categories.DEFAULTS]
 
 
 def restore_categories(settings: Settings, slugs: list[str]) -> dict:
     """Un-tombstone deleted built-in categories the user wants back."""
     _guard_no_move()
-    return {"restored": catalog.restore(_vault(settings), slugs)}
+    return {"restored": categories.restore(_vault(settings), slugs)}
 
 
 def reorder_categories(settings: Settings, slugs: list[str]) -> dict:
     """Persist a user-defined category order — one order shared by every category list."""
     _guard_no_move()
-    catalog.reorder(_vault(settings), slugs)
+    categories.reorder(_vault(settings), slugs)
     return {"order": slugs}
 
 
