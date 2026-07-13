@@ -204,7 +204,7 @@ export interface ZoneNode extends CanvasNodeBase {
 // block types land (increment by increment). Transient block-UI state (inline-edit, drag) lives in
 // component refs keyed by block id — NEVER inside these objects, or serialize.pick leaks it to disk.
 // A grid is an album: it owns an ordered list of image ids; each gallery image belongs to exactly one grid.
-export interface GalleryGridBlock { id: string; type: 'grid'; imageIds: string[]; cols: 2 | 3 | 4 }
+export interface GalleryGridBlock { id: string; type: 'grid'; imageIds: string[]; cols: 2 | 3 | 4; collapsed?: boolean }
 export interface GallerySectionBlock { id: string; type: 'section'; title: string; collapsed: boolean } // collapsed = layout, persists
 export interface GalleryHeadingBlock { id: string; type: 'heading'; text: string; level: 1 | 2 }
 export interface GalleryTextBlock { id: string; type: 'text'; text: string }

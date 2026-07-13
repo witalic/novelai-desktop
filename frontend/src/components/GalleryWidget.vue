@@ -41,6 +41,14 @@ function gridImages(b: GalleryBlock): GalleryImage[] {
   if (b.type !== 'grid' || !Array.isArray(b.imageIds)) return []
   return b.imageIds.map((id) => imageById.value.get(id)).filter((im): im is GalleryImage => !!im)
 }
+// Collapsed grid shows a single row (its column count); the rest fold away behind a "+N" tile.
+function gridVisible(b: GalleryBlock): GalleryImage[] {
+  const all = gridImages(b)
+  return b.type === 'grid' && b.collapsed ? all.slice(0, b.cols) : all
+}
+function gridHidden(b: GalleryBlock): number {
+  return b.type === 'grid' && b.collapsed ? Math.max(0, gridImages(b).length - b.cols) : 0
+}
 
 const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
 // Server-sized thumbnail for a cell; a fresh `data:` URL can't be resized so it's used as-is.
@@ -194,6 +202,8 @@ function onBlkDrop(targetId: string) {
             <div v-else-if="b.type === 'grid'" class="b-grid" :class="{ droptarget: gridDropTarget === b.id }"
               @dragover.prevent="gridDropTarget = b.id" @dragleave="gridDropTarget = null" @drop.prevent.stop="onGridDrop(b, $event)">
               <div class="gridtool nodrag">
+                <button class="gcollapse nodrag" :title="b.collapsed ? 'Expand grid' : 'Collapse to one row'"
+                  @pointerdown.stop @click.stop="b.collapsed = !b.collapsed">{{ b.collapsed ? '▸' : '▾' }}</button>
                 <div class="cols">
                   <button v-for="n in ([2, 3, 4] as const)" :key="n" class="nodrag" :class="{ on: b.cols === n }"
                     @pointerdown.stop @click.stop="setCols(b, n)">{{ n }}</button>
@@ -201,15 +211,16 @@ function onBlkDrop(targetId: string) {
                 <span class="gtcount">{{ gridImages(b).length }} image{{ gridImages(b).length === 1 ? '' : 's' }}</span>
               </div>
               <div v-if="gridImages(b).length" class="gimgs" :style="{ '--cols': b.cols }">
-                <div v-for="im in gridImages(b)" :key="im.id" class="gthumb nodrag" :class="{ fav: im.data.favorite }"
+                <div v-for="(im, i) in gridVisible(b)" :key="im.id" class="gthumb nodrag" :class="{ fav: im.data.favorite }"
                   :style="{ '--ar': im.data.ar || (3 / 4) }" draggable="true" @dragstart="onThumbDrag(im.id, $event)"
-                  @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
+                  @pointerdown.stop @click.stop="gridHidden(b) && i === b.cols - 1 ? (b.collapsed = false) : emit('preview', im.data.url || '')">
                   <img class="im" :src="thumbSrc(im.data.url, b.cols)" alt="gallery image" loading="lazy" draggable="false" />
                   <button class="star nodrag" title="Toggle favourite" @pointerdown.stop @click.stop="emit('favorite', im.id)">★</button>
                   <button class="tremove nodrag" title="Remove from this grid (moves to the canvas)" @pointerdown.stop @click.stop="emit('remove', im.id)">✕</button>
+                  <div v-if="gridHidden(b) && i === b.cols - 1" class="gmore">+{{ gridHidden(b) }}</div>
                 </div>
               </div>
-              <div v-else class="ghint">Empty album — keep generations here, or drag images in from another grid.</div>
+              <div v-else class="ghint">Empty album — keep generations here, or drag images in from Quick access.</div>
             </div>
 
             <!-- heading -->
@@ -348,6 +359,9 @@ function onBlkDrop(targetId: string) {
 .b-grid{display:flex;flex-direction:column;border-radius:8px}
 .b-grid.droptarget{outline:2px dashed var(--accent);outline-offset:2px;background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .gridtool{display:flex;align-items:center;gap:8px;padding:0 1px 8px}
+.gcollapse{border:0;background:transparent;color:var(--text-faint);font-size:11px;line-height:1;cursor:pointer;padding:0;width:14px;flex-shrink:0}
+.gcollapse:hover{color:var(--text)}
+.gmore{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);color:#fff;font-size:14px;font-weight:700;cursor:pointer}
 .cols{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .cols button{border:0;border-left:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font:inherit;font-size:11px;font-weight:700;padding:4px 8px;cursor:pointer}
 .cols button:first-child{border-left:0}
