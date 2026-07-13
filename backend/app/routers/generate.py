@@ -29,6 +29,9 @@ def _with_seed(params: GenerateParams) -> GenerateParams:
     return params.model_copy(update={"seed": secrets.randbelow(2**32)})
 
 
+# Non-streaming generate: returns all samples at once. The desktop UI uses /generate/stream for live
+# progress; this simpler endpoint is kept as a scripting/fallback surface (and covers the generate path
+# in tests without SSE).
 @router.post("/generate")
 async def generate(params: GenerateParams, settings: Settings = Depends(get_settings)) -> dict:
     client = await run_in_threadpool(get_client, settings)  # get_client reads the keychain (blocking) — off the loop

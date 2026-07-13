@@ -18,15 +18,13 @@ const { fixture } = vi.hoisted(() => ({
 
 vi.mock('../api', () => ({ getCatalog: () => Promise.resolve(fixture) }))
 
-import { useCatalog, modelLabel, samplerLabel, sizeLabel, ucLabel, modelSpec } from './useCatalog'
+import { useCatalog, modelLabel, samplerLabel, modelSpec } from './useCatalog'
 
 describe('useCatalog', () => {
   it('resolves labels + specs from the fetched catalog', async () => {
     await useCatalog().refresh()
     expect(modelLabel('nai-diffusion-4-5-full')).toBe('NAI Diffusion 4.5 — Full')
     expect(samplerLabel('k_euler')).toBe('Euler')
-    expect(sizeLabel(832, 1216)).toBe('Normal — 832×1216')
-    expect(ucLabel(4)).toBe('Heavy')
     expect(modelSpec('nai-diffusion-4-5-full')?.tokenizer).toBe('t5')
   })
 
@@ -34,8 +32,6 @@ describe('useCatalog', () => {
     // catalog is loaded from the previous test (singleton) — unknown ids must not throw or blank out.
     expect(modelLabel('nai-diffusion-9')).toBe('nai-diffusion-9')
     expect(samplerLabel('k_unknown')).toBe('k_unknown')
-    expect(sizeLabel(100, 200)).toBe('100×200')
-    expect(ucLabel(99)).toBe('99')
     expect(modelSpec('nope')).toBeUndefined()
   })
 })

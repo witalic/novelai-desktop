@@ -208,8 +208,3 @@ def block_examples(
     settings: Settings = Depends(get_settings),
 ) -> list[GalleryItem]:
     return service.image_examples(settings, tags, limit)
-
-
-@router.post("/index/rebuild")
-def rebuild_index(settings: Settings = Depends(get_settings)) -> dict:
-    return service.reindex(settings)

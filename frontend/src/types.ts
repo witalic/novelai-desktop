@@ -72,12 +72,6 @@ export interface Preset {
   updated_at?: string
 }
 
-export interface GenerateResponse {
-  mock: boolean
-  count: number
-  images: string[] // base64-encoded PNGs
-}
-
 export type StreamEvent =
   | { type: 'intermediate'; samp: number; step: number; mime: string; image: string }
   | { type: 'final'; mime: string; image: string; seed: number; mock?: boolean }

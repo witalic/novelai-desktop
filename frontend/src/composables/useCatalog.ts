@@ -23,13 +23,6 @@ function refresh() {
 export const modelSpec = (id: string): CatalogModel | undefined => catalog.value?.models.find((m) => m.id === id)
 export const modelLabel = (id: string): string => modelSpec(id)?.label ?? id
 export const samplerLabel = (id: string): string => catalog.value?.samplers.find((s) => s.id === id)?.label ?? id
-export const ucLabel = (v: number): string => catalog.value?.uc_presets.find((u) => u.value === v)?.label ?? String(v)
-
-// Matched size tier ("Normal — 832×1216") or a bare "832×1216" for a custom size.
-export function sizeLabel(w: number, h: number): string {
-  const r = catalog.value?.resolutions.find((x) => x.width === w && x.height === h)
-  return r ? `${r.tier} — ${w}×${h}` : `${w}×${h}`
-}
 
 export function useCatalog() {
   refresh() // any consumer mounting triggers the one-shot fetch; coalesced

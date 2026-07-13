@@ -474,12 +474,3 @@ def list_tags(settings: Settings, category: str) -> list[TagCount]:
     finally:
         conn.close()
     return [TagCount(name=r["name"], count=r["count"]) for r in rows]
-
-
-def reindex(settings: Settings) -> dict:
-    vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
-        return index.rebuild(conn, vault)
-    finally:
-        conn.close()
