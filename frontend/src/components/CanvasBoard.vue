@@ -426,6 +426,37 @@ function addImageToGallery(id: string) {
 function removeImageFromGridAlbums(id: string) {
   for (const g of galleryGrids()) { const i = g.imageIds.indexOf(id); if (i >= 0) g.imageIds.splice(i, 1) }
 }
+// A thumb or kept draft dropped onto a specific grid → joins THAT album (not always the first one).
+function onGalleryGridDrop(p: { gridId: string; imageId?: string; payload?: string }) {
+  if (p.imageId) { // an existing gallery thumbnail moved between albums
+    const n = findNode(p.imageId)
+    if (!n || n.type !== 'image') return
+    removeImageFromGridAlbums(p.imageId)
+    const grid = galleryGrids().find((g) => g.id === p.gridId)
+    if (grid && !grid.imageIds.includes(p.imageId)) grid.imageIds.push(p.imageId)
+    n.parentNode = GALLERY; n.hidden = true; n.position = { x: 0, y: 0 } // ensure it's a gallery child
+    return
+  }
+  // a kept draft (Output slot / Stack) dropped onto this grid → materialise it here
+  const pl = p.payload || ''
+  const ids = pl === 'nai-draft' ? (props.drafts[0] ? [props.drafts[0].id] : [])
+    : pl.startsWith('nai-draft:') ? [pl.slice('nai-draft:'.length)]
+      : pl.startsWith('nai-drafts:') ? pl.slice('nai-drafts:'.length).split(',') : []
+  const grid = galleryGrids().find((g) => g.id === p.gridId)
+  if (!grid) return
+  for (const did of ids) {
+    const draft = props.drafts.find((d) => d.id === did)
+    if (!draft) continue
+    const ar = (draft.params.width || 832) / (draft.params.height || 1216)
+    const { w, h } = spawnSize(ar)
+    const data = { url: draft.url, file: draft.file || '', snapshot: draft.snapshot, ar, created_at: draft.created_at || new Date().toISOString() }
+    addNodes([{ id: did, type: 'image', parentNode: GALLERY, hidden: true, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, position: { x: 0, y: 0 }, data }])
+    if (!grid.imageIds.includes(did)) grid.imageIds.push(did)
+    seedSrc(did)
+    emit('take', did)
+  }
+}
+
 // Remove a gallery image from its album and float it back onto the canvas as scratch (a move, not a copy).
 function moveGalleryImageToScratch(id: string, pos?: { x: number; y: number }) {
   const n = findNode(id)
@@ -1078,7 +1109,7 @@ function startName(data: any, e: MouseEvent) {
           </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" @remove="(id) => moveGalleryImageToScratch(id)" />
+            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" @remove="(id) => moveGalleryImageToScratch(id)" @drop-on-grid="onGalleryGridDrop" />
           </template>
         </template>
 

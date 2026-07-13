@@ -16,7 +16,21 @@ const props = defineProps<{
   images: GalleryImage[] // the work's gallery-role image nodes
   title?: string
 }>()
-const emit = defineEmits<{ favorite: [string]; preview: [string]; remove: [string] }>()
+const emit = defineEmits<{
+  favorite: [string]; preview: [string]; remove: [string]
+  dropOnGrid: [{ gridId: string; imageId?: string; payload?: string }] // a thumb or kept-draft dropped onto a specific grid
+}>()
+
+// A grid is a drop target: a thumbnail dragged from another grid MOVES here; a kept draft dropped
+// here joins this album (CanvasBoard resolves the payload — it owns the drafts + the image nodes).
+const gridDropTarget = ref<string | null>(null)
+function onGridDrop(b: GalleryBlock, e: DragEvent) {
+  gridDropTarget.value = null
+  if (b.type !== 'grid') return
+  const payload = e.dataTransfer?.getData('text/plain') || ''
+  if (payload.startsWith('nai-galimg:')) emit('dropOnGrid', { gridId: b.id, imageId: payload.slice('nai-galimg:'.length) })
+  else if (payload === 'nai-draft' || payload.startsWith('nai-draft:') || payload.startsWith('nai-drafts:')) emit('dropOnGrid', { gridId: b.id, payload })
+}
 
 const blocks = computed<GalleryBlock[]>(() => props.data.blocks ?? [])
 const total = computed(() => props.images.length)
@@ -176,8 +190,9 @@ function onBlkDrop(targetId: string) {
               <input class="secname nodrag" v-model="b.title" placeholder="Section" @pointerdown.stop />
             </div>
 
-            <!-- image grid — an album owning its images -->
-            <div v-else-if="b.type === 'grid'" class="b-grid">
+            <!-- image grid — an album owning its images; a drop target for thumbs/kept drafts -->
+            <div v-else-if="b.type === 'grid'" class="b-grid" :class="{ droptarget: gridDropTarget === b.id }"
+              @dragover.prevent="gridDropTarget = b.id" @dragleave="gridDropTarget = null" @drop.prevent.stop="onGridDrop(b, $event)">
               <div class="gridtool nodrag">
                 <div class="cols">
                   <button v-for="n in ([2, 3, 4] as const)" :key="n" class="nodrag" :class="{ on: b.cols === n }"
@@ -330,7 +345,8 @@ function onBlkDrop(targetId: string) {
 .gnbody{flex:1;min-height:0;overflow-y:auto;padding:10px 12px 14px}
 .glist{display:flex;flex-direction:column;gap:8px}
 
-.b-grid{display:flex;flex-direction:column}
+.b-grid{display:flex;flex-direction:column;border-radius:8px}
+.b-grid.droptarget{outline:2px dashed var(--accent);outline-offset:2px;background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .gridtool{display:flex;align-items:center;gap:8px;padding:0 1px 8px}
 .cols{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .cols button{border:0;border-left:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font:inherit;font-size:11px;font-weight:700;padding:4px 8px;cursor:pointer}
