@@ -332,7 +332,7 @@ function arrangeImages(imgs: any[], anchors?: Map<string, Anchor>) {
 // Clickable scale picker under an all-images selection (up to ×5). Screen-space box of the selected
 // images + whether every selected node is an image; reactive to selection, sizes and the viewport.
 const scalePicker = computed(() => {
-  const sel = nodes.value.filter((n) => n.selected)
+  const sel = nodes.value.filter((n) => n.selected && !n.hidden) // hidden = gallery child; no picker over it (item 5)
   if (!sel.length || !sel.every((n) => n.type === 'image')) return null
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const n of sel) {
@@ -348,7 +348,7 @@ const scalePicker = computed(() => {
 })
 // Set every selected image to a reference scale and re-arrange (anchored at the set's current top-left).
 function applyScaleAll(scale: number) {
-  const imgs = nodes.value.filter((n) => n.type === 'image' && n.selected)
+  const imgs = nodes.value.filter((n) => n.type === 'image' && n.selected && !n.hidden)
   if (!imgs.length) return
   const anchors = new Map<string, Anchor>()
   for (const im of imgs) {
@@ -458,6 +458,28 @@ function onGalleryQuickDrop(p: { imageId?: string; payload?: string }) {
     return
   }
   keepDraftsToGallery(p.payload || '')
+}
+
+// Delete a gallery image from the work entirely (confirmed — it's the user's content and unrecoverable).
+async function onGalleryDeleteImg(id: string) {
+  const n = findNode(id)
+  if (!n || n.type !== 'image') return
+  if (!(await confirm({
+    title: 'Delete image', danger: true, confirmLabel: 'Delete',
+    message: 'Remove this image from the work? This cannot be undone.',
+  }))) return
+  removeImageFromGridAlbums(id)
+  removeNodes([id])
+}
+
+// Delete every unsorted (Quick access) image except favourites — confirmed, it's the user's content.
+async function onGalleryClearQuick(ids: string[]) {
+  if (!ids.length) return
+  if (!(await confirm({
+    title: 'Clear Quick access', danger: true, confirmLabel: `Delete ${ids.length}`,
+    message: `Delete ${ids.length} unsorted image${ids.length === 1 ? '' : 's'} from the work? Favourited images are kept. This cannot be undone.`,
+  }))) return
+  removeNodes(ids)
 }
 
 // Remove a gallery image from its album and float it back onto the canvas as scratch (a move, not a copy).
@@ -605,14 +627,27 @@ onMounted(async () => {
 watch(() => props.openWork, (w) => { if (w) loadDoc(w) })
 
 // Settle EVERY dragged node (multi-select moves a whole set) — not just the grabbed one.
-onNodeDragStop(({ nodes: dragged, node }) => {
+onNodeDragStop(({ nodes: dragged, node, event }) => {
   const set = dragged && dragged.length ? dragged : [node]
-  for (const n of set) settleNode(n)
+  // Drop-pointer screen coords let a single image land in the exact grid it was dropped over (item 2).
+  const ev = event as MouseEvent | undefined
+  const dropXY = set.length === 1 && ev && typeof ev.clientX === 'number' ? { x: ev.clientX, y: ev.clientY } : undefined
+  for (const n of set) settleNode(n, dropXY)
 })
 
+// Which gallery grid (if any) sits under a screen point — hit-tests the widget DOM beneath the dragged
+// node (elementsFromPoint returns the dragged node too; skip it to the grid below). Enables canvas→grid.
+function gridUnderPoint(p: { x: number; y: number } | undefined): string | null {
+  if (!p) return null
+  for (const el of document.elementsFromPoint(p.x, p.y)) {
+    const g = (el as HTMLElement).closest?.('.b-grid[data-gid]')
+    if (g) return g.getAttribute('data-gid')
+  }
+  return null
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function settleNode(node: any) {
+function settleNode(node: any, dropXY?: { x: number; y: number }) {
   const live = findNode(node.id)
   if (!live) return
   const overStation = getIntersectingNodes(node).some((n) => n.id === STATION)
@@ -632,9 +667,13 @@ function settleNode(node: any) {
   } else if (node.type === 'image') {
     const gal = getIntersectingNodes(node).find((n) => n.type === 'zone' && n.data.role === 'gallery')
     if (gal) {
-      // Into the gallery → a hidden child in Quick access (unassigned; the user drags it into a grid to curate).
+      // Into the gallery → a hidden gallery child. If dropped precisely over a grid, join THAT album
+      // (item 2); otherwise it lands unassigned in Quick access. Deselect so no scale-picker lingers (item 5).
       live.parentNode = gal.id
       live.hidden = true
+      live.selected = false
+      const gid = gridUnderPoint(dropXY)
+      if (gid) { const grid = galleryGrids().find((g) => g.id === gid); if (grid && !grid.imageIds.includes(live.id)) grid.imageIds.push(live.id) }
     } else if (live.parentNode) {
       live.position = { x: node.computedPosition.x, y: node.computedPosition.y }
       live.parentNode = undefined
@@ -1111,7 +1150,7 @@ function startName(data: any, e: MouseEvent) {
           </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryWidget :data="data" :images="galleryImages" @favorite="toggleImageFavorite" @preview="openPreview" @remove="(id) => moveGalleryImageToScratch(id)" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
+            <GalleryWidget :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadImages" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
           </template>
         </template>
 

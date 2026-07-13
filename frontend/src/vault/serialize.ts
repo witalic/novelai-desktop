@@ -33,7 +33,7 @@ const BLOCK_FIELDS = [
   // layout: order in the station list is position.y; loose scratch blocks use position — no extra fields
 ] as const
 const STATION_FIELDS = ['ratio', 'axis', 'genFirst'] as const // two-zone layout (Generation | Composition)
-const ZONE_FIELDS = ['role', 'collapsed', 'expandedH', 'blocks'] as const // prompt-widget collapse + gallery block stack are layout
+const ZONE_FIELDS = ['role', 'collapsed', 'expandedH', 'blocks', 'outlineOpen', 'quickOpen'] as const // prompt-widget collapse + gallery block stack & panel state are layout
 // image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
 
 function pick(data: Record<string, unknown> | undefined, fields: readonly string[]) {

@@ -195,6 +195,8 @@ export interface ZoneNode extends CanvasNodeBase {
     expandedH?: number // height to restore on expand (style.height holds 38px while collapsed)
     // gallery-zone (structured gallery widget) layout — the composed block stack (schema v5)
     blocks?: GalleryBlock[]
+    outlineOpen?: boolean // Outline nav panel open (persisted layout)
+    quickOpen?: boolean // Quick access panel open (persisted layout)
   }
 }
 
