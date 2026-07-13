@@ -24,8 +24,11 @@ out/
 # Subagent-generated blocks staged for import (one folder per generation session)
 /generated-blocks/
 
-# Design mockup sample images (generated art, not source)
-design/*.png
+# Design mockups (working artifacts, not shipped source)
+/design/
+
+# Editor
+.vscode/
 
 # OS
 .DS_Store
