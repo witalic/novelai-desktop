@@ -3,6 +3,7 @@
 Serves the API and the built frontend single-origin at ``/app/`` (README: один origin, no CORS).
 """
 import secrets
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -15,7 +16,12 @@ from app.settings import get_settings
 
 _LOOPBACK = {"127.0.0.1", "localhost"}
 
-_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+# Frozen (PyInstaller) builds bundle the built frontend under sys._MEIPASS (the .spec adds it); dev serves
+# it straight from frontend/dist relative to the source tree.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _DIST = Path(sys._MEIPASS) / "frontend" / "dist"
+else:
+    _DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 _PLACEHOLDER = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>novelai-desktop</title></head>

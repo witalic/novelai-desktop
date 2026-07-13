@@ -10,12 +10,18 @@ catalog; an unknown tokenizer name falls back to a coarse heuristic rather than 
 """
 import logging
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_ASSETS = Path(__file__).resolve().parent / "assets"
+# Frozen (PyInstaller) builds extract bundled data under sys._MEIPASS, not next to this .py — resolve the
+# asset from there when frozen so the packaged app finds the tokenizer model (the .spec bundles it here).
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _ASSETS = Path(sys._MEIPASS) / "app" / "novelai" / "assets"
+else:
+    _ASSETS = Path(__file__).resolve().parent / "assets"
 _T5_MODEL = _ASSETS / "t5_spiece.model"
 _INCLUDE_EOS = True  # T5 appends </s>; NovelAI's 512 budget counts it. Flip if the web UI disagrees.
 

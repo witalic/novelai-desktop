@@ -28,7 +28,11 @@ def main() -> None:
         log.warning("Binding to non-loopback host %s — the backend has no auth and the vault is private.", host)
     log.info("Starting novelai-desktop backend on http://%s:%d", host, port)
 
-    uvicorn.run("app.main:app", host=host, port=port, log_level=settings.log.level.lower())
+    # Pass the app object, not the "app.main:app" import string: the string form makes uvicorn re-import the
+    # module by name, which fails inside a PyInstaller-frozen binary. We use neither reload nor workers, so
+    # the object form is equivalent.
+    from app.main import app
+    uvicorn.run(app, host=host, port=port, log_level=settings.log.level.lower())
 
 
 if __name__ == "__main__":

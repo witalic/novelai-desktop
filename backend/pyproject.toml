@@ -1,6 +1,6 @@
 [project]
 name = "novelai-desktop-backend"
-version = "0.1.0"
+version = "1.0.0"
 description = "FastAPI sidecar for novelai-desktop"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,6 +17,9 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+]
+build = [
+    "pyinstaller>=6",  # freezes the sidecar into a standalone binary for packaging (see novelai-backend.spec)
 ]
 
 [build-system]

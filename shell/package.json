@@ -6,9 +6,63 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
   },
   "devDependencies": {
-    "electron": "^42.4.1"
+    "electron": "^42.4.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.witalic.novelai-desktop",
+    "productName": "NovelAI Desktop",
+    "copyright": "Copyright © 2026 witalic",
+    "directories": {
+      "output": "../dist-app",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "api.js",
+      "config.js",
+      "preload.js",
+      "!test/**",
+      "!**/*.md"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/novelai-backend",
+        "to": "backend/novelai-backend"
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
   }
 }

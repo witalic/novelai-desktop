@@ -1,0 +1,76 @@
+# Cross-platform desktop build: freeze the FastAPI sidecar with PyInstaller, build the Vue frontend, then
+# package the Electron shell with electron-builder. Windows + macOS run on their own native runners because
+# PyInstaller cannot cross-compile. Unsigned for now (signing is a deliberate later step — see the env seams
+# below). Artifacts (installers + portable/zip) are uploaded per-OS.
+name: build
+
+on:
+  workflow_dispatch: {}   # manual for now — no push/tag trigger until signing is decided
+  push:
+    tags:
+      - "v*"              # tagging v1.0.0 cuts a build of all targets
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            builder_flag: "--win"
+          - os: macos-latest       # Apple Silicon (arm64) only — the frozen sidecar is native-arch; an x64
+            builder_flag: "--mac"   # dmg would ship an arm64 backend. Intel builds need a separate Rosetta step.
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # --- Backend: install + freeze the sidecar -------------------------------------------------
+      - name: Install backend (+ build tools)
+        # NON-editable on purpose: an editable (PEP 660) install makes PyInstaller bundle a finder shim
+        # instead of the real `app` package, so the frozen binary would secretly depend on the source tree.
+        run: python -m pip install "./backend[build]"
+
+      - name: Build frontend (bundled into the frozen backend at /app/)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Freeze sidecar (PyInstaller)
+        working-directory: backend
+        run: pyinstaller --noconfirm novelai-backend.spec
+        # -> backend/dist/novelai-backend/  (onedir: exe + libs + bundled frontend/dist + tokenizer model)
+
+      # --- Shell: package the Electron app -------------------------------------------------------
+      - name: Install shell deps
+        working-directory: shell
+        run: npm ci
+
+      - name: Package (electron-builder, unsigned)
+        working-directory: shell
+        run: npx electron-builder ${{ matrix.builder_flag }} --publish never
+        env:
+          # Unsigned build: tell electron-builder not to attempt macOS signing/notarization. When signing is
+          # enabled later, drop CSC_IDENTITY_AUTOUPDATE and provide CSC_LINK / CSC_KEY_PASSWORD (macOS) or the
+          # win.certificateFile secrets instead.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: novelai-desktop-${{ matrix.os }}
+          path: |
+            dist-app/*.exe
+            dist-app/*.dmg
+            dist-app/*.zip
+          if-no-files-found: warn

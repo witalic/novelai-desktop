@@ -18,6 +18,10 @@ frontend/dist/
 dist/
 out/
 
+# Packaging outputs — PyInstaller work/onedir + electron-builder installers (built in CI, never committed)
+backend/build/
+/dist-app/
+
 # User data — never versioned (root-anchored so backend/app/vault/ source is NOT ignored)
 /vault/
 /generated/

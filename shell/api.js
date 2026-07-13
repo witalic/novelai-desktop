@@ -8,6 +8,10 @@ const fs = require('fs')
 const path = require('path')
 const cfg = require('./config')
 
+// Packaged builds spawn the frozen sidecar binary (no Python on the user's machine); dev spawns the venv.
+let isPackaged = false
+try { isPackaged = require('electron').app.isPackaged } catch { /* not under electron (unit tests) */ }
+
 const newToken = () => crypto.randomBytes(32).toString('hex') // per-launch shared secret (cookie-delivered)
 const sigOf = (token) => (token ? crypto.createHash('sha256').update(token).digest('hex') : null)
 
@@ -45,11 +49,18 @@ function pythonPath () {
   return fs.existsSync(winPy) ? winPy : nixPy
 }
 
+// The frozen sidecar (PyInstaller onedir), bundled as an Electron extraResource under resources/backend/.
+function frozenBackend () {
+  const exe = process.platform === 'win32' ? 'novelai-backend.exe' : 'novelai-backend'
+  return path.join(process.resourcesPath, 'backend', 'novelai-backend', exe)
+}
+
 function spawnApi (port, token) {
   const baseUrl = cfg.baseUrl(port)
-  const py = pythonPath()
   const env = { ...process.env, NAI_API__HOST: cfg.host, NAI_API__PORT: String(port), NAI_API__AUTH_TOKEN: token }
-  const proc = spawn(py, ['-m', 'app'], { cwd: cfg.repoRoot, env, stdio: 'inherit' })
+  const proc = isPackaged
+    ? spawn(frozenBackend(), [], { env, stdio: 'inherit' })                       // packaged: standalone binary
+    : spawn(pythonPath(), ['-m', 'app'], { cwd: cfg.repoRoot, env, stdio: 'inherit' }) // dev: venv python
   return { proc, baseUrl, origin: new URL(baseUrl).origin, token }
 }
 
@@ -61,7 +72,7 @@ async function waitHealthy (started, tries = 40) {
     await new Promise((r) => setTimeout(r, 500))
   }
   if (started.proc) { try { started.proc.kill() } catch { /* already gone */ } }
-  throw new Error('Could not start the local backend sidecar (is the .venv installed?).')
+  throw new Error(isPackaged ? 'Could not start the bundled backend sidecar.' : 'Could not start the local backend sidecar (is the .venv installed?).')
 }
 
 async function ensureApi () {
