@@ -16,9 +16,9 @@ const props = defineProps<{
   selected: boolean
   favorites: string[]
   revalidate: number // bumped by CanvasBoard when the Library may have changed (re-read categories)
+  usedKeys?: Set<string> // polarity+text identities already in the generation composition → grey the row
 }>()
 const emit = defineEmits<{
-  toggle: []
   'open-library': [{ category: string; tags: string[] }] // carry the category + tag filter (favorites ignored)
   'open-settings': []
   use: [LibraryBlock] // ⇢ — an independent copy into the station lane (strict polarity routing)
@@ -37,6 +37,9 @@ watch(() => props.revalidate, reload)
 watch(() => props.favorites, onFavoritesChanged, { deep: true })
 
 const favSet = computed(() => new Set(props.favorites))
+// A block already in the generation composition (same polarity + text) — greyed to signal "already added".
+const blockKey = (polarity: string, text: string) => `${polarity === 'negative' ? 'neg' : 'pos'}:${String(text || '').trim().toLowerCase()}`
+const isUsed = (b: LibraryBlock) => props.usedKeys?.has(blockKey(b.polarity, b.text)) ?? false
 const catColor = (slug: string) => categories.value.find((c) => c.slug === slug)?.color || '#738496'
 const catName = (slug: string) => categories.value.find((c) => c.slug === slug)?.name
   || (slug.startsWith('cat-') ? 'custom' : slug)
@@ -60,7 +63,6 @@ function stopIfInteractive(e: Event) {
 // '/' while the canvas has focus → jump into the search (CanvasBoard dispatches the event).
 const searchEl = ref<HTMLInputElement | null>(null)
 function focusSearch() {
-  if (props.data.collapsed) return
   requestAnimationFrame(() => searchEl.value?.focus())
 }
 window.addEventListener('nai:widget-search', focusSearch)
@@ -102,17 +104,13 @@ function onListScroll(e: Event) {
 </script>
 
 <template>
-  <div ref="rootEl" class="pwidget" :class="{ selected, collapsed: data.collapsed }">
+  <div ref="rootEl" class="pwidget" :class="{ selected }">
     <div class="pwhd">
       <span class="picon">✦</span>
       <span class="ptitle">Prompt blocks</span>
-      <span class="anchor-tag">anchor</span>
-      <button class="pcollapse nodrag" :title="data.collapsed ? 'Expand' : 'Collapse to header'"
-        @pointerdown.stop @mousedown.stop @click.stop="$emit('toggle')">{{ data.collapsed ? '▸' : '▾' }}</button>
     </div>
 
-    <!-- v-show, not v-if: collapsing must keep the DOM (scroll positions, filters) alive -->
-    <div v-show="!data.collapsed" class="pwbody nodrag" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
+    <div class="pwbody nodrag" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
       <!-- left rail: ★ Favorites toggle + All + categories (single-select) -->
       <div class="pwrail">
         <div class="railscroll nowheel">
@@ -171,7 +169,8 @@ function onListScroll(e: Event) {
               <div class="wempty">No blocks match.<br /><button @click="clearFilters">Clear filters</button></div>
             </template>
             <template v-else>
-              <div v-for="b in items" :key="b.id" class="brow" :class="b.polarity === 'negative' ? 'neg' : 'pos'"
+              <div v-for="b in items" :key="b.id" class="brow" :class="[b.polarity === 'negative' ? 'neg' : 'pos', { used: isUsed(b) }]"
+                :title="isUsed(b) ? 'Already in the generation area' : undefined"
                 draggable="true" @dragstart="onRowDragStart($event, b)"
                 @mouseenter="onRowEnter($event, b)" @mouseleave="onRowLeave">
                 <div class="r1">
@@ -194,7 +193,7 @@ function onListScroll(e: Event) {
       </div>
     </div>
 
-    <div v-show="!data.collapsed" class="pwfoot nodrag" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
+    <div class="pwfoot nodrag" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
       <span>{{ items.length }} block{{ items.length === 1 ? '' : 's' }}{{ filterSummary ? ` · ${filterSummary}` : '' }}<template v-if="!favOnly && total > items.length"> of {{ total }}</template></span>
       <a class="plib nodrag" @click.stop="$emit('open-library', { category, tags: [...tags] })">Open in Library ↗</a>
     </div>
@@ -225,13 +224,8 @@ function onListScroll(e: Event) {
 .pwidget.selected{border-color:var(--accent)}
 .pwhd{display:flex;align-items:center;gap:8px;height:38px;flex-shrink:0;padding:0 8px 0 12px;
   border-bottom:1px solid var(--border);background:var(--surface-1);font-weight:600;font-size:13px;cursor:grab}
-.pwidget.collapsed .pwhd{border-bottom:0}
 .picon{font-style:normal}
 .ptitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.anchor-tag{margin-left:auto;font-size:10px;font-weight:600;color:var(--accent);
-  background:color-mix(in srgb,var(--accent) 16%,transparent);padding:1px 7px;border-radius:20px}
-.pcollapse{border:0;background:transparent;color:var(--text-faint);cursor:pointer;font-size:11px;padding:2px 4px}
-.pcollapse:hover{color:var(--text)}
 
 .pwbody{display:flex;flex:1;min-height:0}
 .pwrail{width:138px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;
@@ -284,6 +278,7 @@ function onListScroll(e: Event) {
   border-radius:8px;background:var(--surface-2);padding:6px 8px 7px;cursor:grab;transition:border-color .1s}
 .brow.pos{--pol:var(--ok,#3aa675)}
 .brow.neg{--pol:var(--danger,#e2483d);background:color-mix(in srgb,var(--danger,#e2483d) 7%,var(--surface-2))}
+.brow.used{--pol:var(--border-strong);background:color-mix(in srgb,var(--surface-3) 55%,transparent);opacity:.6} /* already in the generation area */
 .brow:hover{border-color:var(--border-strong);border-left-color:var(--pol)}
 .brow .r1{display:flex;align-items:center;gap:6px;min-height:22px}
 .grip{color:var(--text-faint);font-size:10px;cursor:grab;flex-shrink:0}

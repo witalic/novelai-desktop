@@ -73,15 +73,19 @@ const widgetRevalidate = ref(0)
 // Colors + names come from the vault's categories (customs have their own); CATS is the offline fallback.
 const vaultCatColors = ref<Record<string, string>>({})
 const vaultCatNames = ref<Record<string, string>>({})
+const vaultCatOrder = ref<string[]>([]) // slugs in the vault's user-defined order (shared everywhere)
 async function loadCategoryColors() {
   try {
     const cats = await listCategories()
     vaultCatColors.value = Object.fromEntries(cats.map((c) => [c.slug, c.color]))
     vaultCatNames.value = Object.fromEntries(cats.map((c) => [c.slug, c.name]))
+    vaultCatOrder.value = cats.map((c) => c.slug)
   } catch { /* backend not ready / no vault — fall back to the builtin palette */ }
 }
 const catColor = (c: string) => vaultCatColors.value[c] ?? CATS[c] ?? CATS.custom
 const catName = (c: string) => vaultCatNames.value[c] || (c.startsWith('cat-') ? 'custom' : c)
+// Rank a category by its position in the vault order (unknown slugs sort to the end).
+const catRank = (slug: string) => { const i = vaultCatOrder.value.indexOf(slug); return i < 0 ? vaultCatOrder.value.length : i }
 
 // Estimated Anlas cost of the current params (Opus tier gets the first sample free — see cost.ts).
 const { subscription } = useAccount()
@@ -93,7 +97,7 @@ const compBlocks = computed(() => nodes.value.filter((n) => n.type === 'block' &
   .slice().sort((a, b) => a.position.y - b.position.y))
 const composed = computed(() => {
   const pick = (neg: boolean) => compBlocks.value
-    .filter((b) => (b.data.polarity === 'negative') === neg)
+    .filter((b) => !b.data.frozen && (b.data.polarity === 'negative') === neg) // frozen blocks stay in the area but out of the prompt
     .map((b) => String(b.data.text || '').trim()).filter(Boolean)
   let positive = pick(false).join(', ')
   let negative = pick(true).join(', ')
@@ -185,9 +189,17 @@ function onCanvasDrop(e: DragEvent) {
     } catch { /* malformed payload — ignore */ }
     return
   }
-  if (payload.startsWith('nai-comp:')) { // a composition row dragged out of the station → scratch copy
+  if (payload.startsWith('nai-comp:')) { // a composition row dragged out of the station → MOVE it loose onto the canvas
     const src = findNode(payload.slice('nai-comp:'.length))
-    if (src) dropBlockAt({ ...src.data, expanded: false, editing: false }, toFlow(e.clientX, e.clientY))
+    if (src && src.type === 'block') {
+      const pos = toFlow(e.clientX, e.clientY)
+      src.parentNode = undefined
+      src.hidden = false
+      src.data = { ...src.data, expanded: false, editing: false }
+      src.position = { x: pos.x - 88, y: pos.y - 17 }
+      src.style = { width: '176px' }
+      nudgeIfOverlapping(src)
+    }
     return
   }
   if (payload.startsWith('nai-galimg:')) { // a gallery thumbnail dragged out → MOVE it to the canvas as scratch
@@ -366,11 +378,10 @@ function applyScaleAll(scale: number) {
 const compFilter = ref('') // single-select category rail; '' = all
 const compRows = computed(() => {
   let rows = compBlocks.value.filter((n) => !compFilter.value || n.data.category === compFilter.value)
-  // In "All" the list groups by category for readability (display sort); within a filtered category it
-  // keeps the manual position.y order (drag-reorder is enabled only there).
+  // In "All" group by the vault category order (then manual position.y within a category); a filtered
+  // category keeps pure position.y. Drag-reorder stays enabled in both (manual order within a category).
   if (!compFilter.value) {
-    rows = rows.slice().sort((a, b) =>
-      catName(a.data.category).localeCompare(catName(b.data.category)) || (a.position.y - b.position.y))
+    rows = rows.slice().sort((a, b) => catRank(a.data.category) - catRank(b.data.category) || (a.position.y - b.position.y))
   }
   return rows.map((n) => ({
     nodeId: n.id,
@@ -380,13 +391,14 @@ const compRows = computed(() => {
     category: (n.data?.category as string) || 'custom',
     block_id: n.data?.block_id as string | undefined,
     expanded: !!n.data?.expanded,
+    frozen: !!n.data?.frozen,
   }))
 })
 // Rail categories derived from the composition (only categories present), with counts + colors.
 const compRail = computed(() => {
   const counts: Record<string, number> = {}
   for (const b of compBlocks.value) counts[b.data.category] = (counts[b.data.category] || 0) + 1
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])
+  return Object.entries(counts).sort((a, b) => catRank(a[0]) - catRank(b[0])) // vault order, not by count
     .map(([slug, count]) => ({ slug, name: catName(slug), color: catColor(slug), count }))
 })
 
@@ -509,6 +521,11 @@ function toggleCompExpand(nodeId: string) {
 function toggleCompPolarity(nodeId: string) {
   const n = findNode(nodeId)
   if (n) n.data.polarity = n.data.polarity === 'negative' ? 'positive' : 'negative'
+}
+// Freeze: keep the block in the area but exclude it from the assembled prompt (and the snapshot).
+function toggleCompFreeze(nodeId: string) {
+  const n = findNode(nodeId)
+  if (n) n.data.frozen = !n.data.frozen
 }
 function deleteCompBlock(nodeId: string) { removeNodes([nodeId]) }
 
@@ -702,19 +719,6 @@ function setZoneHeight(zone: any, h: number) {
   zone.height = h
   if (zone.dimensions) zone.dimensions = { ...zone.dimensions, height: h }
 }
-function toggleLibraryCollapse() {
-  const zone = findNode(LIBRARY)
-  if (!zone) return
-  if (!zone.data.collapsed) {
-    zone.data.expandedH = Math.max(260, Math.round(dims(zone).h)) // remember the live height
-    zone.data.collapsed = true
-    setZoneHeight(zone, 38)
-  } else {
-    zone.data.collapsed = false
-    setZoneHeight(zone, zone.data.expandedH || 460)
-  }
-}
-
 // ---- copy semantics: every block that enters the work is an independent copy ----
 // A block already contributes to the prompt if the composition holds one with the same polarity +
 // text (its identity for generation). Copying an identical one adds nothing, so we warn instead of
@@ -728,6 +732,8 @@ function stationHasBlock(polarity: string, text: string): boolean {
 function warnDuplicate() {
   toast.push('That block is already in the generation area — not duplicated', 'err')
 }
+// Identities (polarity + text) currently in the composition — the Library widget greys these out.
+const usedBlockKeys = computed(() => new Set(compBlocks.value.map((n) => blockKey(n.data?.polarity, n.data?.text))))
 
 // Drop from the Library widget (drag-out): an independent copy joins the composition when dropped
 // over the station, else lands loose on the canvas as scratch.
@@ -809,7 +815,7 @@ function onDraftSaved(block: LibraryBlock) {
 }
 
 function doGenerate() {
-  const components = compBlocks.value.map((b): PersistedComponent => ({ // compBlocks is already in list order (position.y)
+  const components = compBlocks.value.filter((b) => !b.data.frozen).map((b): PersistedComponent => ({ // frozen blocks are excluded; compBlocks is in list order (position.y)
     source: b.data.block_id ? 'library' : 'custom', block_id: b.data.block_id, version: b.data.version,
     name: b.data.name, text: String(b.data.text || '').trim(), polarity: b.data.polarity,
     category: b.data.category, tags: b.data.tags || [],
@@ -934,7 +940,7 @@ function onStationMenu(e: MouseEvent) {
   if (!d) return
   openMenu(e, [
     { label: 'Preview', icon: '⤢', onClick: () => openPreview(d.url) },
-    { label: 'Move to canvas', icon: '⤒', onClick: () => keepDraftsBatch([d.id]) },
+    { label: 'Move to Quick access', icon: '⤒', onClick: () => keepDraftsBatch([d.id]) },
     { label: 'Remove from stack', icon: '🗑', danger: true, onClick: () => emit('take', d.id) },
   ])
 }
@@ -1060,6 +1066,11 @@ function startName(data: any, e: MouseEvent) {
                     <span v-if="drafts[0].mock" class="mockbadge" title="Offline placeholder — no NovelAI token set">MOCK</span>
                     <span class="stackbadge">{{ drafts.length }} in stack</span>
                     <span class="draghint">⤴ drag to keep</span>
+                    <div class="topacts nodrag">
+                      <button class="tact" title="Preview" @click.stop="openPreview(drafts[0].url)" @pointerdown.stop>⤢</button>
+                      <button class="tact" title="Move to gallery Quick access" @click.stop="keepDraftsBatch([drafts[0].id])" @pointerdown.stop>⤒</button>
+                      <button class="tact del" title="Remove from stack" @click.stop="$emit('take', drafts[0].id)" @pointerdown.stop>🗑</button>
+                    </div>
                   </div>
                   <span v-else-if="!busy" class="outhint">Generated images appear here — drag them out to keep.</span>
                 </div>
@@ -1074,16 +1085,18 @@ function startName(data: any, e: MouseEvent) {
                     {{ compFilter ? `No ${catName(compFilter)} blocks.` : 'Drop blocks from the Library widget to build the prompt.' }}
                   </div>
                   <div v-for="b in compRows" :key="b.nodeId" class="crow"
-                    :class="[b.polarity === 'negative' ? 'neg' : 'pos', { drop: compDropBefore === b.nodeId }]"
-                    :draggable="!!compFilter" @dragstart="onCompDragStart($event, b.nodeId)" @dragover="onCompDragOver($event, b.nodeId)" @dragend="onCompDragEnd">
+                    :class="[b.frozen ? 'frozen' : (b.polarity === 'negative' ? 'neg' : 'pos'), { drop: compDropBefore === b.nodeId }]"
+                    draggable="true" @dragstart="onCompDragStart($event, b.nodeId)" @dragover="onCompDragOver($event, b.nodeId)" @dragend="onCompDragEnd">
                     <div class="cr1">
-                      <span v-if="compFilter" class="grip" title="Drag to reorder">⠿</span>
+                      <span class="grip" title="Drag to reorder or out to the canvas">⠿</span>
                       <span class="cdot2" :style="{ background: catColor(b.category) }" :title="catName(b.category)"></span>
                       <input v-if="renamingId === b.nodeId" :id="`cname-${b.nodeId}`" class="cnamein nodrag" :value="b.name"
                         @pointerdown.stop @click.stop @input="patchCompBlock({ nodeId: b.nodeId, patch: { name: ($event.target as HTMLInputElement).value } })"
                         @blur="renamingId = null" @keyup.enter="renamingId = null" @keyup.esc="renamingId = null" />
                       <span v-else class="cname" title="Double-click to rename" @dblclick.stop="startCompRename(b.nodeId)">{{ b.name }}</span>
                       <span class="crsp"></span>
+                      <button class="cicon frz" :class="{ on: b.frozen }" :title="b.frozen ? 'Frozen — kept in the area but not sent to the prompt; click to unfreeze' : 'Freeze — keep in the area but exclude from the prompt'"
+                        @click.stop="toggleCompFreeze(b.nodeId)" @pointerdown.stop>❄</button>
                       <button class="cicon pol" :class="b.polarity === 'negative' ? 'neg' : 'pos'" :title="`Polarity: ${b.polarity} — click to flip`"
                         @click.stop="toggleCompPolarity(b.nodeId)" @pointerdown.stop>{{ b.polarity === 'negative' ? '−' : '＋' }}</button>
                       <button class="cicon" :title="b.expanded ? 'Collapse' : 'Expand to edit'"
@@ -1141,10 +1154,9 @@ function startName(data: any, e: MouseEvent) {
 
         <template #node-zone="{ id, data, selected }">
           <template v-if="data.role === 'library'">
-            <NodeResizer v-if="!data.collapsed" :min-width="340" :min-height="280" :is-visible="selected"
-              color="var(--accent)" />
-            <PromptWidget :data="data" :selected="selected" :favorites="favorites" :revalidate="widgetRevalidate"
-              @toggle="toggleLibraryCollapse" @open-library="emit('open-library', $event)"
+            <NodeResizer :min-width="340" :min-height="280" :is-visible="selected" color="var(--accent)" />
+            <PromptWidget :data="data" :selected="selected" :favorites="favorites" :revalidate="widgetRevalidate" :used-keys="usedBlockKeys"
+              @open-library="emit('open-library', $event)"
               @open-settings="emit('navigate', 'settings')"
               @use="useLibraryBlock" @new-block="newCompBlock" @toggle-favorite="toggleFavorite" />
           </template>
@@ -1261,6 +1273,12 @@ function startName(data: any, e: MouseEvent) {
 .stackbadge{position:absolute;top:2px;right:2px;font-size:10px;font-weight:600;background:color-mix(in srgb,#000 58%,transparent);color:#fff;padding:2px 8px;border-radius:20px}
 .draghint{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:600;background:var(--accent);color:var(--on-accent);padding:3px 10px;border-radius:20px;opacity:0;transition:opacity .12s;pointer-events:none;white-space:nowrap}
 .topwrap:hover .draghint{opacity:1}
+/* explicit action buttons duplicating the right-click menu on the generation preview */
+.topacts{position:absolute;top:6px;left:6px;display:flex;gap:4px;opacity:0;transition:opacity .12s}
+.topwrap:hover .topacts{opacity:1}
+.tact{width:24px;height:24px;border:1px solid var(--border-strong);border-radius:6px;background:color-mix(in srgb,#000 55%,var(--surface-1));color:#fff;font-size:12px;line-height:1;cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center}
+.tact:hover{border-color:var(--accent);color:var(--accent)}
+.tact.del:hover{border-color:var(--danger,#e2483d);color:var(--danger,#e2483d)}
 /* composition zone = [ block list | category rail on the right ] */
 .compzone{flex-basis:0;min-width:0;min-height:0;display:flex;border-left:1px solid var(--border)}
 .stbody.rev:not(.v) .compzone{border-left:0;border-right:1px solid var(--border)}
@@ -1270,6 +1288,7 @@ function startName(data: any, e: MouseEvent) {
 .crow{position:relative;flex-shrink:0;border:1px solid var(--border);border-left:4px solid var(--pol);border-radius:8px;background:var(--surface-2);padding:5px 8px 6px;cursor:grab}
 .crow.pos{--pol:var(--ok,#3aa675)}
 .crow.neg{--pol:var(--danger,#e2483d);background:color-mix(in srgb,var(--danger,#e2483d) 7%,var(--surface-2))}
+.crow.frozen{--pol:var(--border-strong);background:color-mix(in srgb,var(--surface-3) 55%,transparent);opacity:.72} /* frozen → neutral, not sent to the prompt */
 .crow:hover{border-color:var(--border-strong);border-left-color:var(--pol)}
 .crow.drop{box-shadow:0 -2px 0 0 var(--accent)}
 .crow .cr1{display:flex;align-items:center;gap:6px;min-height:22px}
@@ -1282,6 +1301,7 @@ function startName(data: any, e: MouseEvent) {
 .cicon.pol.pos{color:var(--ok,#3aa675);border-color:color-mix(in srgb,var(--ok,#3aa675) 50%,var(--border))}
 .cicon.pol.neg{color:var(--danger,#e2483d);border-color:color-mix(in srgb,var(--danger,#e2483d) 50%,var(--border))}
 .cicon.del:hover{color:var(--danger,#e2483d);border-color:var(--danger,#e2483d)}
+.cicon.frz.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,var(--border));background:var(--nav-active)}
 .cprev{font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .ctext{width:100%;min-height:52px;margin-top:5px;resize:vertical;font:inherit;font-size:11.5px;color:var(--text);background:var(--surface-1);border:1px solid var(--border);border-radius:5px;padding:6px;outline:none}
 .ctext:focus{border-color:var(--accent)}

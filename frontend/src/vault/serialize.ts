@@ -30,6 +30,7 @@ export interface LiveNode {
 // ---- persistence whitelists (domain + layout per node type; the rest is transient) ----
 const BLOCK_FIELDS = [
   'category', 'name', 'text', 'polarity', 'block_id', 'version', 'tags', // domain (frozen copy + vault ref)
+  'frozen', // composition state: kept in the area but excluded from the prompt
   // layout: order in the station list is position.y; loose scratch blocks use position — no extra fields
 ] as const
 const STATION_FIELDS = ['ratio', 'axis', 'genFirst'] as const // two-zone layout (Generation | Composition)
