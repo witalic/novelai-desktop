@@ -85,11 +85,12 @@ const ADD_TYPES: { type: BlockType; label: string; glyph: string; hint: string }
   { type: 'divider', label: 'Divider', glyph: '—', hint: 'a thin rule' },
 ]
 
-// Metadata auto-fields, summarised across the work's gallery images/snapshots (never persisted).
-const autoMeta = computed(() => {
+// Metadata auto-fields, summarised across a set of gallery images/snapshots (never persisted).
+type MetaSummary = { tags: string[]; date: string; model: string; seed: string; dimensions: string }
+function autoMetaOf(imgs: GalleryImage[]): MetaSummary {
   const tags = new Set<string>(), models = new Set<string>(), seeds = new Set<string>(), dims = new Set<string>()
   let minD = '', maxD = ''
-  for (const im of props.images) {
+  for (const im of imgs) {
     for (const t of im.data.tags || []) tags.add(t)
     const p = (im.data.snapshot?.params || {}) as Record<string, unknown>
     if (p.model) models.add(String(p.model))
@@ -105,17 +106,44 @@ const autoMeta = computed(() => {
     date: minD ? (day(minD) === day(maxD) ? day(minD) : `${day(minD)} – ${day(maxD)}`) : '—',
     model: one(models, 'models'), seed: seeds.size <= 1 ? ([...seeds][0] ?? '—') : 'mixed', dimensions: one(dims, 'sizes'),
   }
+}
+// A meta block summarises either one bound grid (gridId) or, by default, the whole gallery (item 3).
+function metaImages(b: GalleryBlock): GalleryImage[] {
+  if (b.type === 'meta' && b.gridId) {
+    const g = blocks.value.find((x) => x.id === b.gridId && x.type === 'grid')
+    if (g) return gridImages(g)
+  }
+  return props.images
+}
+const metaSummaries = computed(() => {
+  const m = new Map<string, MetaSummary>()
+  for (const b of blocks.value) if (b.type === 'meta') m.set(b.id, autoMetaOf(metaImages(b)))
+  return m
 })
-function metaChips(f: GalleryMetaField): string[] {
-  if (f.auto === 'tags') return autoMeta.value.tags
+function summaryFor(b: GalleryBlock): MetaSummary { return metaSummaries.value.get(b.id) ?? autoMetaOf([]) }
+function metaChips(b: GalleryBlock, f: GalleryMetaField): string[] {
+  if (f.auto === 'tags') return summaryFor(b).tags
   return Array.isArray(f.value) ? f.value : []
 }
-function metaText(f: GalleryMetaField): string {
-  if (f.auto) return String((autoMeta.value as Record<string, string | string[]>)[f.auto] ?? '—')
+function metaText(b: GalleryBlock, f: GalleryMetaField): string {
+  if (f.auto) return String((summaryFor(b) as unknown as Record<string, string | string[]>)[f.auto] ?? '—')
   return typeof f.value === 'string' ? f.value : ''
 }
 function addMetaField(b: GalleryBlock) { if (b.type === 'meta') b.fields.push({ key: 'Field', kind: 'text', value: '' }) }
 function removeMetaField(b: GalleryBlock, i: number) { if (b.type === 'meta') b.fields.splice(i, 1) }
+
+// ---- meta block scope: bind its summary to a specific grid (or the whole gallery) ----
+const metaScopeOpen = ref<string | null>(null) // which meta block's scope dropdown is open — transient
+const gridOptions = computed(() =>
+  blocks.value.filter((b) => b.type === 'grid').map((b, i) => ({ id: b.id, label: `Grid ${i + 1}`, count: (b.type === 'grid' && Array.isArray(b.imageIds)) ? b.imageIds.length : 0 })))
+function scopeLabel(b: GalleryBlock): string {
+  if (b.type !== 'meta' || !b.gridId) return 'Whole gallery'
+  return gridOptions.value.find((g) => g.id === b.gridId)?.label ?? 'Whole gallery'
+}
+function setMetaScope(b: GalleryBlock, gridId?: string) {
+  if (b.type === 'meta') { if (gridId) b.gridId = gridId; else delete b.gridId } // in-place → tracked + autosaved
+  metaScopeOpen.value = null
+}
 
 // Drag a thumbnail out to the canvas → CanvasBoard spawns a loose (scratch) copy; the gallery keeps the original.
 function onThumbDrag(id: string, e: DragEvent) {
@@ -223,7 +251,7 @@ function scrollToBlock(id: string) {
 </script>
 
 <template>
-  <div class="gnode" @click="addOpen = null">
+  <div class="gnode" @click="addOpen = null; metaScopeOpen = null">
     <div class="gnhd">
       <span class="ic">▦</span>
       <span class="ttl">Gallery</span>
@@ -307,20 +335,35 @@ function scrollToBlock(id: string) {
             <!-- text / description -->
             <textarea v-else-if="b.type === 'text'" class="b-text nodrag nowheel" v-model="b.text"
               placeholder="Write a description…" @pointerdown.stop @input="autogrow"></textarea>
-            <!-- metadata — a properties strip (auto values summarise the gallery; manual fields are typed) -->
+            <!-- metadata — a properties strip; auto values summarise the bound grid (or whole gallery) -->
             <div v-else-if="b.type === 'meta'" class="b-meta">
+              <div class="mscope nodrag">
+                <span class="mscl">Summarises</span>
+                <div class="msdd">
+                  <button class="msbtn nodrag" @pointerdown.stop @click.stop="metaScopeOpen = metaScopeOpen === b.id ? null : b.id">
+                    {{ scopeLabel(b) }}<span class="car">▾</span>
+                  </button>
+                  <div v-if="metaScopeOpen === b.id" class="msmenu nodrag" @pointerdown.stop @click.stop>
+                    <button class="msrow" :class="{ on: !b.gridId }" @click.stop="setMetaScope(b, undefined)">Whole gallery</button>
+                    <button v-for="g in gridOptions" :key="g.id" class="msrow" :class="{ on: b.gridId === g.id }" @click.stop="setMetaScope(b, g.id)">
+                      {{ g.label }}<small>{{ g.count }} image{{ g.count === 1 ? '' : 's' }}</small>
+                    </button>
+                    <div v-if="!gridOptions.length" class="msempty">No grids yet</div>
+                  </div>
+                </div>
+              </div>
               <div class="metagrid">
                 <div v-for="(f, fi) in b.fields" :key="fi" class="mfield">
                   <input v-if="!f.auto" class="fk fk-edit nodrag" v-model="f.key" placeholder="Field" @pointerdown.stop />
                   <div v-else class="fk">{{ f.key }}</div>
                   <div class="fv">
                     <template v-if="f.kind === 'chips'">
-                      <span v-for="t in metaChips(f)" :key="t" class="tagc">{{ t }}</span>
-                      <span v-if="!metaChips(f).length" class="muted">—</span>
+                      <span v-for="t in metaChips(b, f)" :key="t" class="tagc">{{ t }}</span>
+                      <span v-if="!metaChips(b, f).length" class="muted">—</span>
                     </template>
-                    <input v-else-if="!f.auto" class="fv-edit nodrag" :value="metaText(f)" placeholder="value"
+                    <input v-else-if="!f.auto" class="fv-edit nodrag" :value="metaText(b, f)" placeholder="value"
                       @input="f.value = ($event.target as HTMLInputElement).value" @pointerdown.stop />
-                    <span v-else :class="{ mono: f.kind === 'mono' }">{{ metaText(f) }}</span>
+                    <span v-else :class="{ mono: f.kind === 'mono' }">{{ metaText(b, f) }}</span>
                   </div>
                   <button v-if="!f.auto" class="mrm nodrag" title="Remove field" @pointerdown.stop @click.stop="removeMetaField(b, fi)">✕</button>
                 </div>
@@ -431,6 +474,19 @@ function scrollToBlock(id: string) {
 
 /* metadata — a properties strip */
 .b-meta{padding-top:2px}
+/* scope picker — bind the summary to a grid or the whole gallery (token-styled dropdown, no native select) */
+.mscope{display:flex;align-items:center;gap:8px;padding:0 2px 6px}
+.mscope .mscl{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--text-faint)}
+.msdd{position:relative}
+.msbtn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);border-radius:var(--radius);padding:3px 9px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer}
+.msbtn:hover{border-color:var(--accent)}
+.msbtn .car{color:var(--text-faint);font-size:9px}
+.msmenu{position:absolute;left:0;top:calc(100% + 4px);z-index:30;min-width:170px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);background:var(--surface-1);box-shadow:0 10px 30px rgba(0,0,0,.45);padding:5px}
+.msmenu .msrow{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;border:0;background:transparent;color:var(--text);font:inherit;font-size:12px;font-weight:600;padding:6px 9px;border-radius:var(--radius);cursor:pointer;text-align:left}
+.msmenu .msrow:hover{background:var(--surface-3)}
+.msmenu .msrow.on{color:var(--accent)}
+.msmenu .msrow small{font-weight:500;color:var(--text-faint);font-size:11px}
+.msmenu .msempty{padding:6px 9px;font-size:11px;color:var(--text-faint)}
 .metagrid{border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb,var(--surface-2) 55%,transparent);overflow:hidden}
 .metagrid .mfield{display:grid;grid-template-columns:110px 1fr auto;gap:8px;align-items:center;padding:7px 11px}
 .metagrid .mfield + .mfield{border-top:1px solid var(--border)}

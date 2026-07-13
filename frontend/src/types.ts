@@ -212,7 +212,9 @@ export interface GalleryDividerBlock { id: string; type: 'divider' }
 // A metadata field is auto-derived from the gallery images/snapshots (auto set; value not persisted)
 // or a manually typed key/value.
 export interface GalleryMetaField { key: string; kind: 'chips' | 'text' | 'mono'; auto?: 'tags' | 'date' | 'model' | 'seed' | 'dimensions'; value?: string | string[] }
-export interface GalleryMetaBlock { id: string; type: 'meta'; fields: GalleryMetaField[] }
+// `gridId` binds the summary to one grid's images; absent = the whole gallery. Points to a grid block
+// by id; if that grid is deleted the block falls back to the whole gallery.
+export interface GalleryMetaBlock { id: string; type: 'meta'; fields: GalleryMetaField[]; gridId?: string }
 export type GalleryBlock =
   | GalleryGridBlock | GallerySectionBlock | GalleryHeadingBlock | GalleryTextBlock | GalleryDividerBlock | GalleryMetaBlock
 
