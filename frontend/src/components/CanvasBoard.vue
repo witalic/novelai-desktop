@@ -190,6 +190,17 @@ function onCanvasDrop(e: DragEvent) {
     if (src) dropBlockAt({ ...src.data, expanded: false, editing: false }, toFlow(e.clientX, e.clientY))
     return
   }
+  if (payload.startsWith('nai-galimg:')) { // a gallery thumbnail dragged out → a loose (scratch) copy; the gallery keeps the original
+    const src = findNode(payload.slice('nai-galimg:'.length))
+    if (src && src.type === 'image') {
+      const pos = toFlow(e.clientX, e.clientY)
+      const { w, h } = spawnSize((src.data.ar as number) || 3 / 4)
+      const id = newId('img')
+      addNodes([{ id, type: 'image', position: { x: pos.x - w / 2, y: pos.y - h / 2 }, zIndex: 3, style: { width: `${w}px`, height: `${h}px` }, data: { ...src.data } }])
+      seedSrc(id)
+    }
+    return
+  }
   if (payload.startsWith('nai-drafts:')) { // a multi-selected group of drafts dragged out
     keepDraftsBatch(payload.slice('nai-drafts:'.length).split(','), toFlow(e.clientX, e.clientY))
     return

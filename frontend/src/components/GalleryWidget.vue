@@ -6,7 +6,7 @@
 import { computed, ref } from 'vue'
 import { filterBySource, hiddenBlockIds } from './gallerySource'
 import { newId } from '../vault/ids'
-import type { GalleryBlock, ImageNodeData, ZoneNode } from '../types'
+import type { GalleryBlock, GalleryMetaField, ImageNodeData, ZoneNode } from '../types'
 
 // Minimal shape the widget reads off a gallery image node (avoids coupling to Vue Flow's node type).
 interface GalleryImage { id: string; data: Partial<ImageNodeData> }
@@ -62,8 +62,46 @@ const ADD_TYPES: { type: BlockType; label: string; glyph: string; hint: string }
   { type: 'heading', label: 'Heading', glyph: 'H', hint: 'a title' },
   { type: 'text', label: 'Text', glyph: '¶', hint: 'a description / note' },
   { type: 'grid', label: 'Image grid', glyph: '▦', hint: 'images in fixed cells' },
+  { type: 'meta', label: 'Metadata', glyph: '≣', hint: 'tags · dates · model · seed' },
   { type: 'divider', label: 'Divider', glyph: '—', hint: 'a thin rule' },
 ]
+
+// Metadata auto-fields, summarised across the work's gallery images/snapshots (never persisted).
+const autoMeta = computed(() => {
+  const tags = new Set<string>(), models = new Set<string>(), seeds = new Set<string>(), dims = new Set<string>()
+  let minD = '', maxD = ''
+  for (const im of props.images) {
+    for (const t of im.data.tags || []) tags.add(t)
+    const p = (im.data.snapshot?.params || {}) as Record<string, unknown>
+    if (p.model) models.add(String(p.model))
+    if (p.seed != null) seeds.add(String(p.seed))
+    if (p.width && p.height) dims.add(`${p.width}×${p.height}`)
+    const d = im.data.created_at || ''
+    if (d) { if (!minD || d < minD) minD = d; if (!maxD || d > maxD) maxD = d }
+  }
+  const day = (s: string) => s.slice(0, 10)
+  const one = (set: Set<string>, plural: string) => set.size === 1 ? [...set][0] : set.size ? `${set.size} ${plural}` : '—'
+  return {
+    tags: [...tags],
+    date: minD ? (day(minD) === day(maxD) ? day(minD) : `${day(minD)} – ${day(maxD)}`) : '—',
+    model: one(models, 'models'), seed: seeds.size <= 1 ? ([...seeds][0] ?? '—') : 'mixed', dimensions: one(dims, 'sizes'),
+  }
+})
+function metaChips(f: GalleryMetaField): string[] {
+  if (f.auto === 'tags') return autoMeta.value.tags
+  return Array.isArray(f.value) ? f.value : []
+}
+function metaText(f: GalleryMetaField): string {
+  if (f.auto) return String((autoMeta.value as Record<string, string | string[]>)[f.auto] ?? '—')
+  return typeof f.value === 'string' ? f.value : ''
+}
+function addMetaField(b: GalleryBlock) { if (b.type === 'meta') b.fields.push({ key: 'Field', kind: 'text', value: '' }) }
+function removeMetaField(b: GalleryBlock, i: number) { if (b.type === 'meta') b.fields.splice(i, 1) }
+
+// Drag a thumbnail out to the canvas → CanvasBoard spawns a loose (scratch) copy; the gallery keeps the original.
+function onThumbDrag(id: string, e: DragEvent) {
+  if (e.dataTransfer) { e.dataTransfer.setData('text/plain', `nai-galimg:${id}`); e.dataTransfer.effectAllowed = 'copy' }
+}
 // Blocks after a collapsed section are hidden until the next section (v-show, not v-if, so their DOM
 // scroll/focus survives the collapse — UI-design ledger). Range logic is unit-tested in gallerySource.
 const hiddenIds = computed(() => hiddenBlockIds(blocks.value))
@@ -75,6 +113,12 @@ function newBlock(type: BlockType): GalleryBlock {
   if (type === 'heading') return { id, type, text: 'Heading', level: 2 }
   if (type === 'text') return { id, type, text: '' }
   if (type === 'grid') return { id, type, source: 'all', cols: 3 }
+  if (type === 'meta') return { id, type, fields: [
+    { key: 'Tags', kind: 'chips', auto: 'tags' },
+    { key: 'Date', kind: 'text', auto: 'date' },
+    { key: 'Model', kind: 'mono', auto: 'model' },
+    { key: 'Seed', kind: 'mono', auto: 'seed' },
+  ] }
   return { id, type: 'divider' }
 }
 function addBlock(type: BlockType) {
@@ -176,7 +220,8 @@ function onBlkDrop(targetId: string) {
             </div>
             <div v-if="sourceImages(b.source).length" class="gimgs" :style="{ '--cols': b.cols }">
               <div v-for="im in sourceImages(b.source)" :key="im.id" class="gthumb nodrag" :class="{ fav: im.data.favorite }"
-                :style="{ '--ar': im.data.ar || (3 / 4) }" @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
+                :style="{ '--ar': im.data.ar || (3 / 4) }" draggable="true" @dragstart="onThumbDrag(im.id, $event)"
+                @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
                 <img class="im" :src="thumbSrc(im.data.url, b.cols)" alt="gallery image" loading="lazy" draggable="false" />
                 <button class="star nodrag" title="Toggle favourite" @pointerdown.stop @click.stop="emit('favorite', im.id)">★</button>
               </div>
@@ -192,6 +237,27 @@ function onBlkDrop(targetId: string) {
             <!-- text / description -->
             <textarea v-else-if="b.type === 'text'" class="b-text nodrag nowheel" v-model="b.text"
               placeholder="Write a description…" @pointerdown.stop @input="autogrow"></textarea>
+            <!-- metadata — a properties strip (auto values summarise the gallery; manual fields are typed) -->
+            <div v-else-if="b.type === 'meta'" class="b-meta">
+              <div class="metagrid">
+                <div v-for="(f, fi) in b.fields" :key="fi" class="mfield">
+                  <input v-if="!f.auto" class="fk fk-edit nodrag" v-model="f.key" placeholder="Field" @pointerdown.stop />
+                  <div v-else class="fk">{{ f.key }}</div>
+                  <div class="fv">
+                    <template v-if="f.kind === 'chips'">
+                      <span v-for="t in metaChips(f)" :key="t" class="tagc">{{ t }}</span>
+                      <span v-if="!metaChips(f).length" class="muted">—</span>
+                    </template>
+                    <input v-else-if="!f.auto" class="fv-edit nodrag" :value="metaText(f)" placeholder="value"
+                      @input="f.value = ($event.target as HTMLInputElement).value" @pointerdown.stop />
+                    <span v-else :class="{ mono: f.kind === 'mono' }">{{ metaText(f) }}</span>
+                  </div>
+                  <button v-if="!f.auto" class="mrm nodrag" title="Remove field" @pointerdown.stop @click.stop="removeMetaField(b, fi)">✕</button>
+                </div>
+                <button class="maddfield nodrag" @pointerdown.stop @click.stop="addMetaField(b)">＋ Add field</button>
+              </div>
+            </div>
+
             <!-- divider -->
             <div v-else-if="b.type === 'divider'" class="b-divider"><div class="ln"></div></div>
           </div>
@@ -269,6 +335,25 @@ function onBlkDrop(targetId: string) {
 .b-text::placeholder{color:var(--text-faint)}
 .b-divider{padding:9px 2px}
 .b-divider .ln{height:1px;background:var(--border)}
+
+/* metadata — a properties strip */
+.b-meta{padding-top:2px}
+.metagrid{border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb,var(--surface-2) 55%,transparent);overflow:hidden}
+.metagrid .mfield{display:grid;grid-template-columns:110px 1fr auto;gap:8px;align-items:center;padding:7px 11px}
+.metagrid .mfield + .mfield{border-top:1px solid var(--border)}
+.metagrid .fk{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--text-faint)}
+.metagrid .fk-edit{border:1px solid transparent;background:transparent;border-radius:4px;padding:2px 4px;text-transform:none;letter-spacing:0;font:inherit;font-size:12px;font-weight:600;color:var(--text);outline:none}
+.metagrid .fk-edit:hover{border-color:var(--border)}.metagrid .fk-edit:focus{border-color:var(--accent)}
+.metagrid .fv{display:flex;flex-wrap:wrap;gap:5px;align-items:center;color:var(--text-dim);font-size:12px;min-width:0}
+.metagrid .fv .muted{color:var(--text-faint)}
+.metagrid .fv .mono{font-family:ui-monospace,monospace;font-size:11px}
+.metagrid .fv-edit{flex:1;min-width:0;border:1px solid var(--border);background:var(--surface-1);border-radius:4px;padding:3px 6px;font:inherit;font-size:12px;color:var(--text);outline:none}
+.metagrid .fv-edit:focus{border-color:var(--accent)}
+.metagrid .tagc{font-size:10.5px;color:var(--accent);background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:20px;padding:1px 8px}
+.metagrid .mrm{border:0;background:transparent;color:var(--text-faint);font-size:12px;cursor:pointer;padding:0 2px}
+.metagrid .mrm:hover{color:var(--danger)}
+.metagrid .maddfield{width:100%;border:0;border-top:1px solid var(--border);background:transparent;color:var(--text-faint);font:inherit;font-size:11.5px;font-weight:600;text-align:left;padding:7px 11px;cursor:pointer}
+.metagrid .maddfield:hover{color:var(--accent)}
 .glhint{font-size:12px;color:var(--text-faint);text-align:center;padding:20px}
 
 .gnft{display:flex;align-items:center;gap:10px;height:34px;flex-shrink:0;padding:0 12px;border-top:1px solid var(--border);background:var(--surface-1);font-size:11.5px;color:var(--text-faint)}

@@ -208,7 +208,12 @@ export interface GallerySectionBlock { id: string; type: 'section'; title: strin
 export interface GalleryHeadingBlock { id: string; type: 'heading'; text: string; level: 1 | 2 }
 export interface GalleryTextBlock { id: string; type: 'text'; text: string }
 export interface GalleryDividerBlock { id: string; type: 'divider' }
-export type GalleryBlock = GalleryGridBlock | GallerySectionBlock | GalleryHeadingBlock | GalleryTextBlock | GalleryDividerBlock
+// A metadata field is auto-derived from the gallery images/snapshots (auto set; value not persisted)
+// or a manually typed key/value.
+export interface GalleryMetaField { key: string; kind: 'chips' | 'text' | 'mono'; auto?: 'tags' | 'date' | 'model' | 'seed' | 'dimensions'; value?: string | string[] }
+export interface GalleryMetaBlock { id: string; type: 'meta'; fields: GalleryMetaField[] }
+export type GalleryBlock =
+  | GalleryGridBlock | GallerySectionBlock | GalleryHeadingBlock | GalleryTextBlock | GalleryDividerBlock | GalleryMetaBlock
 
 export interface BlockNodeData {
   // domain — the block's content (a frozen copy even when block_id links it to the Library)
