@@ -8,11 +8,13 @@ const emit = defineEmits<{ navigate: [ViewId] }>()
 
 const { subscription, refresh } = useAccount()
 onMounted(refresh)
+
+const version = __APP_VERSION__ // from frontend/package.json via Vite define
 </script>
 
 <template>
   <aside class="sidebar">
-    <div class="brand"><span class="logo">N</span><div>novelai studio<div class="sub">preview build</div></div></div>
+    <div class="brand"><span class="logo">N</span><div>novelai studio</div></div>
 
     <div class="navgroup">Workspace</div>
     <div class="navitem" :class="{ active: current === 'generate' }" @click="emit('navigate', 'generate')">
@@ -38,7 +40,7 @@ onMounted(refresh)
         <span class="tier">{{ subscription.tier_name }}</span>
         <span class="bal"><span class="dia">◆</span><span class="amt">{{ subscription.anlas.toLocaleString() }}</span><span class="lbl">Anlas</span></span>
       </div>
-      <div class="ver">v0.1 · preview</div>
+      <div class="ver">v{{ version }}</div>
     </div>
   </aside>
 </template>
