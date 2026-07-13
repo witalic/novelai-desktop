@@ -5,6 +5,7 @@
 // click-to-preview. More block types (Section/Heading/Text/Metadata/Divider) land in later increments.
 import { computed, ref } from 'vue'
 import { filterBySource } from './gallerySource'
+import { newId } from '../vault/ids'
 import type { GalleryBlock, ImageNodeData, ZoneNode } from '../types'
 
 // Minimal shape the widget reads off a gallery image node (avoids coupling to Vue Flow's node type).
@@ -53,22 +54,69 @@ function thumbSrc(url: string | undefined, cols: number): string {
 }
 
 function setCols(b: GalleryBlock, cols: 2 | 3 | 4) { if (b.type === 'grid') b.cols = cols } // in-place → tracked + autosaved
+
+// ---- compose the block stack (add / delete; drag-reorder lands in a later increment) ----
+type BlockType = GalleryBlock['type']
+const ADD_TYPES: { type: BlockType; label: string; glyph: string; hint: string }[] = [
+  { type: 'heading', label: 'Heading', glyph: 'H', hint: 'a title' },
+  { type: 'text', label: 'Text', glyph: '¶', hint: 'a description / note' },
+  { type: 'grid', label: 'Image grid', glyph: '▦', hint: 'images in fixed cells' },
+  { type: 'divider', label: 'Divider', glyph: '—', hint: 'a thin rule' },
+]
+const addOpen = ref<'head' | 'foot' | null>(null) // which ＋ Add block opened the menu — transient
+function toggleAdd(where: 'head' | 'foot') { addOpen.value = addOpen.value === where ? null : where }
+function newBlock(type: BlockType): GalleryBlock {
+  const id = newId('gb')
+  if (type === 'heading') return { id, type, text: 'Heading', level: 2 }
+  if (type === 'text') return { id, type, text: '' }
+  if (type === 'grid') return { id, type, source: 'all', cols: 3 }
+  return { id, type: 'divider' }
+}
+function addBlock(type: BlockType) {
+  ;(props.data.blocks ??= []).push(newBlock(type)) // in-place → tracked + autosaved
+  addOpen.value = null
+}
+function deleteBlock(id: string) {
+  const arr = props.data.blocks
+  const i = arr ? arr.findIndex((b) => b.id === id) : -1
+  if (arr && i >= 0) arr.splice(i, 1)
+}
+// Inline edit for heading/text — v-model mutates the block in place; no contenteditable cursor issues.
+function autogrow(e: Event) {
+  const el = e.target as HTMLTextAreaElement
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
 </script>
 
 <template>
-  <div class="gnode" :class="{ selected: false }">
+  <div class="gnode" @click="addOpen = null; sourceOpen = null">
     <div class="gnhd">
       <span class="ic">▦</span>
       <span class="ttl">Gallery</span>
       <span v-if="title" class="ctx">· {{ title }}</span>
       <span class="ctx">· {{ total }} image{{ total === 1 ? '' : 's' }}</span>
+      <span class="hsp"></span>
+      <div class="addwrap">
+        <button class="addbtn nodrag" @pointerdown.stop @click.stop="toggleAdd('head')"><span>＋</span> Add block</button>
+        <div v-if="addOpen === 'head'" class="addmenu nodrag" @pointerdown.stop @click.stop>
+          <button v-for="t in ADD_TYPES" :key="t.type" class="amrow" @click.stop="addBlock(t.type)">
+            <span class="gl">{{ t.glyph }}</span><span class="aml">{{ t.label }}<small>{{ t.hint }}</small></span>
+          </button>
+        </div>
+      </div>
     </div>
 
-    <div class="gnbody nowheel" @scroll="sourceOpen = null">
+    <div class="gnbody nowheel" @scroll="sourceOpen = null; addOpen = null">
       <div class="glist">
         <template v-for="b in blocks" :key="b.id">
-          <!-- image grid -->
-          <div v-if="b.type === 'grid'" class="b-grid">
+          <div class="blk" :class="'blk-' + b.type">
+            <div class="bacts nodrag">
+              <button class="del nodrag" title="Delete block" @pointerdown.stop @click.stop="deleteBlock(b.id)">🗑</button>
+            </div>
+
+            <!-- image grid -->
+            <div v-if="b.type === 'grid'" class="b-grid">
             <div class="gridtool nodrag">
               <button class="gtsource" title="Which images this grid shows" @pointerdown.stop @click.stop="toggleSource(b.id)">
                 <span class="k">Source:</span> {{ sourceLabel(b.source) }} <span class="car">▾</span>
@@ -102,8 +150,32 @@ function setCols(b: GalleryBlock, cols: 2 | 3 | 4) { if (b.type === 'grid') b.co
             <div v-else class="ghint">
               {{ total ? 'No images match this source.' : 'Generate images and drag them into the Gallery to keep them here.' }}
             </div>
+            </div>
+
+            <!-- heading -->
+            <input v-else-if="b.type === 'heading'" class="b-heading nodrag" :class="'h' + b.level"
+              v-model="b.text" placeholder="Heading" @pointerdown.stop />
+            <!-- text / description -->
+            <textarea v-else-if="b.type === 'text'" class="b-text nodrag nowheel" v-model="b.text"
+              placeholder="Write a description…" @pointerdown.stop @input="autogrow"></textarea>
+            <!-- divider -->
+            <div v-else-if="b.type === 'divider'" class="b-divider"><div class="ln"></div></div>
           </div>
         </template>
+        <div v-if="!blocks.length" class="glhint">Empty gallery — add a block below to start.</div>
+      </div>
+    </div>
+
+    <div class="gnft">
+      <span>{{ blocks.length }} block{{ blocks.length === 1 ? '' : 's' }}</span>
+      <span class="sp"></span>
+      <div class="addwrap up">
+        <button class="lbtn nodrag" @pointerdown.stop @click.stop="toggleAdd('foot')">＋ Add block</button>
+        <div v-if="addOpen === 'foot'" class="addmenu up nodrag" @pointerdown.stop @click.stop>
+          <button v-for="t in ADD_TYPES" :key="t.type" class="amrow" @click.stop="addBlock(t.type)">
+            <span class="gl">{{ t.glyph }}</span><span class="aml">{{ t.label }}<small>{{ t.hint }}</small></span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -116,6 +188,45 @@ function setCols(b: GalleryBlock, cols: 2 | 3 | 4) { if (b.type === 'grid') b.co
 .gnhd .ic{color:var(--text-faint);font-size:14px}
 .gnhd .ttl{font-weight:650;font-size:13px}
 .gnhd .ctx{font-size:12px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gnhd .hsp{flex:1}
+
+/* ＋ Add block menu (header + footer) — absolute within the node (its overflow is only clipped at the node edge) */
+.addwrap{position:relative}
+.addbtn{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:4px 10px;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.addbtn:hover{color:var(--accent);border-color:var(--accent)}
+.addmenu{position:absolute;right:0;top:calc(100% + 5px);z-index:30;min-width:190px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);background:var(--surface-1);box-shadow:0 10px 30px rgba(0,0,0,.45);padding:5px}
+.addmenu.up{top:auto;bottom:calc(100% + 5px)}
+.addmenu .amrow{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;color:var(--text);font:inherit;font-size:12.5px;font-weight:600;padding:7px 9px;border-radius:var(--radius);cursor:pointer;text-align:left}
+.addmenu .amrow:hover{background:var(--surface-3)}
+.addmenu .amrow .gl{width:20px;height:20px;border-radius:5px;background:var(--surface-3);border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:var(--text-dim);flex-shrink:0}
+.addmenu .amrow .aml{display:flex;flex-direction:column;line-height:1.25}
+.addmenu .amrow .aml small{font-weight:500;color:var(--text-faint);font-size:11px}
+
+/* block wrapper: hover background + a hover delete (grip/drag-reorder land in a later increment) */
+.blk{position:relative;border-radius:8px;padding:3px 6px}
+.blk:hover{background:color-mix(in srgb,var(--surface-2) 45%,transparent)}
+.blk-grid:hover,.blk-divider:hover{background:transparent}
+.bacts{position:absolute;right:4px;top:4px;display:none;z-index:4}
+.blk:hover .bacts{display:block}
+.bacts .del{border:1px solid var(--border);background:var(--surface-1);color:var(--text-faint);border-radius:5px;height:22px;min-width:22px;font-size:11px;cursor:pointer;padding:0 4px}
+.bacts .del:hover{color:var(--danger);border-color:var(--danger)}
+.blk-grid .gridtool{padding-right:24px} /* clear the hover delete over the count */
+
+/* copy blocks — borderless inline editors */
+.b-heading{width:100%;border:0;background:transparent;color:var(--text);font:inherit;font-weight:750;outline:none;padding:6px 30px 4px 2px}
+.b-heading.h1{font-size:19px;letter-spacing:-.01em}
+.b-heading.h2{font-size:15px}
+.b-heading::placeholder{color:var(--text-faint)}
+.b-text{display:block;width:100%;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12.5px;line-height:1.6;outline:none;resize:none;overflow:hidden;min-height:22px;padding:2px 30px 2px 2px}
+.b-text::placeholder{color:var(--text-faint)}
+.b-divider{padding:9px 2px}
+.b-divider .ln{height:1px;background:var(--border)}
+.glhint{font-size:12px;color:var(--text-faint);text-align:center;padding:20px}
+
+.gnft{display:flex;align-items:center;gap:10px;height:34px;flex-shrink:0;padding:0 12px;border-top:1px solid var(--border);background:var(--surface-1);font-size:11.5px;color:var(--text-faint)}
+.gnft .sp{flex:1}
+.gnft .lbtn{border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;display:inline-flex;gap:5px;align-items:center}
+.gnft .lbtn:hover{color:var(--accent)}
 
 .gnbody{flex:1;min-height:0;overflow-y:auto;padding:10px 12px 14px}
 .glist{display:flex;flex-direction:column;gap:8px}
