@@ -47,7 +47,8 @@ them.** When building or changing any UI, check this list first.
 ## Images
 - **Never CSS-shrink a full-res image into a small box** (thumbnails, cards, nodes). A big source
   single-step-crushed into a ~150px `<img>` looks soft/pixelated on HiDPI. Two levers, use both:
-  - **Vault images:** request a server-sized thumbnail (`?w=<≈ box × devicePixelRatio × 2>`).
+  - **Vault images:** request a server-sized thumbnail (`?w=<≈ box × devicePixelRatio × 2>`). **But in a
+    grid of many, `×2` is too big** — see the many-thumbnails note below; size near the display (`~×1.5`).
   - **Fresh `data:` URLs** can't be server-resized, and `?w=` does nothing for them — so make the
     `<img>` **decode at ~2× the box** (`width/height:200%`) and shrink it back with a transform;
     the decode is high-res and the GPU downscale is crisp. This is the canvas pipeline's trick
@@ -57,6 +58,12 @@ them.** When building or changing any UI, check this list first.
     regardless of the CSS trick (vault `?w=` thumbnails escape it because the source is already small).
     Downscale each source **once, client-side** (canvas → small `data:` URL, `canvas/thumb.ts`) and
     render the small copy. Bit me twice; the CSS trick alone masked it until the stack grew.
+  - **Many vault `?w=` thumbnails at once** (a Works/gallery grid): the same decode-memory crush hits here,
+    and **oversizing makes it worse**. `?w = box × dpr × 2` renders one tile sharp but, across a grid, each
+    thumbnail is ~2.6× its display box → Chromium sub-samples them all under budget → the whole grid
+    pixelates (one image in the previewer stays sharp — the tell). Size thumbnails **near the display box**
+    (`~box × dpr × 1.5`, snapped to buckets): crisp *and* light enough that 30+ tiles fit the budget. Bigger
+    is *not* sharper here. `GalleryStack.vue` `thumbSrc`. Cost me two wrong rounds chasing "sharper = bigger."
 
 ## Canvas (Vue Flow) nodes
 - **Interactive elements inside a node must not select/drag the node.** Vue Flow selects a node on

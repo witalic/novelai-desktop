@@ -4,7 +4,7 @@
 // Hosted by the canvas node (GalleryWidget usage in CanvasBoard) and, from Phase 2, the full-page Works
 // view/edit. The host owns the data (`data.blocks` + `images`) and handles the emitted ops; `readonly`
 // (View mode) suppresses the editing affordances. Design: design/gallery-widget-mockup.html.
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref } from 'vue'
 import { hiddenBlockIds } from './galleryBlocks'
 import { newId } from '../vault/ids'
 import type { GalleryBlock, GalleryMetaField, ImageNodeData, ZoneNode } from '../types'
@@ -84,15 +84,39 @@ function gridHidden(b: GalleryBlock): number {
 }
 
 const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
-// Server-sized thumbnail for a cell; a fresh `data:` URL can't be resized so it's used as-is.
-// View mode serves the full-resolution original — the `?w=` downscaling is a canvas-perf trade-off,
-// not something to inflict on a full-page reading view (the earlier softness was a bug there).
-function thumbSrc(url: string | undefined, cols: number): string {
-  if (!url || url.startsWith('data:')) return url || ''
-  if (props.embedded) return url // full-page Works host (view or edit): full-resolution, no downscale
-  const cellPx = Math.round(700 / cols) // node ≈ 700px wide inside padding
-  return `${url}?w=${Math.round(cellPx * dpr * 1.4)}`
+
+// Thumbnails are sized CLOSE to the tile they render into — deliberately NOT oversized. When many tiles
+// decode at once, Chromium downsamples decoded bitmaps under its memory budget → pixelation (ui-design.md:
+// one image in the previewer stays sharp, a full grid crushes). The escape is a small source: a thumbnail
+// near the display size leaves Chromium nothing to sub-sample. So we target ~1.5× the physical tile width
+// (enough to stay crisp, small enough that 30+ tiles fit the budget) and snap to a bucket for cache reuse.
+// Going bigger (a fat oversample) reads sharper for ONE tile but reintroduces the crush across a grid. A
+// `data:` URL can't be server-resized, so it's used as-is.
+const GIMG_GAP = 7 // .gimgs grid gap (px) — subtracted so the tile width is exact
+const QUICK_TILE_PX = 95 // .quickpanel is a fixed 212px rail, .qpgrid is 2 cols → ~95px tiles
+const _OVERSAMPLE = 1.5 // physical-tile → thumbnail-width factor: crisp but memory-light (see note above)
+const _BUCKETS = [128, 192, 256, 320, 384, 512, 640, 768] // past the top the original wins (few big tiles = no crush)
+
+const bodyW = ref(0) // measured content width of .gnbody (ResizeObserver); tile width = (bodyW - gaps) / cols
+function gridTilePx(cols: number): number {
+  const w = bodyW.value || (props.embedded ? 1400 : 700) // fallback before the first measure
+  return Math.max(48, (w - (cols - 1) * GIMG_GAP) / cols)
 }
+function thumbSrc(url: string | undefined, tilePx: number): string {
+  if (!url || url.startsWith('data:')) return url || ''
+  const target = Math.ceil(tilePx * dpr * _OVERSAMPLE)
+  for (const b of _BUCKETS) if (b >= target) return `${url}?w=${b}`
+  return url // tile larger than any bucket → the full-resolution original is the sharpest option
+}
+
+let _ro: ResizeObserver | null = null
+onMounted(() => {
+  if (!bodyEl.value || typeof ResizeObserver === 'undefined') return
+  bodyW.value = bodyEl.value.clientWidth - 24 // .gnbody horizontal padding (12px each side)
+  _ro = new ResizeObserver((entries) => { bodyW.value = entries[0].contentBoxSize[0].inlineSize })
+  _ro.observe(bodyEl.value)
+})
+onBeforeUnmount(() => { _ro?.disconnect(); _ro = null })
 
 function setCols(b: GalleryBlock, cols: 2 | 3 | 4 | 5 | 6 | 7 | 8) { if (b.type === 'grid') b.cols = cols } // in-place → tracked + autosaved
 
@@ -464,7 +488,7 @@ function onOutDrop(targetId: string) {
                   @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
                   @dragover.prevent.stop="onThumbOver(im.id, $event)" @drop.prevent.stop="onThumbDrop(b, im.id, $event)"
                   @pointerdown.stop @click.stop="gridHidden(b) && i === b.cols - 1 ? (b.collapsed = false) : emit('preview', im.data.url || '')">
-                  <img class="im" :src="thumbSrc(im.data.url, b.cols)" alt="gallery image" loading="lazy" draggable="false" />
+                  <img class="im" :src="thumbSrc(im.data.url, gridTilePx(b.cols))" alt="gallery image" loading="lazy" draggable="false" />
                   <div class="thbar nodrag">
                     <button class="thb dl" title="Download image" @pointerdown.stop @click.stop="emit('download', urlsOf([im]))">⤓</button>
                     <button class="thb toq" title="Move to Quick access" @pointerdown.stop @click.stop="emit('toQuick', im.id)">⇥</button>
@@ -543,7 +567,7 @@ function onOutDrop(targetId: string) {
         <div v-for="im in unassigned" :key="im.id" class="gthumb qthumb nodrag" :class="{ fav: im.data.favorite }"
           :style="{ '--ar': im.data.ar || (3 / 4) }" :draggable="!readonly" @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
           @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
-          <img class="im" :src="thumbSrc(im.data.url, 2)" alt="gallery image" loading="lazy" draggable="false" />
+          <img class="im" :src="thumbSrc(im.data.url, QUICK_TILE_PX)" alt="gallery image" loading="lazy" draggable="false" />
           <div class="thbar nodrag">
             <button class="thb del" title="Delete image from the work" @pointerdown.stop @click.stop="emit('deleteImg', im.id)">🗑</button>
           </div>
