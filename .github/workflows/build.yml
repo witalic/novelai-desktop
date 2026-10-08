@@ -1,14 +1,15 @@
 # Cross-platform desktop build: freeze the FastAPI sidecar with PyInstaller, build the Vue frontend, then
 # package the Electron shell with electron-builder. Windows + macOS run on their own native runners because
 # PyInstaller cannot cross-compile. Unsigned for now (signing is a deliberate later step — see the env seams
-# below). Artifacts (installers + portable/zip) are uploaded per-OS.
+# below). Artifacts (installers + portable/zip) are uploaded per-OS. A `v*` tag additionally publishes a
+# GitHub Release with the Windows installers attached (macOS is built but not released yet).
 name: build
 
 on:
-  workflow_dispatch: {}   # manual for now — no push/tag trigger until signing is decided
+  workflow_dispatch: {}   # manual build — artifacts only, no release
   push:
     tags:
-      - "v*"              # tagging v1.0.0 cuts a build of all targets
+      - "v*"              # tagging v1.0.0 builds all targets and publishes the v1.0.0 release
 
 jobs:
   package:
@@ -74,3 +75,37 @@ jobs:
             dist-app/*.dmg
             dist-app/*.zip
           if-no-files-found: warn
+
+  # --- Release: tag push only ------------------------------------------------------------------
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches shell version
+        # electron-builder names files from shell/package.json, so a tag/version mismatch would publish
+        # e.g. "v1.1.0" carrying "Setup-1.0.0.exe". Bump `version` in shell/package.json before tagging.
+        run: |
+          version=$(node -p "require('./shell/package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match shell/package.json version $version"
+            exit 1
+          fi
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: novelai-desktop-windows-latest
+          path: release
+
+      - name: Publish GitHub release (Windows only for now)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" release/*.exe
+          --title "NovelAI Desktop $GITHUB_REF_NAME"
+          --generate-notes
