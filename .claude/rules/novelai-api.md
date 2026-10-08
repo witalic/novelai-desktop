@@ -17,6 +17,15 @@ There is **no official REST spec** — `docs.novelai.net/.../scripting/api-refer
 - **Request shape:** `{ input, model, action, parameters:{…} }`. `action` ∈ `generate` / `img2img` / `infill`.
   Current model `nai-diffusion-4-5-full`. **v4/v4.5 differ from v3** — v4 has per-character prompts
   (`characterPrompts`, `use_coords`, `v4_prompt` / `v4_negative_prompt`); don't assume v3 fields carry over.
+- **Quality tags + UC presets are client-side.** The API drops `qualityToggle` / `ucPreset` (they never
+  reach the PNG metadata it echoes back): the web client appends the quality tags and prepends the UC text
+  itself, sending `tag_hint_qt` / `tag_hint_uc_preset` only as metadata hints. We do the same in
+  `novelai/augment.py`, and the tokenize endpoint counts that same text.
+- **Ground truth is the web client bundle.** Model ids, per-model defaults, preset strings, token limits and
+  feature flags live in the public JS at `novelai.net/image` — read them there instead of guessing (an
+  unknown field or model is a 400 at best, wasted Anlas at worst).
+- **Generation is not deterministic:** the same seed + params gives different pixels run to run, so a
+  pixel A/B between two requests proves nothing — inspect the PNG metadata (`Comment` JSON) instead.
 - **Own thin client, not a heavy dep.** Use `aedial/novelai-api` (`ImagePreset`) and `LlmKira/novelai-python`
   as human documentation for undocumented fields — do not take them as runtime dependencies.
 - **Handle every response:** 200 → unzip → PNG (+ read embedded metadata via Pillow); 400 bad params;

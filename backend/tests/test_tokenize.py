@@ -63,12 +63,15 @@ async def test_tokenize_endpoint_counts_positive_and_negative(client):
     assert body["tokenizer"] == "t5"
 
 
-async def test_quality_toggle_adds_the_model_quality_tokens(client):
+async def test_quality_toggle_counts_the_appended_quality_tags(client):
     body = {"model": "nai-diffusion-4-5-full", "positive": "1girl, solo", "negative": ""}
     off = (await client.post("/api/tokenize", json={**body, "quality_toggle": False})).json()
     on = (await client.post("/api/tokenize", json={**body, "quality_toggle": True})).json()
-    assert on["positive"] == off["positive"] + 8  # v4.5 quality-tags prepend
+    assert on["positive"] == off["positive"] + 8  # v4.5 Full quality tags (web-calibrated)
     assert on["negative"] == off["negative"]      # quality tags don't touch the negative
+    # Curated's quality preset is longer (adds -0.8::feet::, rating:general) — counted as sent, not a constant.
+    curated = (await client.post("/api/tokenize", json={**body, "model": "nai-diffusion-4-5-curated", "quality_toggle": True})).json()
+    assert curated["positive"] > on["positive"]
 
 
 async def test_matches_novelai_web_ui_reference_counts(client):

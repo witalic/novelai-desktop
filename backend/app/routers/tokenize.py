@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.novelai.augment import quality_tokens, uc_negative
+from app.novelai.augment import augment
 from app.novelai.catalog import ModelSpec, get_catalog
 from app.novelai.tokenizer import count_tokens
 
@@ -19,8 +19,8 @@ class TokenizeRequest(BaseModel):
     model: str
     positive: str = ""
     negative: str = ""
-    quality_toggle: bool = False  # qualityToggle prepends quality tags → count against the positive budget
-    uc_preset: int = 3  # ucPreset prepends an undesired-content negative (3 = None); counts on the negative
+    quality_toggle: bool = False  # quality tags are appended to the positive → count against its budget
+    uc_preset: int = 3  # the undesired-content preset is prepended to the negative (3 = None)
 
 
 class TokenizeResponse(BaseModel):
@@ -36,21 +36,12 @@ def _spec_for(model: str) -> ModelSpec:
                 next(m for m in cat.models if m.id == cat.default_model))
 
 
-def _join(prefix: str, text: str) -> str:
-    prefix, text = prefix.strip(), text.strip()
-    return f"{prefix}, {text}" if prefix and text else (prefix or text)
-
-
 @router.post("", response_model=TokenizeResponse)
 async def tokenize(req: TokenizeRequest) -> TokenizeResponse:
-    spec = _spec_for(req.model)
-    tk = spec.tokenizer
-    # The web UI counts what NovelAI actually sends: quality tags prepended to the positive, the ucPreset
-    # undesired-content prepended to the negative. Prepend then count (one EOS), so an empty user negative
-    # with a ucPreset still counts the preset's text. CPU-bound → off the event loop (see account router).
-    pos = await run_in_threadpool(count_tokens, req.positive, tk)
-    if req.quality_toggle and req.positive.strip():
-        pos += quality_tokens(req.model)
-    full_negative = _join(uc_negative(req.model, req.uc_preset), req.negative)
-    neg = await run_in_threadpool(count_tokens, full_negative, tk)
+    tk = _spec_for(req.model).tokenizer
+    # Count exactly the text generation sends — the same augmentation build_body applies (quality tags,
+    # UC preset), so the indicator matches the web UI. CPU-bound → off the event loop (see account router).
+    text = augment(req.model, req.positive, req.negative, quality=req.quality_toggle, uc_preset=req.uc_preset)
+    pos = await run_in_threadpool(count_tokens, text.positive, tk)
+    neg = await run_in_threadpool(count_tokens, text.negative, tk)
     return TokenizeResponse(positive=pos, negative=neg, tokenizer=tk)

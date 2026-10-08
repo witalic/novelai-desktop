@@ -115,8 +115,8 @@ useCatalog() // ensure the catalog is loaded so the per-model limits below resol
 const { positive: posTokens, negative: negTokens } = useTokenCount(
   () => ({
     model: props.params.model, positive: composed.value.positive, negative: composed.value.negative,
-    // NovelAI prepends quality tags to the positive and the ucPreset undesired-content to the negative;
-    // both count against their budgets, so the indicator mirrors the web UI.
+    // Generation appends quality tags to the positive and prepends the ucPreset undesired-content to the
+    // negative (backend augment); both count against their budgets, so the indicator mirrors the web UI.
     quality_toggle: props.params.quality_toggle, uc_preset: props.params.uc_preset,
   }),
 )

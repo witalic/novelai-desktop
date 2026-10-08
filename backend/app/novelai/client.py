@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 import httpx
 
 from app.novelai._png import unzip_pngs
-from app.novelai.catalog import get_catalog
+from app.novelai.augment import augment
 from app.novelai.errors import map_response_error
 from app.novelai.models import GenerateParams
 
@@ -37,18 +37,13 @@ def parse_subscription(data: dict) -> dict:
     }
 
 
-def _uc_preset_for(model: str, uc_preset: int) -> int:
-    """Clamp the ucPreset to one the model actually offers (M3: Curated has no Furry Focus=7 — sending it
-    is undefined). Falls back to None (3) or the first offered preset."""
-    spec = next((m for m in get_catalog().models if m.id == model), None)
-    if spec and uc_preset not in spec.uc_presets:
-        return 3 if 3 in spec.uc_presets else spec.uc_presets[0]
-    return uc_preset
-
-
 def build_body(params: GenerateParams) -> dict:
-    """Assemble the NovelAI generate-image body (v4/v4.5 shape) from flat params."""
+    """Assemble the NovelAI generate-image body (v4/v4.5 shape) from flat params. Quality tags and the UC
+    preset are baked into the prompt text (``augment``) — the API ignores the toggles themselves;
+    ``tag_hint_*`` only record which presets were applied."""
     seed = params.seed if params.seed is not None else secrets.randbelow(2**32)
+    text = augment(params.model, params.prompt, params.negative_prompt,
+                   quality=params.quality_toggle, uc_preset=params.uc_preset)
     parameters: dict = {
         "params_version": 3,
         "width": params.width,
@@ -57,13 +52,13 @@ def build_body(params: GenerateParams) -> dict:
         "sampler": params.sampler,
         "steps": params.steps,
         "n_samples": params.n_samples,
-        "ucPreset": _uc_preset_for(params.model, params.uc_preset),
-        "qualityToggle": params.quality_toggle,
+        "tag_hint_qt": text.quality_hint,
+        "tag_hint_uc_preset": text.uc_hint,
         "dynamic_thresholding": False,
         "cfg_rescale": params.cfg_rescale,
         "noise_schedule": params.noise_schedule,
         "seed": seed,
-        "negative_prompt": params.negative_prompt,
+        "uc": text.negative,
         "legacy": False,
         "add_original_image": True,
         "controlnet_strength": 1,
@@ -71,17 +66,17 @@ def build_body(params: GenerateParams) -> dict:
         "prefer_brownian": True,
         # v4/v4.5 structured prompts:
         "v4_prompt": {
-            "caption": {"base_caption": params.prompt, "char_captions": []},
+            "caption": {"base_caption": text.positive, "char_captions": []},
             "use_coords": False,
             "use_order": True,
         },
         "v4_negative_prompt": {
-            "caption": {"base_caption": params.negative_prompt, "char_captions": []},
+            "caption": {"base_caption": text.negative, "char_captions": []},
         },
         "use_coords": False,
         "characterPrompts": [],
     }
-    return {"input": params.prompt, "model": params.model, "action": "generate", "parameters": parameters}
+    return {"input": text.positive, "model": params.model, "action": "generate", "parameters": parameters}
 
 
 class NovelAIClient:

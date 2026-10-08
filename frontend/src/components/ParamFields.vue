@@ -116,7 +116,7 @@ const clampDim = (n: number) => {
     </div>
 
     <div class="setting">
-      <div class="txt"><div class="name">Add quality tags</div><div class="desc">Prepend quality tags to the prompt.</div></div>
+      <div class="txt"><div class="name">Add quality tags</div><div class="desc">Append quality tags to the prompt.</div></div>
       <button class="switch" :class="{ on: params.quality_toggle }" role="switch" :aria-checked="params.quality_toggle"
         @click="params.quality_toggle = !params.quality_toggle"><span class="knob"></span></button>
     </div>
