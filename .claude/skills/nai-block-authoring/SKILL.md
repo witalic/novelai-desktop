@@ -13,8 +13,19 @@ canvas, so each one must stand alone and stay focused.
 - ❌ A whole scene in one block (character + outfit + pose + background) — split it into several blocks.
 - ❌ A single lone tag with nothing related to it — a block groups the tags that belong together.
 
-Write the tag `text` itself with the **nai-prompt-writing** skill (visual Danbooru tags, correct
-weights, no narrative/duplication).
+Write the `text` itself with the **nai-prompt-writing** skill (visual content, correct weights, no
+narrative/duplication). Blocks are written for V5 — the app's default — but should stay usable on V4.5:
+
+- **Tags are the default block content** — consistent and composable with any other block.
+- A short **natural-language phrase** is fine when the block's job is something tags can't express — a
+  relation or layout (`the girl on the left holds the boy's hand`). It must stand alone and avoid inner
+  commas (blocks are joined with `, `). Mark such V5-only blocks with a `v5` tag.
+
+## Never in a block
+
+- **Quality tags** (`masterpiece`, `very aesthetic`, `best quality`, …) — the app's quality toggle adds them.
+- **The stock undesired-content list** (`worst quality, bad quality, jpeg artifacts, …`) — the UC preset
+  adds it. A `negative` block carries only what the preset lacks.
 
 ## Output: import-ready JSON
 
@@ -73,6 +84,9 @@ Rules:
    block, not a dumping ground).
 2. **Explicit request wins.** If the user asks for a specific category (even a new slug), use it verbatim —
    new categories are created automatically on import.
+3. **In-image text** is its own block (`custom` unless asked otherwise) whose `text` starts with `Text:` —
+   everything after `Text:` is drawn, so it must sit **last** in the composition; say so in its `name`
+   (e.g. "Sign text — place last").
 
 ## Naming: style-specific vs general
 
@@ -90,7 +104,8 @@ When unsure: if a different style could reuse the block unchanged, it's general.
 Give every block ONE weighted **anchor** — its single defining tag — at `1.3::tag::`, and leave the
 supporting tags plain. The `1.3` accent makes the block's core intent land when it is mixed with many
 other blocks on the canvas; any finer weighting is the user's job at generation time. Never weight
-every tag (nai-prompt-writing: strengthen only key elements — 1 per block here).
+every tag (nai-prompt-writing: strengthen only key elements — 1 per block here). On V5 the `1.3::`/`::`
+markers also count toward the token budget, which is one more reason to keep a single anchor.
 
 - Multi-tag block: weight the lead/defining tag → `1.3::curvy::, hourglass figure, wide hips, large breasts`.
 - Single-tag atom (a hair color, one hairstyle): weight its one tag → `1.3::blonde hair::`, `1.3::twintails::`.
@@ -122,7 +137,9 @@ Keep it to a handful of meaningful tags per block — enough to find and group i
 ## Checklist
 
 - [ ] One focused concept per block; big scenes split into several blocks.
-- [ ] `text` follows nai-prompt-writing (visual tags, no duplication); ONE `1.3::` anchor per block, rest plain.
+- [ ] `text` follows nai-prompt-writing (visual content, no duplication); ONE `1.3::` anchor per block, rest plain.
+- [ ] Tags by default; a natural-language phrase only for relations/layout, comma-free, tagged `v5`.
+- [ ] No quality tags or stock UC list; a `Text:` block is its own block, named to go last.
 - [ ] Category = the block's primary role (prefixed slug); `custom` only when nothing fits; explicit request wins.
 - [ ] Style-specific blocks carry the style name + tag; general/reusable blocks have neutral names and no style tag.
 - [ ] NSFW → the semantic category (`body`/`pose`/`outfit`/…) or `nsfw`/`nsfw-act`/`nsfw-fluids`; always an `nsfw` tag.
