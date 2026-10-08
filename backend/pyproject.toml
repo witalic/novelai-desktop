@@ -1,6 +1,6 @@
 [project]
 name = "novelai-desktop-backend"
-version = "1.0.0"
+version = "1.1.0"
 description = "FastAPI sidecar for novelai-desktop"
 requires-python = ">=3.11"
 dependencies = [
