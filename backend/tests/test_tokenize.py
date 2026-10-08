@@ -44,7 +44,26 @@ def test_loader_needs_no_network(monkeypatch):
         raise OSError("no model")
 
     monkeypatch.setattr(tokenizer, "_t5", _boom)  # monkeypatch restores the real loader after the test
+    monkeypatch.setattr(tokenizer, "_qwen", _boom)
     assert count_tokens("hello world", "t5") > 0
+    assert count_tokens("hello world", "qwen") > 0
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Reference counts from NovelAI's own web encoder run on the same bundled vocabulary file.
+    ("1girl, solo, silver hair, red eyes, school uniform, cherry blossoms, upper body, smile", 22),
+    ("1girl, solo, very aesthetic, masterpiece, no text", 12),
+    ("少女、銀髪、赤い目、制服、桜、笑顔", 14),
+    ("foo <|endoftext|> bar", 4),  # a special token counts as one, never split
+])
+def test_qwen_matches_the_web_encoder(text, expected):
+    assert count_tokens(text, "qwen") == expected
+
+
+def test_qwen_counts_weight_markers_as_typed():
+    # Unlike its T5 counter, the web UI counts v5 prompts as typed — the 1.3:: markers take budget.
+    assert count_tokens("1.3::babydoll::, 1.3::hot pink babydoll::, 1.3::sheer babydoll::", "qwen") == 29
+    assert count_tokens("babydoll, hot pink babydoll, sheer babydoll", "qwen") == 11
 
 
 @pytest.fixture
@@ -110,12 +129,13 @@ async def test_uc_preset_prepends_before_the_user_negative(client):
 
 
 async def test_v5_counts_with_its_own_tokenizer(client):
-    # v5 uses Qwen — not bundled yet, so the count is the heuristic fallback (still non-zero, never a 500).
     body = (await client.post("/api/tokenize", json={
-        "model": "nai-diffusion-5-full", "positive": "1girl, solo", "negative": "", "uc_preset": 4,
+        "model": "nai-diffusion-5-full", "positive": "1girl, solo", "negative": "",
+        "quality_toggle": True, "uc_preset": 4,
     })).json()
     assert body["tokenizer"] == "qwen"
-    assert body["positive"] > 0 and body["negative"] > 0  # the Heavy preset counts on the negative
+    assert body["positive"] == 12  # "1girl, solo" + the quality tags, as the web UI counts them
+    assert body["negative"] == 60  # "nsfw, " + the Heavy preset
 
 
 async def test_tokenize_unknown_model_uses_default_tokenizer(client):

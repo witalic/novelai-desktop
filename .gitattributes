@@ -8,3 +8,4 @@
 *.webp binary
 *.ico binary
 *.zip binary
+*.def binary

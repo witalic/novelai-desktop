@@ -3,9 +3,10 @@
 # Run from backend/: `pyinstaller novelai-backend.spec`.
 from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
-# The T5 tokenizer model must ship alongside the binary; tokenizer.py resolves it from sys._MEIPASS
-# under this same relative path when frozen.
-datas = [("app/novelai/assets/t5_spiece.model", "app/novelai/assets")]
+# The T5 + Qwen tokenizer files must ship alongside the binary; tokenizer.py resolves them from
+# sys._MEIPASS under this same relative path when frozen.
+datas = [("app/novelai/assets/t5_spiece.model", "app/novelai/assets"),
+         ("app/novelai/assets/qwen35_tokenizer.def", "app/novelai/assets")]
 # The built frontend is served single-origin at /app/; main.py resolves it from sys._MEIPASS/frontend/dist
 # when frozen, so bundle it here (CI runs `npm run build` before PyInstaller). The trailing dir must exist.
 datas += [("../frontend/dist", "frontend/dist")]
@@ -18,7 +19,7 @@ datas += copy_metadata("keyring")
 hiddenimports = (
     collect_submodules("uvicorn")
     + collect_submodules("keyring.backends")
-    + ["app", "sentencepiece"]
+    + ["app", "sentencepiece", "regex"]
 )
 
 a = Analysis(
