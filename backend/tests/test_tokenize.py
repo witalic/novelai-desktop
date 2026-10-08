@@ -109,9 +109,18 @@ async def test_uc_preset_prepends_before_the_user_negative(client):
     assert withneg > base
 
 
+async def test_v5_counts_with_its_own_tokenizer(client):
+    # v5 uses Qwen — not bundled yet, so the count is the heuristic fallback (still non-zero, never a 500).
+    body = (await client.post("/api/tokenize", json={
+        "model": "nai-diffusion-5-full", "positive": "1girl, solo", "negative": "", "uc_preset": 4,
+    })).json()
+    assert body["tokenizer"] == "qwen"
+    assert body["positive"] > 0 and body["negative"] > 0  # the Heavy preset counts on the negative
+
+
 async def test_tokenize_unknown_model_uses_default_tokenizer(client):
     body = (await client.post("/api/tokenize", json={
         "model": "nai-diffusion-legacy-9", "positive": "test", "negative": "bad",
     })).json()
-    assert body["tokenizer"] == "t5"  # resolved via the catalog's default model
+    assert body["tokenizer"] == "qwen"  # resolved via the catalog's default model (v5 Full)
     assert body["positive"] > 0 and body["negative"] > 0

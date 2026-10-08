@@ -34,7 +34,17 @@ class _ModelPresets(NamedTuple):
     nsfw: bool            # Full models also prepend "nsfw" to a preset UC unless the prompt asks for nsfw
 
 
+_V5 = _ModelPresets(_QUALITY, {
+    4: _HEAVY,
+    5: "lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, very displeasing, "
+       "jpeg artifacts, 0::ai-generated::",
+    6: _HUMAN,
+    7: _FURRY,
+}, nsfw=True)
+
 _PRESETS: dict[str, _ModelPresets] = {
+    "nai-diffusion-5-full": _V5,
+    "nai-diffusion-5-curated": _V5._replace(nsfw=False),
     "nai-diffusion-4-5-full": _ModelPresets(_QUALITY, {
         4: _HEAVY,
         5: "lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, "

@@ -184,11 +184,11 @@ class PresetParams(BaseModel):
     (the canvas) and seed (per-generation). Keep the field set + constraints in sync with
     ``novelai/models.py::GenerateParams`` and ``frontend/src/types.ts::PanelParams``."""
 
-    model: str = "nai-diffusion-4-5-full"
+    model: str = "nai-diffusion-5-full"
     width: int = Field(default=832, ge=64, le=2048)
     height: int = Field(default=1216, ge=64, le=2048)
     steps: int = Field(default=28, ge=1, le=50)
-    scale: float = Field(default=5.0, ge=0, le=10)  # matches the catalog's _SCALE (the single source of truth)
+    scale: float = Field(default=7.0, ge=0, le=10)  # the default model's catalog scale (the single source of truth)
     sampler: str = "k_euler_ancestral"
     n_samples: int = Field(default=1, ge=1, le=4)
     noise_schedule: str = "karras"

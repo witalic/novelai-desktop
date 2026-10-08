@@ -122,6 +122,9 @@ const { positive: posTokens, negative: negTokens } = useTokenCount(
 )
 const posLimit = computed(() => modelSpec(props.params.model)?.token_limit ?? 512)
 const negLimit = computed(() => modelSpec(props.params.model)?.negative_token_limit ?? 512)
+// Which tokenizer the budget is measured in (v4.5: T5, v5: Qwen) — named in the indicator's tooltip.
+const TOKENIZER_NAMES: Record<string, string> = { t5: 'T5', qwen: 'Qwen', clip: 'CLIP' }
+const tokenizerName = computed(() => TOKENIZER_NAMES[modelSpec(props.params.model)?.tokenizer ?? 't5'])
 // Loose blocks/images not inside any anchor zone are scratch — saved with the work, but with no
 // role in generation or galleries.
 const scratchCount = computed(() => nodes.value.filter((n) => (n.type === 'block' || n.type === 'image') && !ANCHORS.has(n.parentNode ?? '')).length)
@@ -1119,9 +1122,9 @@ function startName(data: any, e: MouseEvent) {
             <div class="stmeta nowheel">
               <div class="mrows">
                 <div class="mrow"><b>+</b> <span class="mtext">{{ composed.positive || '—' }}</span>
-                  <span class="tok" :class="{ over: posTokens > posLimit }" :title="`Positive prompt — ${posTokens} of ${posLimit} T5 tokens`">{{ posTokens }} / {{ posLimit }}</span></div>
+                  <span class="tok" :class="{ over: posTokens > posLimit }" :title="`Positive prompt — ${posTokens} of ${posLimit} ${tokenizerName} tokens`">{{ posTokens }} / {{ posLimit }}</span></div>
                 <div class="mrow neg"><b>−</b> <span class="mtext">{{ composed.negative || '—' }}</span>
-                  <span class="tok" :class="{ over: negTokens > negLimit }" :title="`Negative prompt — ${negTokens} of ${negLimit} T5 tokens`">{{ negTokens }} / {{ negLimit }}</span></div>
+                  <span class="tok" :class="{ over: negTokens > negLimit }" :title="`Negative prompt — ${negTokens} of ${negLimit} ${tokenizerName} tokens`">{{ negTokens }} / {{ negLimit }}</span></div>
               </div>
               <div class="orient nodrag" title="Zone layout">
                 <button :class="{ on: (data.axis ?? 'h') === 'h' }" title="Side by side" @click.stop="setStationAxis('h')" @pointerdown.stop>⇔</button>

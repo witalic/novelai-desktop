@@ -26,21 +26,22 @@ _STATE_FILE = ".state.json"
 _state_lock = threading.Lock()  # serialize overlay writes (rare); file writes are already atomic
 
 # Code-shipped starters (stable ids). Read-only: never written to disk, only merged into the list.
+# All on v5 (guidance ~7, its default); v4.5 stays selectable in the model picker and user presets.
 _BUILTINS: list[PresetDoc] = [
     PresetDoc(id="builtin-anime-full", name="Anime · Full", params=PresetParams(
-        model="nai-diffusion-4-5-full", width=832, height=1216, steps=28, scale=5.0,
+        model="nai-diffusion-5-full", width=832, height=1216, steps=28, scale=7.0,
         sampler="k_euler_ancestral", uc_preset=4)),
     PresetDoc(id="builtin-curated-soft", name="Curated · Soft", params=PresetParams(
-        model="nai-diffusion-4-5-curated", width=832, height=1216, steps=28, scale=5.0,
+        model="nai-diffusion-5-curated", width=832, height=1216, steps=28, scale=7.0,
         sampler="k_dpmpp_2s_ancestral", uc_preset=5)),
     PresetDoc(id="builtin-fast-draft", name="Fast draft", params=PresetParams(
-        model="nai-diffusion-4-5-full", width=640, height=640, steps=18, scale=4.0,
+        model="nai-diffusion-5-full", width=640, height=640, steps=18, scale=6.0,
         sampler="k_euler", quality_toggle=False, uc_preset=5)),
     PresetDoc(id="builtin-wallpaper", name="Wallpaper", params=PresetParams(
-        model="nai-diffusion-4-5-full", width=1088, height=1920, steps=32, scale=5.0,
+        model="nai-diffusion-5-full", width=1088, height=1920, steps=32, scale=7.0,
         sampler="k_dpmpp_2m_sde", uc_preset=4)),
     PresetDoc(id="builtin-furry", name="Furry Focus", params=PresetParams(
-        model="nai-diffusion-4-5-full", width=832, height=1216, steps=28, scale=5.0,
+        model="nai-diffusion-5-full", width=832, height=1216, steps=28, scale=7.0,
         sampler="k_euler_ancestral", uc_preset=7)),
 ]
 _FALLBACK_DEFAULT = _BUILTINS[0].id  # Anime · Full, when no default is set / points at a deleted preset

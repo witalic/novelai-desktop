@@ -18,8 +18,9 @@ def _client(handler) -> NovelAIClient:
 def test_build_body_v4_shape():
     body = build_body(GenerateParams(prompt="1girl", negative_prompt="bad", quality_toggle=False, uc_preset=3))
     p = body["parameters"]
-    assert body["model"] == "nai-diffusion-4-5-full"
+    assert body["model"] == "nai-diffusion-5-full"
     assert body["action"] == "generate"
+    assert p["params_version"] == 4
     assert body["input"] == p["v4_prompt"]["caption"]["base_caption"] == "1girl"
     assert p["uc"] == p["v4_negative_prompt"]["caption"]["base_caption"] == "bad"
     assert isinstance(p["seed"], int)  # random seed filled in

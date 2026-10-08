@@ -5,8 +5,9 @@ Anlas cost or API load.
 v4/v4.5 use a T5 tokenizer; we count against a bundled T5 SentencePiece model (``assets/t5_spiece.model``,
 see ``assets/README.md``). NovelAI does not publish their exact vocab, so this is the standard t5-v1_1
 tokenizer — token counts match the web UI closely for English tag prompts. Two calibration knobs if it
-drifts: swap the bundled model, or flip ``_INCLUDE_EOS``. CLIP (v3) is not wired — v3 is absent from the
-catalog; an unknown tokenizer name falls back to a coarse heuristic rather than raising.
+drifts: swap the bundled model, or flip ``_INCLUDE_EOS``. v5's Qwen tokenizer is not bundled yet and CLIP (v3)
+is not wired (v3 is absent from the catalog): those, like any unknown tokenizer name, fall back to a coarse
+heuristic rather than raising.
 """
 import logging
 import re
@@ -51,8 +52,8 @@ def _heuristic(text: str) -> int:
 
 
 def count_tokens(text: str, tokenizer: str) -> int:
-    """Token count for ``text`` under the named tokenizer ('t5'). Empty text → 0; an unknown tokenizer
-    or a load failure degrades to a heuristic so the indicator never crashes."""
+    """Token count for ``text`` under the named tokenizer ('t5'). Empty text → 0; any other tokenizer
+    ('qwen' for now) or a load failure degrades to a heuristic so the indicator never crashes."""
     if not text.strip():
         return 0
     text = _strip_emphasis(text)  # count prompt content, not NovelAI's weight markers

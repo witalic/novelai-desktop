@@ -15,8 +15,10 @@ There is **no official REST spec** — `docs.novelai.net/.../scripting/api-refer
   the **image host**, NOT `api.novelai.net` — the account host rejects it with 400 *"Please refresh
   NovelAI.net… update to the image URL"*. No `User-Agent` needed; the default httpx UA works.
 - **Request shape:** `{ input, model, action, parameters:{…} }`. `action` ∈ `generate` / `img2img` / `infill`.
-  Current model `nai-diffusion-4-5-full`. **v4/v4.5 differ from v3** — v4 has per-character prompts
-  (`characterPrompts`, `use_coords`, `v4_prompt` / `v4_negative_prompt`); don't assume v3 fields carry over.
+  Models: `nai-diffusion-5-full` (default) / `nai-diffusion-5-curated`, legacy `nai-diffusion-4-5-full` /
+  `-curated`; `params_version: 4`. **v4+ differ from v3** — v4.5 and v5 share the structured shape with
+  per-character prompts (`characterPrompts`, `use_coords`, `v4_prompt` / `v4_negative_prompt`); don't
+  assume v3 fields carry over.
 - **Quality tags + UC presets are client-side.** The API drops `qualityToggle` / `ucPreset` (they never
   reach the PNG metadata it echoes back): the web client appends the quality tags and prepends the UC text
   itself, sending `tag_hint_qt` / `tag_hint_uc_preset` only as metadata hints. We do the same in

@@ -36,7 +36,7 @@ async def test_builtins_present_with_default(client):
     default = [p for p in items if p["is_default"]]
     assert len(default) == 1 and default[0]["id"] == "builtin-anime-full"
     anime = default[0]["params"]
-    assert anime["model"] == "nai-diffusion-4-5-full" and anime["width"] == 832 and anime["uc_preset"] == 4
+    assert anime["model"] == "nai-diffusion-5-full" and anime["width"] == 832 and anime["uc_preset"] == 4
     assert "seed" not in anime and "prompt" not in anime  # params-only invariant
 
 

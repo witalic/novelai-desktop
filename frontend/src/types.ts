@@ -37,12 +37,12 @@ export interface CatalogResolution { group: string; tier: string; width: number;
 export interface CatalogModel {
   id: string
   label: string
-  family: 'v3' | 'v4'
-  tokenizer: 't5' | 'clip'
+  family: 'v3' | 'v4' | 'v5'
+  tokenizer: 't5' | 'clip' | 'qwen'
   token_limit: number
   negative_token_limit: number
   samplers: string[] // sampler ids offered for this model
-  uc_presets: number[] // ucPreset values offered for this model (Furry Focus is Full-only)
+  uc_presets: number[] // ucPreset values offered for this model (v4.5 Curated has no Furry Focus)
   steps: CatalogRange
   scale: CatalogRange
 }

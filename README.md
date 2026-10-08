@@ -23,7 +23,7 @@ worked* is hard to manage. This app stitches generation and storage into one cyc
 
 ## Features
 
-- **Image generation** through NovelAI (e.g. `nai-diffusion-4-5-full`) with full parameter control
+- **Image generation** through NovelAI (V5 by default, V4.5 as legacy) with full parameter control
   (size, sampler, steps, scale/CFG, seed, negative prompt) and streamed progress. An offline
   **mock mode** lets you work without spending Anlas.
 - **Prompt-composition canvas** (Vue Flow): a generation station with category-coloured prompt

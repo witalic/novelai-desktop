@@ -2,6 +2,7 @@
 from app.novelai.augment import _PRESETS, augment
 from app.novelai.catalog import get_catalog
 
+V5, V5C = "nai-diffusion-5-full", "nai-diffusion-5-curated"
 V45, V45C = "nai-diffusion-4-5-full", "nai-diffusion-4-5-curated"
 Q = "very aesthetic, masterpiece, no text"
 
@@ -59,3 +60,21 @@ def test_unoffered_preset_is_clamped_and_unknown_model_sent_as_typed():
     assert clamped.negative == "bad" and clamped.uc_hint == 0
     unknown = augment("nai-diffusion-9", "1girl", "bad", quality=True, uc_preset=4)
     assert unknown == ("1girl", "bad", 0, 0)
+
+
+def test_v5_presets():
+    # v5 shares the standard quality tags; Full adds nsfw to a preset UC, Curated never does.
+    assert augment(V5, "1girl", "", quality=True, uc_preset=3).positive == f"1girl, {Q}"
+    assert augment(V5, "1girl", "", quality=False, uc_preset=4).negative == "nsfw, " + _PRESETS[V5].uc[4]
+    assert augment(V5C, "1girl", "", quality=False, uc_preset=4).negative == _PRESETS[V5C].uc[4]
+
+
+def test_v5_light_differs_from_v45_light():
+    assert "0::ai-generated::" in augment(V5, "x", "", quality=False, uc_preset=5).negative
+    assert "ai-generated" not in augment(V45, "x", "", quality=False, uc_preset=5).negative
+
+
+def test_v5_curated_offers_furry_focus():
+    # Unlike v4.5 Curated, v5 Curated keeps Furry Focus.
+    furry = augment(V5C, "x", "", quality=False, uc_preset=7)
+    assert "grandfathered content" in furry.negative and furry.uc_hint == 5

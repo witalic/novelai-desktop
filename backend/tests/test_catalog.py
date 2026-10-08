@@ -9,14 +9,13 @@ from app.vault.presets import _BUILTINS
 
 def test_every_model_has_a_tokenizer_matching_its_family():
     for m in get_catalog().models:
-        assert m.tokenizer in {"t5", "clip"}
-        assert m.tokenizer == ("t5" if m.family == "v4" else "clip")
+        assert m.tokenizer == {"v3": "clip", "v4": "t5", "v5": "qwen"}[m.family]
         assert m.token_limit > 0 and m.negative_token_limit > 0
 
 
 def test_v3_is_not_offered_yet():
-    # build_body only emits the v4 shape, so v3 stays out of the catalog until its branch lands.
-    assert all(m.family == "v4" for m in get_catalog().models)
+    # build_body only emits the v4 shape (which v5 shares), so v3 stays out until its branch lands.
+    assert all(m.family != "v3" for m in get_catalog().models)
 
 
 def test_model_samplers_reference_known_ids_and_exclude_smea():
@@ -55,7 +54,7 @@ async def client():
 
 async def test_catalog_endpoint_is_offline_and_complete(client):
     body = (await client.get("/api/catalog")).json()
-    assert body["default_model"] == "nai-diffusion-4-5-full"
-    assert len(body["models"]) >= 2
+    assert body["default_model"] == "nai-diffusion-5-full"
+    assert {"nai-diffusion-5-full", "nai-diffusion-5-curated"} <= {m["id"] for m in body["models"]}
     assert body["dim_limits"]["step"] == 64
     assert any(m["tokenizer"] == "t5" for m in body["models"])
