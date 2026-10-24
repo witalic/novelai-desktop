@@ -9,21 +9,23 @@ import type {
   PersistedSnapshot, PersistedStackItem, SnapshotData, Viewport, WorkDoc,
 } from '../types'
 import { cloneCombos } from './combos'
+import { DEFAULT_LAYOUT, GAP } from '../canvas/widgetGrid'
 
 export const STATION = 'station'
 export const LIBRARY = 'library'
 export const GALLERY = 'gallery'
 export const COMBOS = 'combos'
 
-// The Combinations widget's zone: by default right under the Library zone, same width. Works saved
-// before it existed get one placed there on load (see workToCanvas).
+// The Combinations widget's zone for a work saved before it existed (see workToCanvas): right under its
+// Library zone, one module gap below, same width, the default height.
 export function combosZoneNode(library?: { position?: { x: number; y: number }; style?: unknown }): CanvasNode {
-  const pos = library?.position ?? { x: 40, y: 40 }
+  const pos = library?.position ?? { x: DEFAULT_LAYOUT.library.x, y: DEFAULT_LAYOUT.library.y }
   const style = (library?.style ?? {}) as NodeStyle
-  const libH = Number.parseFloat(style.height || '') || 680
+  const libH = Number.parseFloat(style.height || '') || DEFAULT_LAYOUT.library.h
   return {
-    id: COMBOS, type: 'zone', position: { x: pos.x, y: pos.y + libH + 40 },
-    data: { role: 'combos' }, zIndex: 0, style: { width: style.width || '440px', height: '560px' },
+    id: COMBOS, type: 'zone', position: { x: pos.x, y: pos.y + libH + GAP },
+    data: { role: 'combos' }, zIndex: 0,
+    style: { width: style.width || `${DEFAULT_LAYOUT.combos.w}px`, height: `${DEFAULT_LAYOUT.combos.h}px` },
   } as CanvasNode
 }
 

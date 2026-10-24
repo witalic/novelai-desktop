@@ -2,7 +2,7 @@
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow, useVueFlow, type Node as FlowNode } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { Controls } from '@vue-flow/controls'
+import { ControlButton, Controls } from '@vue-flow/controls'
 import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
@@ -19,7 +19,10 @@ import { useImagePreview } from '../composables/useImagePreview'
 import { useImageDownload } from '../composables/useImageDownload'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
-import { workToCanvas, combosZoneNode, COMBOS, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import { workToCanvas, COMBOS, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import {
+  DEFAULT_LAYOUT, MIN_SIZE, boundsOf, fitRect, snapMove, snapResize, type Rect, type Snap, type WidgetKey,
+} from '../canvas/widgetGrid'
 import {
   blockIdentity, cloneCombos, comboBlocksFromComponents, comboBlocksFromComposition, compDataFromComboBlock, duplicateCombo,
   libraryDrift, lostOnReplace, matchesComposition, newCombo, planAdd, withLatestLibrary, type CompBlockData,
@@ -60,7 +63,7 @@ const emit = defineEmits<{
 }>()
 
 const {
-  nodes, addNodes, removeNodes, findNode, onNodeDragStop, getIntersectingNodes, viewport,
+  nodes, addNodes, removeNodes, findNode, onNodeDrag, onNodeDragStop, getIntersectingNodes, viewport,
   screenToFlowCoordinate, setNodes, setViewport, onNodeContextMenu, onSelectionContextMenu, onPaneContextMenu,
 } = useVueFlow()
 
@@ -681,20 +684,70 @@ function onCompDrop(e: DragEvent) {
 }
 function onCompDragEnd() { compDragId.value = null; compDropBefore.value = undefined }
 
-// The anchor zones only — the skeleton every work starts from.
-// Default sizes are generous (the reworked widgets pack a rail + list) and the three top-row anchors are
-// laid out with clear gaps (Combinations sits under Library) so a fresh work never opens with them
-// cramped/overlapping. FRESH_VIEWPORT frames the top row.
-const FRESH_VIEWPORT = { x: 28, y: 24, zoom: 0.7 }
+// ---- widgets on their 40px module grid (canvas/widgetGrid, design/widget-grid.html) ----
+// The four widgets — Prompt blocks, Combinations, Gallery zones and the station — vs everything loose.
+const WIDGET_KEY: Record<string, WidgetKey> = { [LIBRARY]: 'library', [COMBOS]: 'combos', [STATION]: 'station', [GALLERY]: 'gallery' }
+const layoutStyle = (r: Rect) => ({ width: `${r.w}px`, height: `${r.h}px` })
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const rectOf = (n: any): Rect => { const { w, h } = dims(n); return { x: n.position.x, y: n.position.y, w, h } }
+const widgetNodes = () => nodes.value.filter((n) => n.id in WIDGET_KEY)
+
+// The anchor zones only — the skeleton every work starts from, in the default layout.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function zoneNodes(): any[] {
-  const library = { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '440px', height: '680px' } }
+  const L = DEFAULT_LAYOUT
+  const at = (r: Rect) => ({ position: { x: r.x, y: r.y }, style: layoutStyle(r), zIndex: 0 })
   return [
-    library,
-    { id: STATION, type: 'station', position: { x: 520, y: 40 }, data: { ratio: 0.3, axis: 'h', genFirst: true }, zIndex: 0, style: { width: '1080px', height: '680px' } },
-    { id: GALLERY, type: 'zone', position: { x: 1640, y: 40 }, data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }] }, zIndex: 0, style: { width: '760px', height: '680px' } },
-    combosZoneNode(library), // the Combinations widget, under the Library zone
+    { id: LIBRARY, type: 'zone', data: { role: 'library' }, ...at(L.library) },
+    { id: STATION, type: 'station', data: { ratio: 0.3, axis: 'h', genFirst: true }, ...at(L.station) },
+    { id: GALLERY, type: 'zone', data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }] }, ...at(L.gallery) },
+    { id: COMBOS, type: 'zone', data: { role: 'combos' }, ...at(L.combos) },
   ]
+}
+// Frame the widgets in whatever window the canvas has (not a fixed zoom).
+function fitWidgets() {
+  const el = flowRef.value
+  const rects = widgetNodes().map(rectOf)
+  if (el && rects.length) setViewport(fitRect(boundsOf(rects), { w: el.clientWidth, h: el.clientHeight }))
+}
+// ▦ Arrange widgets: back to the default positions and sizes; content and loose nodes stay as they are.
+function arrangeWidgets() {
+  for (const n of widgetNodes()) {
+    const r = DEFAULT_LAYOUT[WIDGET_KEY[n.id]]
+    n.position = { x: r.x, y: r.y }
+    n.style = { ...(n.style as object), ...layoutStyle(r) }
+  }
+  nextTick(fitWidgets)
+}
+
+// Dragging or resizing a widget: a dashed outline + guides show where it will land (snapped to the module
+// grid and pulled to neighbours); letting go settles it there. Loose images/blocks move freely.
+const widgetSnap = ref<Snap | null>(null)
+const SNAP_PX = 14 // pull distance in screen px — converted by the zoom
+const snapTol = () => SNAP_PX / (viewport.value.zoom || 1)
+const othersOf = (id: string) => widgetNodes().filter((n) => n.id !== id).map(rectOf)
+onNodeDrag(({ node, nodes: dragged }) => {
+  widgetSnap.value = node.id in WIDGET_KEY && (!dragged || dragged.length <= 1)
+    ? snapMove(rectOf(node), othersOf(node.id), snapTol()) : null
+})
+let resizeStart: Rect | null = null // the widget's box when the resize began — which edges move is judged against it
+function onWidgetResizeStart(p: { x: number; y: number; width: number; height: number }) {
+  resizeStart = { x: p.x, y: p.y, w: p.width, h: p.height }
+}
+function onWidgetResize(id: string, p: { x: number; y: number; width: number; height: number }) {
+  if (!resizeStart) return
+  widgetSnap.value = snapResize({ x: p.x, y: p.y, w: p.width, h: p.height }, resizeStart, othersOf(id), snapTol(), MIN_SIZE[WIDGET_KEY[id]])
+}
+function onWidgetResizeEnd(id: string) {
+  const snap = widgetSnap.value
+  widgetSnap.value = null
+  resizeStart = null
+  const n = findNode(id)
+  if (!n || !snap) return
+  nextTick(() => { // after the resizer's own last update
+    n.position = { x: snap.rect.x, y: snap.rect.y }
+    n.style = { ...(n.style as object), ...layoutStyle(snap.rect) }
+  })
 }
 
 // Start a fresh work: persist the current one, then reset in a SINGLE setNodes to the anchor zones.
@@ -714,7 +767,7 @@ async function newWork() {
   combos.value = []
   setNodes(zoneNodes())
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries
-  setViewport(FRESH_VIEWPORT)
+  nextTick(fitWidgets)
   resetBaseline('idle')
   emit('new-work') // GenerateView re-seeds params from the default preset
 }
@@ -722,13 +775,20 @@ async function newWork() {
 onMounted(async () => {
   await checkVault()
   if (props.openWork) loadDoc(props.openWork)
-  else { addNodes(zoneNodes()); setViewport(FRESH_VIEWPORT) } // fresh start → spaced anchor zones, framed
+  else { addNodes(zoneNodes()); nextTick(fitWidgets) } // fresh start → the default layout, fitted to the window
 
 })
 watch(() => props.openWork, (w) => { if (w) loadDoc(w) })
 
 // Settle EVERY dragged node (multi-select moves a whole set) — not just the grabbed one.
 onNodeDragStop(({ nodes: dragged, node, event }) => {
+  const snap = widgetSnap.value
+  widgetSnap.value = null
+  if (snap && node.id in WIDGET_KEY) { // a widget settles where its outline showed
+    const live = findNode(node.id)
+    if (live) live.position = { x: snap.rect.x, y: snap.rect.y }
+    return
+  }
   const set = dragged && dragged.length ? dragged : [node]
   // Drop-pointer screen coords let a single image land in the exact grid it was dropped over (item 2).
   const ev = event as MouseEvent | undefined
@@ -1374,10 +1434,13 @@ function startName(data: any, e: MouseEvent) {
                :multi-selection-key-code="['Control', 'Meta']" :selection-key-code="'Shift'" :elevate-nodes-on-select="false"
                :zoom-on-double-click="false" style="height:100%;width:100%">
         <Background pattern-color="var(--border-strong)" :gap="18" :size="1.2" />
-        <Controls position="bottom-left" :show-interactive="false" />
+        <Controls position="bottom-left" :show-interactive="false">
+          <ControlButton title="Arrange widgets — back to the default layout" @click="arrangeWidgets">▦</ControlButton>
+        </Controls>
 
         <template #node-station="{ data, selected }">
-          <NodeResizer :min-width="560" :min-height="320" :is-visible="selected" color="var(--accent)" />
+          <NodeResizer :min-width="MIN_SIZE.station.w" :min-height="MIN_SIZE.station.h" :is-visible="selected" color="var(--accent)"
+            @resize-start="(e) => onWidgetResizeStart(e.params)" @resize="(e) => onWidgetResize(STATION, e.params)" @resize-end="onWidgetResizeEnd(STATION)" />
           <div class="station">
             <div class="sthd">
               <span class="sttitle">Generation</span>
@@ -1524,21 +1587,24 @@ function startName(data: any, e: MouseEvent) {
 
         <template #node-zone="{ id, data, selected }">
           <template v-if="data.role === 'library'">
-            <NodeResizer :min-width="340" :min-height="280" :is-visible="selected" color="var(--accent)" />
+            <NodeResizer :min-width="MIN_SIZE.library.w" :min-height="MIN_SIZE.library.h" :is-visible="selected" color="var(--accent)"
+              @resize-start="(e) => onWidgetResizeStart(e.params)" @resize="(e) => onWidgetResize(id, e.params)" @resize-end="onWidgetResizeEnd(id)" />
             <PromptWidget :data="data" :selected="selected" :favorites="favorites" :revalidate="widgetRevalidate" :used-keys="usedBlockKeys"
               @open-library="emit('open-library', $event)"
               @open-settings="emit('navigate', 'settings')"
               @use="useLibraryBlock" @new-block="newCompBlock" @toggle-favorite="toggleFavorite" />
           </template>
           <template v-else-if="data.role === 'combos'">
-            <NodeResizer :min-width="320" :min-height="240" :is-visible="selected" color="var(--accent)" />
+            <NodeResizer :min-width="MIN_SIZE.combos.w" :min-height="MIN_SIZE.combos.h" :is-visible="selected" color="var(--accent)"
+              @resize-start="(e) => onWidgetResizeStart(e.params)" @resize="(e) => onWidgetResize(id, e.params)" @resize-end="onWidgetResizeEnd(id)" />
             <CombosWidget :combos="combos" :selected="selected" :comp-count="compBlocks.length" :drift="comboDrift"
               :linked-id="linkedComboId" :cat-color="catColor" :cat-name="catName"
               @save-current="openSaveCurrent" @apply="applyCombo" @rename="renameCombo" @update="updateCombo"
               @duplicate="duplicateComboById" @use-latest="useLatestVersions" @delete="deleteCombo" />
           </template>
           <template v-else>
-            <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
+            <NodeResizer :min-width="MIN_SIZE.gallery.w" :min-height="MIN_SIZE.gallery.h" :is-visible="selected" color="var(--accent)"
+              @resize-start="(e) => onWidgetResizeStart(e.params)" @resize="(e) => onWidgetResize(id, e.params)" @resize-end="onWidgetResizeEnd(id)" />
             <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="viewGallery" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" @image-menu="onGalleryImageMenu" />
           </template>
         </template>
@@ -1561,6 +1627,20 @@ function startName(data: any, e: MouseEvent) {
           </div>
         </template>
       </VueFlow>
+
+      <!-- Where a dragged/resized widget will land (module grid + neighbour magnets), drawn in flow coords. -->
+      <div v-if="widgetSnap" class="wsnap"
+        :style="{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`, '--px': `${1 / viewport.zoom}px` }">
+        <div class="wsnap-ghost" :style="{ left: `${widgetSnap.rect.x}px`, top: `${widgetSnap.rect.y}px`,
+          width: `${widgetSnap.rect.w}px`, height: `${widgetSnap.rect.h}px` }"></div>
+        <template v-for="(g, i) in widgetSnap.guides" :key="i">
+          <div class="wsnap-guide" :class="g.axis" :style="g.axis === 'x'
+            ? { left: `${g.at}px`, top: `${g.from}px`, height: `${g.to - g.from}px` }
+            : { top: `${g.at}px`, left: `${g.from}px`, width: `${g.to - g.from}px` }"></div>
+          <span v-if="g.gap" class="wsnap-gap" :style="g.axis === 'x'
+            ? { left: `${g.at}px`, top: `${(g.from + g.to) / 2}px` } : { left: `${(g.from + g.to) / 2}px`, top: `${g.at}px` }">40</span>
+        </template>
+      </div>
 
       <!-- Scale picker under an all-images selection: click a reference scale to resize the whole set. -->
       <div v-if="scalePicker" class="scalepick" :style="{ left: scalePicker.x + 'px', top: scalePicker.y + 'px' }">
@@ -1635,6 +1715,17 @@ function startName(data: any, e: MouseEvent) {
 .flowwrap :deep(.vue-flow__controls-button svg){fill:var(--text-dim)}
 .flowwrap :deep(.vue-flow__controls-button:hover){background:var(--surface-3)}
 .flowwrap :deep(.vue-flow__controls-button:hover svg){fill:var(--text)}
+.flowwrap :deep(.vue-flow__controls-button){color:var(--text-dim);font-size:13px;line-height:1} /* the text-glyph ▦ button */
+.flowwrap :deep(.vue-flow__controls-button:hover){color:var(--text)}
+/* the widget snap preview — flow coordinates via the viewport transform; lines stay 1 screen px (--px) */
+.wsnap{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none;z-index:15}
+.wsnap-ghost{position:absolute;border:calc(var(--px) * 2) dashed var(--accent);border-radius:12px;
+  background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.wsnap-guide{position:absolute;background:var(--accent)}
+.wsnap-guide.x{width:var(--px)}
+.wsnap-guide.y{height:var(--px)}
+.wsnap-gap{position:absolute;transform:translate(-50%,-50%);font-size:calc(var(--px) * 10);font-weight:700;
+  color:var(--accent);background:var(--bg);padding:0 calc(var(--px) * 3);border-radius:calc(var(--px) * 3)}
 .flowwrap :deep(.vue-flow__node.selected){box-shadow:0 0 0 2px var(--accent)}
 .flowwrap :deep(.vue-flow__selection){background:color-mix(in srgb,var(--accent) 14%,transparent);border:1px solid var(--accent);border-radius:4px}
 .flowwrap :deep(.vue-flow__nodesselection-rect){background:color-mix(in srgb,var(--accent) 10%,transparent);border:1px solid var(--accent);border-radius:4px}
