@@ -14,7 +14,7 @@ from app.vault.models import WorkDoc
 
 log = logging.getLogger(__name__)
 
-CURRENT = 6
+CURRENT = 7
 
 
 def _migrate_1_to_2(raw: dict) -> dict:
@@ -133,8 +133,16 @@ def _migrate_5_to_6(raw: dict) -> dict:
     return raw
 
 
+def _migrate_6_to_7(raw: dict) -> dict:
+    """v7: a work keeps saved block combinations (``combos``) — named composition block sets for
+    restoring the station. Older works simply have none."""
+    raw.setdefault("combos", [])
+    return raw
+
+
 _MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_1_to_2, 2: _migrate_2_to_3, 3: _migrate_3_to_4, 4: _migrate_4_to_5, 5: _migrate_5_to_6,
+    6: _migrate_6_to_7,
 }
 
 
@@ -166,10 +174,16 @@ def _sanitize(raw: dict) -> dict:
         return {}
     if not isinstance(raw.get("canvas"), dict):
         raw["canvas"] = {}
-    for key in ("snapshots", "images", "stack", "favorites"):
+    for key in ("snapshots", "images", "stack", "favorites", "combos"):
         v = raw.get(key)
         if not isinstance(v, list):
             raw[key] = []
-    for key in ("snapshots", "images", "stack"):
+    for key in ("snapshots", "images", "stack", "combos"):
         raw[key] = [e for e in raw[key] if isinstance(e, dict) and e.get("id")]
+    # Combinations are the one collection written from outside the canvas too — tolerate their inner shape.
+    for combo in raw["combos"]:
+        blocks = combo.get("blocks")
+        combo["blocks"] = [b for b in blocks if isinstance(b, dict)] if isinstance(blocks, list) else []
+        if combo.get("origin") not in ("user", "agent"):
+            combo["origin"] = "user"
     return raw

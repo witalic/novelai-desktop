@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { canvasToWork, workToCanvas, workToDrafts, GALLERY, STATION } from './serialize'
+import { canvasToWork, workToCanvas, workToDrafts, COMBOS, GALLERY, LIBRARY, STATION } from './serialize'
+import type { PersistedCombo } from '../types'
 
 /* serialize.ts is framework-free by design — these pin the canvas <-> WorkDoc contract:
  * geometry/parent/snapshot survive the round-trip, aspect ratio is recovered, snapshots dedup by
@@ -29,7 +30,7 @@ const viewport = { x: 40, y: 40, zoom: 0.7 }
 describe('canvasToWork', () => {
   it('splits a vault-path image into a file ref (no base64) and keeps its recipe', () => {
     const doc = canvasToWork([...anchors(), galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'Test' })
-    expect(doc.schema_version).toBe(6)
+    expect(doc.schema_version).toBe(7)
     expect(doc.id).toBe('w1')
     expect(doc.title).toBe('Test')
     expect(doc.images).toHaveLength(1)
@@ -236,5 +237,46 @@ describe('structured gallery blocks', () => {
     const doc2 = canvasToWork(workToCanvas(doc).nodes, viewport, params, { id: 'w1', title: 'T' })
     const doc3 = canvasToWork(workToCanvas(doc2).nodes, viewport, params, { id: 'w1', title: 'T' })
     expect(doc3).toEqual(doc2)
+  })
+})
+
+describe('combinations', () => {
+  const combo: PersistedCombo = {
+    id: 'combo-1', name: 'Raiden — vampire', origin: 'user', created_at: '2026-10-24T10:00:00+00:00',
+    blocks: [
+      { source: 'library' as const, block_id: 'b1', version: 2, name: 'Nixeu', text: 'artist:nixeu', polarity: 'positive' as const, category: 'style', tags: ['nixeu'] },
+      { source: 'custom' as const, name: 'Sig', text: 'signature', polarity: 'negative' as const, category: 'negative', tags: [], frozen: true },
+    ],
+  }
+  const library = { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, style: { width: '440px', height: '680px' }, data: { role: 'library' } }
+
+  it('persists the work combos and the station link, and round-trips both', () => {
+    const nodes = [...anchors().map((n) => (n.id === STATION ? { ...n, data: { ...n.data, comboId: 'combo-1' } } : n)), galleryImage('img-1', 42)]
+    const doc = canvasToWork(nodes, viewport, params, { id: 'w1', title: 'T' }, [], [], [combo])
+    expect(doc.combos).toEqual([combo])
+    expect((doc.canvas.nodes.find((n) => n.id === STATION)!.data as any).comboId).toBe('combo-1')
+    const { nodes: back, viewport: vp } = workToCanvas(doc)
+    expect(canvasToWork(back, vp, params, { id: 'w1', title: 'T' }, [], [], doc.combos)).toEqual(doc)
+  })
+
+  it('copies combos on save so later edits to the live list never mutate the saved document', () => {
+    const live = [structuredClone(combo)]
+    const doc = canvasToWork(anchors(), viewport, params, { id: 'w1', title: 'T' }, [], [], live)
+    live[0].blocks[0].tags.push('mutated')
+    expect(doc.combos[0].blocks[0].tags).toEqual(['nixeu'])
+  })
+
+  it('gives a work saved before the widget existed its zone under the Library zone, once', () => {
+    const doc = canvasToWork([...anchors(), library], viewport, params, { id: 'w1', title: 'T' })
+    expect(doc.canvas.nodes.some((n) => n.id === COMBOS)).toBe(false)
+    const healed = workToCanvas(doc).nodes.find((n) => n.id === COMBOS)!
+    expect(healed).toMatchObject({ type: 'zone', position: { x: 40, y: 760 }, data: { role: 'combos' }, style: { width: '440px' } })
+    const doc2 = canvasToWork(workToCanvas(doc).nodes, viewport, params, { id: 'w1', title: 'T' })
+    expect(workToCanvas(doc2).nodes.filter((n) => n.id === COMBOS)).toHaveLength(1) // persisted now — not re-added
+  })
+
+  it('does not invent a combinations zone for a document without a canvas', () => {
+    const doc = canvasToWork([], viewport, params, { id: 'w1', title: 'T' })
+    expect(workToCanvas(doc).nodes).toEqual([])
   })
 })

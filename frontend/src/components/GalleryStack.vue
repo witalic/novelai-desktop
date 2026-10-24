@@ -19,7 +19,16 @@ const props = defineProps<{
   selected?: boolean // host selection → accent border (matches the other canvas widgets)
   readonly?: boolean // View mode: hide add/edit/delete/drag affordances (Phase 2 Works view)
   embedded?: boolean // full-page host (Works): drop the node chrome (border/radius) + the duplicated title
+  // Right-click a thumbnail → the host opens the image's actions. A prop, not an emit, so a host without a
+  // menu (the Works editor) leaves right-click alone instead of swallowing it.
+  onImageMenu?: (p: { event: MouseEvent; id: string }) => void
 }>()
+function imageMenu(event: MouseEvent, id: string) {
+  if (props.readonly || !props.onImageMenu) return
+  event.preventDefault()
+  event.stopPropagation()
+  props.onImageMenu({ event, id })
+}
 const emit = defineEmits<{
   favorite: [string]; preview: [string]
   toQuick: [string] // move an image out of its grid into Quick access (unassign)
@@ -487,6 +496,7 @@ function onOutDrop(targetId: string) {
                   :style="{ '--ar': im.data.ar || (3 / 4) }" :draggable="!readonly"
                   @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
                   @dragover.prevent.stop="onThumbOver(im.id, $event)" @drop.prevent.stop="onThumbDrop(b, im.id, $event)"
+                  @contextmenu="imageMenu($event, im.id)"
                   @pointerdown.stop @click.stop="gridHidden(b) && i === b.cols - 1 ? (b.collapsed = false) : emit('preview', im.data.url || '')">
                   <img class="im" :src="thumbSrc(im.data.url, gridTilePx(b.cols))" alt="gallery image" loading="lazy" draggable="false" />
                   <div class="thbar nodrag">
@@ -566,6 +576,7 @@ function onOutDrop(targetId: string) {
       <div v-if="unassigned.length" class="qpgrid">
         <div v-for="im in unassigned" :key="im.id" class="gthumb qthumb nodrag" :class="{ fav: im.data.favorite }"
           :style="{ '--ar': im.data.ar || (3 / 4) }" :draggable="!readonly" @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
+          @contextmenu="imageMenu($event, im.id)"
           @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
           <img class="im" :src="thumbSrc(im.data.url, QUICK_TILE_PX)" alt="gallery image" loading="lazy" draggable="false" />
           <div class="thbar nodrag">

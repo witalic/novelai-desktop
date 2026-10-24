@@ -23,7 +23,7 @@ function doc(): WorkDoc {
       { id: 'b', snapshot_id: null, role: 'gallery', ar: null, file: 'b.png', created_at: '', group: null, favorite: false, tags: [], description: '' },
       { id: 'c', snapshot_id: null, role: 'gallery', ar: null, file: 'c.png', created_at: '', group: null, favorite: false, tags: [], description: '' },
     ],
-    stack: [], favorites: [], preview_image_id: 'a',
+    stack: [], favorites: [], combos: [], preview_image_id: 'a',
   }
 }
 

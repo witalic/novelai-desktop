@@ -7,7 +7,7 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { getVaultConfig, listCategories } from '../api'
+import { getVaultConfig, listCategories, resolveBlocks } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
@@ -19,15 +19,23 @@ import { useImagePreview } from '../composables/useImagePreview'
 import { useImageDownload } from '../composables/useImageDownload'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
-import { workToCanvas, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import { workToCanvas, combosZoneNode, COMBOS, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import {
+  blockIdentity, cloneCombos, comboBlocksFromComponents, comboBlocksFromComposition, compDataFromComboBlock, duplicateCombo,
+  libraryDrift, lostOnReplace, matchesComposition, newCombo, planAdd, withLatestLibrary, type CompBlockData,
+} from '../vault/combos'
 import { dedupePrompt } from '../canvas/dedup'
 import PromptWidget from './PromptWidget.vue'
 import GalleryStack from './GalleryStack.vue'
+import CombosWidget from './CombosWidget.vue'
+import ComboDialog from './ComboDialog.vue'
 import { removeIdFromGrids } from '../vault/workOps'
 import BlockEditorModal from './BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
-import type { GenResult, LibraryBlock, PanelParams, PersistedComponent, SnapshotData, WorkDoc } from '../types'
+import type {
+  GenResult, LibraryBlock, PanelParams, PersistedCombo, PersistedComboBlock, PersistedComponent, SnapshotData, WorkDoc,
+} from '../types'
 
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -54,9 +62,9 @@ const {
 
 // The "station" is one node: header + two zones (Generation output | Composition block list) + a meta
 // footer. The Generation↔Composition ratio, split axis, and lead order live in the station node data.
-// STATION/LIBRARY/GALLERY zone ids come from serialize (single source of truth). Content inside them is
-// saved; anything loose on the canvas is a draft.
-const ANCHORS = new Set([STATION, LIBRARY, GALLERY])
+// STATION/LIBRARY/GALLERY/COMBOS zone ids come from serialize (single source of truth). Content inside them
+// is saved; anything loose on the canvas is a draft.
+const ANCHORS = new Set([STATION, LIBRARY, GALLERY, COMBOS])
 
 // Offline fallback colors (vault categories override once loaded); mirror catalog.py DEFAULTS.
 const CATS: Record<string, string> = {
@@ -141,12 +149,15 @@ const { shownSrc, scaleOf, imgScale, fullStyle, imgSrc, seedSrc, swapSrc, applyS
 // by the widget's ★, and fed to autosave so a star change marks the work dirty. Defined before
 // useAutosave so its closure captures an initialised ref.
 const favorites = ref<string[]>([])
+// The work's saved block combinations (WorkDoc.combos) — owned here, rendered by the Combinations widget.
+const combos = ref<PersistedCombo[]>([])
 
 // Vault autosave (dirty flag, flush, save state). Owns the state + logic; the lifecycle (window listeners,
 // the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
 const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
   onBeforeUnload, refreshInterval, stopAutosave, resetBaseline } = useAutosave({
   nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
+  combos: () => combos.value,
   onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
 })
 // A concurrent edit (409) → the view re-fetches the FULL work (params + draft stack + canvas doc), not
@@ -191,6 +202,10 @@ function onDraftDragStart(e: DragEvent) {
 function onCanvasDrop(e: DragEvent) {
   e.preventDefault()
   const payload = e.dataTransfer?.getData('text/plain') || ''
+  if (payload.startsWith('nai-combo:')) { // a Combinations card dropped onto the station → Add (anywhere else: ignored)
+    if (overStationAt(toFlow(e.clientX, e.clientY))) applyCombo({ id: payload.slice('nai-combo:'.length), mode: 'add' })
+    return
+  }
   if (payload.startsWith('nai-libblock:')) { // a widget row dragged out → copy of the vault block
     try {
       const b = JSON.parse(payload.slice('nai-libblock:'.length)) as LibraryBlock
@@ -556,6 +571,7 @@ async function clearComposition() {
     message: `Remove all ${ids.length} block${ids.length > 1 ? 's' : ''} from the generation area?`,
   }))) return
   removeNodes(ids)
+  setComboLink(undefined) // an empty station holds no combination
 }
 
 // Auto-size an expanded prompt textarea to fit its content (grows on open + while typing).
@@ -566,7 +582,7 @@ const vAutosize = { mounted: (el: HTMLTextAreaElement) => autosize(el) }
 // press from reaching Vue Flow, but only when it started on an interactive element (rows/buttons/inputs).
 function stopIfInteractive(e: Event) {
   const t = e.target as HTMLElement | null
-  if (t && t !== e.currentTarget && t.closest('button, input, textarea, .crow, .cnav, .clearall')) e.stopPropagation()
+  if (t && t !== e.currentTarget && t.closest('button, input, textarea, .crow, .cnav, .clearall, .railsave')) e.stopPropagation()
 }
 
 // Drag-reorder within the list: renumber position.y as 0,10,20… after moving nodeId before beforeId.
@@ -609,17 +625,19 @@ function onCompDrop(e: DragEvent) {
 }
 function onCompDragEnd() { compDragId.value = null; compDropBefore.value = undefined }
 
-// The three anchor zones only — the skeleton every work starts from.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-// Default sizes are generous (the reworked widgets pack a rail + list) and the three anchors are laid
-// out with clear gaps so a fresh work never opens with them cramped/overlapping. FRESH_VIEWPORT frames
-// the whole spread.
+// The anchor zones only — the skeleton every work starts from.
+// Default sizes are generous (the reworked widgets pack a rail + list) and the three top-row anchors are
+// laid out with clear gaps (Combinations sits under Library) so a fresh work never opens with them
+// cramped/overlapping. FRESH_VIEWPORT frames the top row.
 const FRESH_VIEWPORT = { x: 28, y: 24, zoom: 0.7 }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function zoneNodes(): any[] {
+  const library = { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '440px', height: '680px' } }
   return [
-    { id: LIBRARY, type: 'zone', position: { x: 40, y: 40 }, data: { role: 'library' }, zIndex: 0, style: { width: '440px', height: '680px' } },
+    library,
     { id: STATION, type: 'station', position: { x: 520, y: 40 }, data: { ratio: 0.3, axis: 'h', genFirst: true }, zIndex: 0, style: { width: '1080px', height: '680px' } },
     { id: GALLERY, type: 'zone', position: { x: 1640, y: 40 }, data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }] }, zIndex: 0, style: { width: '760px', height: '680px' } },
+    combosZoneNode(library), // the Combinations widget, under the Library zone
   ]
 }
 
@@ -637,6 +655,7 @@ async function newWork() {
   workId.value = newId('work')
   baseUpdatedAt.value = '' // a fresh work has no stored copy → no optimistic-lock base
   title.value = ''
+  combos.value = []
   setNodes(zoneNodes())
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries
   setViewport(FRESH_VIEWPORT)
@@ -731,30 +750,32 @@ function toggleFavorite(blockId: string) {
 // A block already contributes to the prompt if the composition holds one with the same polarity +
 // text (its identity for generation). Copying an identical one adds nothing, so we warn instead of
 // duplicating — regardless of the copy method (＋, ⇢, or drag into the station).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const blockKey = (polarity: any, text: any) => `${polarity === 'negative' ? 'neg' : 'pos'}:${String(text || '').trim().toLowerCase()}`
 function stationHasBlock(polarity: string, text: string): boolean {
-  const key = blockKey(polarity, text)
-  return nodes.value.some((n) => n.type === 'block' && n.parentNode === STATION && blockKey(n.data?.polarity, n.data?.text) === key)
+  const key = blockIdentity({ polarity, text })
+  return nodes.value.some((n) => n.type === 'block' && n.parentNode === STATION && blockIdentity(n.data ?? {}) === key)
 }
 function warnDuplicate() {
   toast.push('That block is already in the generation area — not duplicated', 'err')
 }
 // Identities (polarity + text) currently in the composition — the Library widget greys these out.
-const usedBlockKeys = computed(() => new Set(compBlocks.value.map((n) => blockKey(n.data?.polarity, n.data?.text))))
+const usedBlockKeys = computed(() => new Set(compBlocks.value.map((n) => blockIdentity(n.data ?? {}))))
+
+// Is a flow-space point inside the station node?
+function overStationAt(pos: { x: number; y: number }): boolean {
+  const st = findNode(STATION)
+  if (!st) return false
+  const stPos = st.computedPosition || st.position
+  const { w, h } = dims(st)
+  return pos.x >= stPos.x && pos.x <= stPos.x + w && pos.y >= stPos.y && pos.y <= stPos.y + h
+}
 
 // Drop from the Library widget (drag-out): an independent copy joins the composition when dropped
 // over the station, else lands loose on the canvas as scratch.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function dropBlockAt(data: any, pos: { x: number; y: number }) {
-  const st = findNode(STATION)
-  if (st) {
-    const stPos = st.computedPosition || st.position
-    const { w: stW, h } = dims(st)
-    if (pos.x >= stPos.x && pos.x <= stPos.x + stW && pos.y >= stPos.y && pos.y <= stPos.y + h) {
-      appendToComp(data)
-      return
-    }
+  if (overStationAt(pos)) {
+    appendToComp(data)
+    return
   }
   const bw = 176, bh = 34
   addNodes([{
@@ -822,6 +843,195 @@ function onDraftSaved(block: LibraryBlock) {
   }
 }
 
+/* ============================ Combinations (saved block sets) ============================ */
+// A combination is an ordered set of composition blocks saved in the work (blocks only — see vault/combos).
+// The station links to the one it was restored from / saved as (`station.data.comboId`, persisted layout);
+// the header names it and shows whether the composition still matches. Add / Clear all drop the link.
+const compData = computed(() => compBlocks.value.map((n) => n.data as CompBlockData)) // station order (position.y)
+const linkedComboId = computed(() => (nodes.value.find((n) => n.id === STATION)?.data?.comboId as string | undefined) || undefined)
+const linkedCombo = computed(() => combos.value.find((c) => c.id === linkedComboId.value) ?? null)
+const comboLinkState = computed(() => (linkedCombo.value
+  ? (matchesComposition(linkedCombo.value, compData.value) ? 'saved' : 'edited')
+  : null))
+function setComboLink(id: string | undefined) {
+  const st = findNode(STATION)
+  if (st) st.data.comboId = id
+}
+const findCombo = (id: string) => combos.value.find((c) => c.id === id)
+const touch = (c: PersistedCombo) => { c.origin = 'user'; c.updated_at = new Date().toISOString() } // a user edit un-badges an agent's set
+
+// A starting name from the blocks: the character, outfit and pose names, else "Combination N" — never one
+// already taken in this work ("… (2)").
+function suggestComboName(blocks: PersistedComboBlock[]): string {
+  const pick = (cat: string) => blocks.find((b) => b.category === cat && !b.frozen)?.name
+  const parts = [pick('character'), pick('outfit'), pick('pose')].filter(Boolean)
+  const taken = new Set(combos.value.map((c) => c.name))
+  if (parts.length) {
+    let name = parts.join(' · ')
+    for (let n = 2; taken.has(name); n++) name = `${parts.join(' · ')} (${n})`
+    return name
+  }
+  let n = combos.value.length + 1
+  while (taken.has(`Combination ${n}`)) n++
+  return `Combination ${n}`
+}
+
+// Station rows for a combination's blocks: replace = all of them in order; add = only the new ones, after.
+function addCompRows(blocks: PersistedComboBlock[], startY: number) {
+  addNodes(blocks.map((b, i) => ({
+    id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2, hidden: true,
+    position: { x: 0, y: startY + i * 10 }, style: { width: '176px' }, data: compDataFromComboBlock(b),
+  })))
+}
+function replaceComposition(blocks: PersistedComboBlock[], linkId: string | undefined) {
+  removeNodes(compBlocks.value.map((n) => n.id))
+  addCompRows(blocks, 0) // exactly what was saved, so a restored set reads "saved", never "edited"
+  setComboLink(linkId)
+}
+
+// ---- dialogs (save / replace) ----
+type ComboDialogState =
+  | { mode: 'save'; title: string; name: string; blocks: PersistedComboBlock[]; link: boolean }
+  | { mode: 'replace'; title: string; message: string; blocks: PersistedComboBlock[]; linkId?: string }
+const comboDialog = ref<ComboDialogState | null>(null)
+
+function openSaveCurrent() {
+  const blocks = comboBlocksFromComposition(compData.value)
+  if (!blocks.length) { toast.push('Add blocks to the composition first', 'err'); return }
+  comboDialog.value = { mode: 'save', title: 'Save combination', name: suggestComboName(blocks), blocks, link: true }
+}
+function onComboDialogSave(p: { name: string; keepFrozen: boolean }) {
+  const d = comboDialog.value
+  comboDialog.value = null
+  if (!d || d.mode !== 'save') return
+  const dropped = !p.keepFrozen && d.blocks.some((b) => b.frozen)
+  const c = newCombo(p.name, dropped ? d.blocks.filter((b) => !b.frozen) : d.blocks)
+  combos.value.unshift(c) // newest first — visible at the top of the widget
+  if (d.link && !dropped) setComboLink(c.id) // without its frozen rows the set isn't what the station holds
+  toast.push(`Saved combination “${c.name}”`, 'ok')
+}
+// Replace asks only when it would really lose something: station blocks that aren't in the incoming set AND
+// aren't already kept as the (unchanged) linked combination.
+function askReplace(blocks: PersistedComboBlock[], what: string, linkId?: string) {
+  const lost = lostOnReplace(compData.value, blocks)
+  if (!lost || comboLinkState.value === 'saved') { replaceComposition(blocks, linkId); return }
+  comboDialog.value = {
+    mode: 'replace', title: 'Replace the composition?', blocks, linkId,
+    message: `The station has ${lost} block${lost === 1 ? '' : 's'} that ${lost === 1 ? 'is' : 'are'} not in ${what}. ${lost === 1 ? 'It' : 'They'} will be removed.`,
+  }
+}
+function onComboDialogReplace(p: { saveFirst: boolean }) {
+  const d = comboDialog.value
+  comboDialog.value = null
+  if (!d || d.mode !== 'replace') return
+  if (p.saveFirst) {
+    const current = comboBlocksFromComposition(compData.value)
+    const name = linkedCombo.value && comboLinkState.value === 'edited' ? `${linkedCombo.value.name} (edited)` : suggestComboName(current)
+    combos.value.unshift(newCombo(name, current))
+  }
+  replaceComposition(d.blocks, d.linkId)
+}
+
+// ---- widget / station actions ----
+function applyCombo(p: { id: string; mode: 'add' | 'replace' }) {
+  const c = findCombo(p.id)
+  if (!c) return
+  if (p.mode === 'replace') { askReplace(c.blocks, `“${c.name}”`, c.id); return }
+  const { toAdd, skipped } = planAdd(c.blocks, compData.value)
+  if (toAdd.length) {
+    addCompRows(toAdd, nextCompY())
+    setComboLink(undefined) // appended onto other blocks — no longer exactly this (or any) combination
+  }
+  toast.push(toAdd.length
+    ? `Added ${toAdd.length} block${toAdd.length === 1 ? '' : 's'} from “${c.name}”${skipped ? ` · ${skipped} already there` : ''}`
+    : `Every block of “${c.name}” is already in the composition`, toAdd.length ? 'ok' : 'err')
+}
+async function updateCombo(id: string) {
+  const c = findCombo(id)
+  if (!c) return
+  const blocks = comboBlocksFromComposition(compData.value)
+  if (!blocks.length) { toast.push('The composition is empty — nothing to save', 'err'); return }
+  // Overwriting the set the station came from is the expected flow; any other set is a real loss — ask, like Delete.
+  if (id !== linkedComboId.value && !(await confirm({
+    title: 'Update combination', confirmLabel: 'Overwrite',
+    message: `Overwrite “${c.name}” (${c.blocks.length} block${c.blocks.length === 1 ? '' : 's'}) with the station’s ${blocks.length} block${blocks.length === 1 ? '' : 's'}?`,
+  }))) return
+  c.blocks = blocks
+  touch(c)
+  setComboLink(c.id)
+  toast.push(`Updated “${c.name}”`, 'ok')
+}
+function renameCombo(p: { id: string; name: string }) {
+  const c = findCombo(p.id)
+  if (c) { c.name = p.name; touch(c) }
+}
+function duplicateComboById(id: string) {
+  const i = combos.value.findIndex((c) => c.id === id)
+  if (i >= 0) combos.value.splice(i + 1, 0, duplicateCombo(combos.value[i]))
+}
+async function deleteCombo(id: string) {
+  const c = findCombo(id)
+  if (!c || !(await confirm({
+    title: 'Delete combination', danger: true, confirmLabel: 'Delete',
+    message: `Delete “${c.name}”? The blocks in the station stay; only the saved set is removed.`,
+  }))) return
+  combos.value = combos.value.filter((x) => x.id !== id)
+  if (linkedComboId.value === id) setComboLink(undefined)
+}
+async function useLatestVersions(id: string) {
+  const c = findCombo(id)
+  const ids = [...new Set((c?.blocks ?? []).map((b) => b.block_id).filter((x): x is string => !!x))]
+  if (!c || !ids.length) return
+  try {
+    const latest = await resolveBlocks(ids)
+    c.blocks = withLatestLibrary(c.blocks, new Map(latest.map((b) => [b.id, b])))
+    touch(c)
+    toast.push(`“${c.name}” now uses the latest Library versions`, 'ok')
+  } catch (e) {
+    toast.push(e instanceof Error ? e.message : 'Could not read the Library', 'err')
+  }
+}
+
+// Library drift per combination (blocks edited in the Library after the set saved them) — card badges.
+const comboDrift = ref<Record<string, number>>({})
+let driftTimer: ReturnType<typeof setTimeout> | null = null
+function refreshComboDrift() {
+  if (driftTimer) clearTimeout(driftTimer)
+  driftTimer = setTimeout(async () => {
+    const ids = [...new Set(combos.value.flatMap((c) => c.blocks.map((b) => b.block_id)).filter((x): x is string => !!x))]
+    if (!ids.length) { comboDrift.value = {}; return }
+    try {
+      const versions = new Map((await resolveBlocks(ids)).map((b) => [b.id, b.version ?? 1]))
+      comboDrift.value = Object.fromEntries(combos.value.map((c) => [c.id, libraryDrift(c, versions)]))
+    } catch { /* no vault / backend not ready — keep the last known badges */ }
+  }, 300)
+}
+watch(combos, refreshComboDrift, { deep: true })
+watch(widgetRevalidate, refreshComboDrift) // Library edits elsewhere (returning to Generate, opening a work)
+
+// ---- gallery image: its recipe → the station or a new combination ----
+function imageComponents(id: string): PersistedComponent[] {
+  const snap = findNode(id)?.data?.snapshot as SnapshotData | undefined
+  return snap?.components ?? []
+}
+function onGalleryImageMenu(p: { event: MouseEvent; id: string }) {
+  const n = findNode(p.id)
+  if (!n || n.type !== 'image') return
+  const recipe = comboBlocksFromComponents(imageComponents(p.id))
+  const items: MenuItem[] = [
+    { label: 'Preview', icon: '⤢', onClick: () => openPreview(n.data.url) },
+    { label: n.data.favorite ? 'Unfavorite' : 'Favorite', icon: '★', onClick: () => toggleImageFavorite(p.id) },
+  ]
+  if (recipe.length) {
+    items.push({ label: 'Restore recipe to the station', icon: '↺', onClick: () => askReplace(recipe, 'this image’s recipe') })
+    items.push({ label: 'Save recipe as combination…', icon: '◈', onClick: () => {
+      comboDialog.value = { mode: 'save', title: 'Save recipe as combination', name: suggestComboName(recipe), blocks: recipe, link: false }
+    } })
+  }
+  items.push({ label: 'Delete', icon: '🗑', danger: true, onClick: () => onGalleryDeleteImg(p.id) })
+  openMenu(p.event, items)
+}
+
 function doGenerate() {
   const components = compBlocks.value.filter((b) => !b.data.frozen).map((b): PersistedComponent => ({ // frozen blocks are excluded; compBlocks is in list order (position.y)
     source: b.data.block_id ? 'library' : 'custom', block_id: b.data.block_id, version: b.data.version,
@@ -853,8 +1063,8 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// Mark the work dirty on any change to the canvas / params / drafts / title (see useAutosave).
-watch([nodes, () => props.params, () => props.drafts, title], markDirty, { deep: true })
+// Mark the work dirty on any change to the canvas / params / drafts / title / combinations (see useAutosave).
+watch([nodes, () => props.params, () => props.drafts, title, combos], markDirty, { deep: true })
 
 // Re-read whether a vault is configured. Under KeepAlive onMounted runs once, so a vault added in Settings
 // mid-session would otherwise leave `vaultReady` false forever → autosave silently dead (H7).
@@ -896,6 +1106,7 @@ function loadDoc(doc: any) {
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
   favorites.value = [...(doc.favorites || [])] // per-work quick-access set for the widget's ★ filter
+  combos.value = cloneCombos(doc.combos || []) // own copy — the widget edits it in place; the doc prop stays as loaded
   hideStationBlocks() // composition blocks render as the station's list, never free on the canvas
   hideGalleryImages() // gallery images render inside the structured gallery widget, not free on the canvas
   widgetRevalidate.value++ // a freshly opened work re-reads the Library (categories/counts)
@@ -1035,6 +1246,11 @@ function startName(data: any, e: MouseEvent) {
           <div class="station">
             <div class="sthd">
               <span class="sttitle">Generation</span>
+              <span v-if="linkedCombo" class="combochip" :class="comboLinkState"
+                :title="comboLinkState === 'saved' ? 'The composition matches this combination' : 'The blocks changed since this combination was saved or restored'">
+                <span>◈</span><span class="nm">{{ linkedCombo.name }}</span>
+                <span class="st">{{ comboLinkState === 'saved' ? '✓ saved' : '● edited' }}</span>
+              </span>
               <span v-if="busy" class="chip busy"><span class="spinner"></span> Generating…</span>
               <div class="spacer"></div>
               <span v-if="subscription" class="stbal nodrag" :title="`${subscription.tier_name} subscription — remaining Anlas`">
@@ -1113,6 +1329,12 @@ function startName(data: any, e: MouseEvent) {
                       <span class="cdot2" :style="{ background: c.color }"></span><span class="cn">{{ c.name }}</span><span class="cc">{{ c.count }}</span>
                     </button>
                   </div>
+                  <template v-if="compBlocks.length">
+                    <button v-if="comboLinkState === 'edited'" class="railsave on" :title="`Overwrite “${linkedCombo?.name}” with the current blocks`"
+                      @click.stop="updateCombo(linkedComboId!)" @pointerdown.stop>↻ Update combination</button>
+                    <button class="railsave" :class="{ on: !linkedCombo }" title="Save the current blocks as a new combination"
+                      @click.stop="openSaveCurrent" @pointerdown.stop>◈ {{ linkedCombo ? 'Save as new…' : 'Save as combination' }}</button>
+                  </template>
                   <button v-if="compBlocks.length" class="clearall" title="Remove every block from the composition"
                     @click.stop="clearComposition" @pointerdown.stop>🗑 Clear all</button>
                 </div>
@@ -1153,9 +1375,16 @@ function startName(data: any, e: MouseEvent) {
               @open-settings="emit('navigate', 'settings')"
               @use="useLibraryBlock" @new-block="newCompBlock" @toggle-favorite="toggleFavorite" />
           </template>
+          <template v-else-if="data.role === 'combos'">
+            <NodeResizer :min-width="320" :min-height="240" :is-visible="selected" color="var(--accent)" />
+            <CombosWidget :combos="combos" :selected="selected" :comp-count="compBlocks.length" :drift="comboDrift"
+              :linked-id="linkedComboId" :cat-color="catColor" :cat-name="catName"
+              @save-current="openSaveCurrent" @apply="applyCombo" @rename="renameCombo" @update="updateCombo"
+              @duplicate="duplicateComboById" @use-latest="useLatestVersions" @delete="deleteCombo" />
+          </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" />
+            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" @image-menu="onGalleryImageMenu" />
           </template>
         </template>
 
@@ -1187,6 +1416,11 @@ function startName(data: any, e: MouseEvent) {
     <!-- Save-to-Library opens the shared editor in-place (no tab switch). -->
     <BlockEditorModal v-if="editingDraft" :block="editingDraft.block" :is-new="true"
       @close="editingDraft = null" @saved="onDraftSaved" />
+    <!-- Combinations: save a set / confirm a Replace that would drop station blocks. -->
+    <ComboDialog v-if="comboDialog" :mode="comboDialog.mode" :title="comboDialog.title"
+      :name="comboDialog.mode === 'save' ? comboDialog.name : undefined" :blocks="comboDialog.blocks" :cat-color="catColor"
+      :message="comboDialog.mode === 'replace' ? comboDialog.message : undefined"
+      @save="onComboDialogSave" @replace="onComboDialogReplace" @close="comboDialog = null" />
   </section>
 </template>
 
@@ -1234,6 +1468,13 @@ function startName(data: any, e: MouseEvent) {
 .station{width:100%;height:100%;display:flex;flex-direction:column;border:1.5px solid var(--border-strong);border-radius:12px;overflow:hidden;background:color-mix(in srgb,var(--surface-1) 70%,transparent)}
 .sthd{height:44px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--surface-1)}
 .sttitle{font-weight:600;font-size:13px}
+/* the combination the composition is linked to (name + saved/edited), right of the title */
+.combochip{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:320px;font-size:11.5px;font-weight:650;color:var(--accent);
+  background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 40%,var(--border));border-radius:20px;padding:2px 10px}
+.combochip .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.combochip .st{flex-shrink:0;font-size:10px;font-weight:700;color:var(--ok)}
+.combochip.edited{color:var(--warn-fg);background:color-mix(in srgb,var(--warn) 10%,transparent);border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
+.combochip.edited .st{color:var(--warn-fg)}
 .gzgen{display:inline-flex;align-items:center;gap:8px;border:0;border-radius:var(--radius);background:var(--accent);color:var(--on-accent);font-weight:600;font-size:12px;padding:6px 14px;cursor:pointer}
 .gzgen:disabled{opacity:.5;cursor:default}
 .gzgen .gcost{font-size:11px;font-weight:700;background:color-mix(in srgb,#000 22%,transparent);color:#fff;padding:1px 7px;border-radius:20px}
@@ -1302,6 +1543,9 @@ function startName(data: any, e: MouseEvent) {
 .railnavs{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px}
 .clearall{flex-shrink:0;margin-top:5px;border:1px solid var(--border);border-radius:var(--radius);background:transparent;color:var(--text-faint);font:inherit;font-size:10.5px;font-weight:600;padding:5px 6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
 .clearall:hover{color:var(--danger,#e2483d);border-color:var(--danger,#e2483d)}
+.railsave{flex-shrink:0;margin-top:5px;border:1px solid var(--border);border-radius:var(--radius);background:transparent;color:var(--text-dim);font:inherit;font-size:10.5px;font-weight:650;padding:5px 6px;cursor:pointer;text-align:center}
+.railsave:hover{color:var(--accent);border-color:var(--accent)}
+.railsave.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,var(--border));background:color-mix(in srgb,var(--accent) 8%,transparent)}
 .cnamein{flex:1;min-width:0;font:inherit;font-size:12px;font-weight:600;color:var(--text);background:var(--surface-1);border:1px solid var(--accent);border-radius:4px;padding:1px 5px;outline:none}
 .cnav{display:flex;align-items:center;gap:6px;width:100%;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:11px;font-weight:600;padding:5px 6px;border-radius:var(--radius);cursor:pointer;text-align:left}
 .cnav:hover{background:var(--surface-3);color:var(--text)}

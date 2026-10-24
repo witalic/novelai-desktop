@@ -13,7 +13,7 @@ Image generation, the vault (works + Library blocks/categories + multi-vault man
 the Vue-Flow canvas composer, the structured gallery, the full Works browser (view/edit), and the
 Electron shell are **implemented and tested** (v1.0); Claude prompt-authoring is deferred. The full
 phased plan is `ROADMAP.md`. **Phase 1 (recipe as a typed, versioned contract) closed 2026-07-10**;
-schema is now at **v6** (grids own `imageIds`) with read-time migrations, a domain/layout/transient
+schema is now at **v7** (works hold saved block `combos`) with read-time migrations, a domain/layout/transient
 whitelist, scratch persistence, server-owned block + schema versioning, and a freeze invariant under
 test. **Phase 2 (structured galleries + widgets) is largely delivered**; the tail is the global
 gallery + tag/content work filters (need the gallery indexed into `index.db`).

@@ -57,7 +57,8 @@ round-trip tests green.
 > whitelist in `serialize.ts`, scratch persistence (`Image.role`), persisted `ar`, server-owned block
 > version bump, the freeze invariant and the multi-sample seed all under offline tests. Beyond plan:
 > zones now define *role*, out-of-zone content lives as scratch (owner decision, pinned in this phase).
-> The schema has since reached **v6** (grids own `imageIds`); the server also stamps `schema_version`.
+> The schema has since reached **v7** (v6: grids own `imageIds`; v7: works hold saved block `combos`); the
+> server also stamps `schema_version`.
 
 ---
 

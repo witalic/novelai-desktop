@@ -9,6 +9,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { listBlocks, listCategories, listTags, resolveBlocks } from '../api'
 import { usePromptLibrary } from '../composables/usePromptLibrary'
+import { blockIdentity } from '../vault/combos'
 import type { LibraryBlock, ZoneNode } from '../types'
 
 const props = defineProps<{
@@ -38,8 +39,7 @@ watch(() => props.favorites, onFavoritesChanged, { deep: true })
 
 const favSet = computed(() => new Set(props.favorites))
 // A block already in the generation composition (same polarity + text) — greyed to signal "already added".
-const blockKey = (polarity: string, text: string) => `${polarity === 'negative' ? 'neg' : 'pos'}:${String(text || '').trim().toLowerCase()}`
-const isUsed = (b: LibraryBlock) => props.usedKeys?.has(blockKey(b.polarity, b.text)) ?? false
+const isUsed = (b: LibraryBlock) => props.usedKeys?.has(blockIdentity(b)) ?? false
 const catColor = (slug: string) => categories.value.find((c) => c.slug === slug)?.color || '#738496'
 const catName = (slug: string) => categories.value.find((c) => c.slug === slug)?.name
   || (slug.startsWith('cat-') ? 'custom' : slug)

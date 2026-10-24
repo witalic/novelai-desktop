@@ -132,7 +132,31 @@ async def test_save_stamps_schema_version(client):
     w["schema_version"] = 3  # wrong on purpose — the client never dictates the schema
     assert (await ac.put("/api/vault/works", json=w)).status_code == 200
     raw = json.loads(list((vault / "works").glob("*/work.json"))[0].read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 6  # stamped to CURRENT on disk, not left at 3
+    assert raw["schema_version"] == 7  # stamped to CURRENT on disk, not left at 3
+
+
+async def test_combos_persist_and_get_stamped(client):
+    """Saved block combinations travel with the work; the server stamps their times once, like snapshots."""
+    ac, _ = client
+    w = _work("w1")
+    w["combos"] = [{"id": "combo-1", "name": "Raiden — vampire · tease", "blocks": [
+        {"source": "library", "block_id": "b1", "version": 1, "name": "Char", "text": "1girl", "polarity": "positive",
+         "category": "character", "tags": [], "frozen": False},
+        {"source": "custom", "name": "Sig", "text": "signature", "polarity": "negative", "frozen": True},
+    ]}]
+    assert (await ac.put("/api/vault/works", json=w)).status_code == 200
+    body = (await ac.get("/api/vault/works/w1")).json()
+    combo = body["combos"][0]
+    assert combo["name"] == "Raiden — vampire · tease" and combo["origin"] == "user"
+    assert [b["text"] for b in combo["blocks"]] == ["1girl", "signature"]  # order kept
+    assert combo["blocks"][1]["frozen"] is True and combo["blocks"][1]["polarity"] == "negative"
+    assert combo["created_at"] and combo["updated_at"] == combo["created_at"]
+
+    # A re-save keeps the original creation time.
+    body["combos"][0]["name"] = "renamed"
+    assert (await ac.put("/api/vault/works", json=body)).status_code == 200
+    again = (await ac.get("/api/vault/works/w1")).json()["combos"][0]
+    assert again["name"] == "renamed" and again["created_at"] == combo["created_at"]
 
 
 async def test_save_rejects_future_schema_version(client):

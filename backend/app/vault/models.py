@@ -113,8 +113,27 @@ class StackItem(BaseModel):
     image_b64: str | None = Field(default=None, exclude=True)  # inline bytes on save; never persisted
 
 
+class ComboBlock(Component):
+    """One block of a saved combination — a composition row: the Library ref + frozen text copy of a
+    component, plus whether it sat frozen (kept in the area, out of the prompt)."""
+
+    frozen: bool = False
+
+
+class Combo(BaseModel):
+    """A named, ordered set of composition blocks saved in the work (blocks only — no generation params),
+    for restoring or seeding the station in one click. ``origin`` marks combinations an agent created."""
+
+    id: str
+    name: str = ""
+    blocks: list[ComboBlock] = Field(default_factory=list)
+    origin: Literal["user", "agent"] = "user"
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class WorkDoc(BaseModel):
-    schema_version: int = 6  # bump together with a migrate.py step + frontend serialize.ts
+    schema_version: int = 7  # bump together with a migrate.py step + frontend serialize.ts
     id: str
     title: str = ""
     slug: str = ""
@@ -126,6 +145,7 @@ class WorkDoc(BaseModel):
     images: list[Image] = Field(default_factory=list)
     stack: list[StackItem] = Field(default_factory=list)   # the generation output pile (drafts)
     favorites: list[str] = Field(default_factory=list)     # Library block ids starred for quick access in this work
+    combos: list[Combo] = Field(default_factory=list)      # saved block sets for this work (v7)
     preview_image_id: str | None = None
 
 

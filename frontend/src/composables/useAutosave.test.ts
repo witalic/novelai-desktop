@@ -11,16 +11,22 @@ vi.mock('./useToast', () => ({ useToast: () => ({ push: vi.fn() }) }))
 
 import { useAutosave } from './useAutosave'
 import { ApiError } from '../api' // resolves to the mock's ApiError — same class useAutosave checks against
+import type { PersistedCombo } from '../types'
 
-function setup() {
+function setup(combos: PersistedCombo[] = [], title = 'x') {
   const nodes = ref<any[]>([])
   const a = useAutosave({
     nodes, viewport: ref({ x: 0, y: 0, zoom: 1 }),
-    params: () => ({}) as any, drafts: () => [], favorites: () => [], onNoVault: vi.fn(),
+    params: () => ({}) as any, drafts: () => [], favorites: () => [], combos: () => combos, onNoVault: vi.fn(),
   })
   a.vaultReady.value = true
-  a.title.value = 'x' // makes the work "meaningful" so it saves
+  a.title.value = title // a title makes the work "meaningful" so it saves
   return { nodes, a }
+}
+
+const combo: PersistedCombo = {
+  id: 'combo-1', name: 'Raiden', origin: 'user',
+  blocks: [{ source: 'custom', block_id: null, version: null, name: 'R', text: 'raiden shogun', polarity: 'positive', category: 'character', tags: [] }],
 }
 
 beforeEach(() => {
@@ -67,7 +73,7 @@ describe('useAutosave save coordination', () => {
     const onConflict = vi.fn()
     const a = useAutosave({
       nodes: ref<any[]>([]), viewport: ref({ x: 0, y: 0, zoom: 1 }),
-      params: () => ({}) as any, drafts: () => [], favorites: () => [], onNoVault: vi.fn(), onConflict,
+      params: () => ({}) as any, drafts: () => [], favorites: () => [], combos: () => [], onNoVault: vi.fn(), onConflict,
     })
     a.vaultReady.value = true
     a.title.value = 'x'
@@ -75,6 +81,34 @@ describe('useAutosave save coordination', () => {
     a.markDirty()
     expect(await a.flush()).toBe(false)
     expect(onConflict).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useAutosave — combinations', () => {
+  it('a work holding only combinations is worth saving', async () => {
+    const { a } = setup([combo], '')
+    a.markDirty()
+    expect(await a.flush()).toBe(true)
+    expect(saveWork).toHaveBeenCalledTimes(1)
+  })
+
+  it('both save paths write the combinations — the close beacon too', async () => {
+    const { a } = setup([combo])
+    a.markDirty()
+    await a.flush()
+    expect(saveWork.mock.calls[0][0].combos).toEqual([combo])
+
+    const sendBeacon = vi.fn().mockReturnValue(true)
+    vi.stubGlobal('navigator', { sendBeacon })
+    try {
+      a.title.value = 'y' // a fresh edit since the last save
+      a.markDirty()
+      a.onBeforeUnload()
+      const body = JSON.parse(await (sendBeacon.mock.calls[0][1] as Blob).text())
+      expect(body.combos).toEqual([combo])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

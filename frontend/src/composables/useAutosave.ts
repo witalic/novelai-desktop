@@ -6,7 +6,7 @@ import { ApiError, getAppSettings, saveWork } from '../api'
 import { canvasToWork } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { useToast } from './useToast'
-import type { GenResult, PanelParams, WorkDoc } from '../types'
+import type { GenResult, PanelParams, PersistedCombo, WorkDoc } from '../types'
 
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved'
 
@@ -17,12 +17,13 @@ interface Deps {
   params: () => PanelParams
   drafts: () => GenResult[]
   favorites: () => string[] // per-work quick-access set (Library block ids) — persisted with the work
+  combos: () => PersistedCombo[] // saved block sets — persisted with the work
   onNoVault: () => void // no vault configured → route the user to Settings
   onSaved?: (workId: string) => void // after a successful save: swap just-persisted data: URLs for vault URLs
   onConflict?: () => void // a concurrent edit was detected (409) → the host reloads the work
 }
 
-export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVault, onSaved, onConflict }: Deps) {
+export function useAutosave({ nodes, viewport, params, drafts, favorites, combos, onNoVault, onSaved, onConflict }: Deps) {
   const toast = useToast()
   const title = ref('')
   const vaultReady = ref(false)
@@ -37,13 +38,20 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
   let lastSig = ''
   let ignoreDirty = false // suppress markDirty while onSaved rewrites persisted urls (not a user edit)
 
-  // A work is worth persisting once it has a title, ANY kept image, or ANY non-empty prompt block —
-  // in a zone or loose: scratch persists too (zones define role, not survival), so a scratch-only
-  // work must not be discarded silently on leave.
+  // A work is worth persisting once it has a title, ANY kept image, ANY non-empty prompt block — in a
+  // zone or loose: scratch persists too (zones define role, not survival), so a scratch-only work must
+  // not be discarded silently on leave — or ANY saved combination.
   function isMeaningful() {
-    return title.value.trim().length > 0 || nodes.value.some((n) =>
+    return title.value.trim().length > 0 || combos().length > 0 || nodes.value.some((n) =>
       n.type === 'image'
       || (n.type === 'block' && String(n.data?.text || '').trim().length > 0))
+  }
+
+  // The WorkDoc both save paths (autosave + the close beacon) write — one builder so they can't drift.
+  function buildDoc(): WorkDoc {
+    const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites(), combos())
+    doc.updated_at = baseUpdatedAt.value // optimistic-lock base — the server 409s if the stored copy is newer
+    return doc
   }
 
   // Cheap change signature (excludes image *bytes*, keeps their domain fields) so an unchanged work is
@@ -57,7 +65,7 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
         ? { u: n.data?.url ? 1 : 0, f: !!n.data?.favorite, t: n.data?.tags, g: n.data?.group ?? null, ds: n.data?.description ?? '' }
         : n.data,
     }))
-    return JSON.stringify({ t: title.value, params: params(), nodes: sig, stack: drafts().map((d) => d.id), favs: favorites() })
+    return JSON.stringify({ t: title.value, params: params(), nodes: sig, stack: drafts().map((d) => d.id), favs: favorites(), combos: combos() })
   }
 
   function markDirty() {
@@ -73,9 +81,7 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
     if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return true }
     saveState.value = 'saving'
     try {
-      const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites()) as WorkDoc
-      doc.updated_at = baseUpdatedAt.value // optimistic-lock base — the server 409s if the stored copy is newer
-      const res = await saveWork(doc)
+      const res = await saveWork(buildDoc())
       baseUpdatedAt.value = res.updated_at // new base for the next save
       lastSig = key
       dirty = false
@@ -130,9 +136,8 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, onNoVa
   // Browser fallback for window close (Electron uses onBeforeQuit); best-effort, size-limited.
   function onBeforeUnload() {
     if (!vaultReady.value || !dirty || inflight || !isMeaningful() || changeKey() === lastSig) return
-    const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites())
-    doc.updated_at = baseUpdatedAt.value // keep the optimistic-lock base so the beacon still yields to a concurrent edit
-    try { navigator.sendBeacon('/api/vault/works', new Blob([JSON.stringify(doc)], { type: 'application/json' })) } catch { /* best-effort */ }
+    // The lock base rides along, so the beacon still yields to a concurrent edit.
+    try { navigator.sendBeacon('/api/vault/works', new Blob([JSON.stringify(buildDoc())], { type: 'application/json' })) } catch { /* best-effort */ }
     // The beacon bumps the stored stamp but returns nothing, so our base is now stale. If the close is
     // cancelled, opt the surviving session out of the lock on its next save (empty base) rather than let
     // it 409 against its own beacon and reload away later edits (#2).

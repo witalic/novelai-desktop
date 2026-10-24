@@ -85,6 +85,11 @@ def save_work(settings: Settings, doc: WorkDoc) -> dict:
                 raise HTTPException(status_code=400, detail="Invalid image id.")
             if not st.created_at:
                 st.created_at = doc.updated_at
+        for combo in doc.combos:
+            if not combo.created_at:
+                combo.created_at = doc.updated_at
+            if not combo.updated_at:
+                combo.updated_at = combo.created_at
         try:
             store.write_work(work_dir, doc)
         except ValueError as exc:  # bad base64 image data → client error, not a 500 (binascii.Error ⊂ ValueError)

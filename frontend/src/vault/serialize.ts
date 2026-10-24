@@ -5,13 +5,27 @@
  * zones define role, not survival: images inside the gallery zone are `role: 'gallery'`, anything
  * loose is `role: 'scratch'` (kept with the work, invisible to galleries/counts/previews). */
 import type {
-  CanvasNode, GenResult, ImageNodeData, NodeStyle, PanelParams, PersistedImage,
+  CanvasNode, GenResult, ImageNodeData, NodeStyle, PanelParams, PersistedCombo, PersistedImage,
   PersistedSnapshot, PersistedStackItem, SnapshotData, Viewport, WorkDoc,
 } from '../types'
+import { cloneCombos } from './combos'
 
 export const STATION = 'station'
 export const LIBRARY = 'library'
 export const GALLERY = 'gallery'
+export const COMBOS = 'combos'
+
+// The Combinations widget's zone: by default right under the Library zone, same width. Works saved
+// before it existed get one placed there on load (see workToCanvas).
+export function combosZoneNode(library?: { position?: { x: number; y: number }; style?: unknown }): CanvasNode {
+  const pos = library?.position ?? { x: 40, y: 40 }
+  const style = (library?.style ?? {}) as NodeStyle
+  const libH = Number.parseFloat(style.height || '') || 680
+  return {
+    id: COMBOS, type: 'zone', position: { x: pos.x, y: pos.y + libH + 40 },
+    data: { role: 'combos' }, zIndex: 0, style: { width: style.width || '440px', height: '560px' },
+  } as CanvasNode
+}
 
 // What serialize reads off a live Vue Flow node (or a persisted CanvasNode being re-saved);
 // runtime-only fields stay unread. `data` is unknown on purpose: each node type casts to its
@@ -32,7 +46,7 @@ const BLOCK_FIELDS = [
   'frozen', // composition state: kept in the area but excluded from the prompt
   // layout: order in the station list is position.y; loose scratch blocks use position — no extra fields
 ] as const
-const STATION_FIELDS = ['ratio', 'axis', 'genFirst'] as const // two-zone layout (Generation | Composition)
+const STATION_FIELDS = ['ratio', 'axis', 'genFirst', 'comboId'] as const // two-zone layout + the linked combination
 const ZONE_FIELDS = ['role', 'blocks', 'outlineOpen', 'quickOpen'] as const // gallery block stack + panel open-state are layout
 // image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
 
@@ -72,15 +86,17 @@ function splitImage(url: string, file: string) {
 export function canvasToWork(
   nodes: LiveNode[], viewport: Viewport, params: Partial<PanelParams>,
   meta: { id: string; title: string }, drafts: GenResult[] = [], favorites: string[] = [],
+  combos: PersistedCombo[] = [],
 ): WorkDoc {
   const station = nodes.find((n) => n.id === STATION)
   const library = nodes.find((n) => n.id === LIBRARY)
   const gallery = nodes.find((n) => n.id === GALLERY)
+  const combosZone = nodes.find((n) => n.id === COMBOS)
 
   // The whole canvas persists: anchors + every block/image node, in or out of a zone.
   const allBlocks = nodes.filter((n) => n.type === 'block')
   const allImages = nodes.filter((n) => n.type === 'image')
-  const anchorNodes = [station, library, gallery].filter((n): n is LiveNode => !!n)
+  const anchorNodes = [station, library, gallery, combosZone].filter((n): n is LiveNode => !!n)
   const canvasNodes = [...anchorNodes, ...allBlocks, ...allImages].map(slim)
 
   // Work-level snapshots (the reproducible recipe: prompt composition + params), deduped and shared by
@@ -123,11 +139,12 @@ export function canvasToWork(
   }))
 
   return {
-    schema_version: 6, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
+    schema_version: 7, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
     canvas: { viewport, nodes: canvasNodes },
     snapshots: [...snapshotsByKey.values()],
     images, stack,
     favorites: [...new Set(favorites)], // per-work quick-access set (Library block ids), deduped
+    combos: cloneCombos(combos), // saved block sets — a copy, so later edits never reach this document
     // Scratch is working material — a work previews (and counts) only by its gallery images.
     preview_image_id: images.find((im) => im.role === 'gallery')?.id ?? null,
   }
@@ -206,5 +223,8 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
     }
     return { ...n, data: { ...n.data } } as CanvasNode
   })
+  // A work saved before the Combinations widget existed gets its zone, under its Library zone.
+  const library = nodes.find((n) => n.id === LIBRARY)
+  if (library && !nodes.some((n) => n.id === COMBOS)) nodes.push(combosZoneNode(library))
   return { nodes, viewport: doc.canvas?.viewport || { x: 0, y: 0, zoom: 1 } }
 }

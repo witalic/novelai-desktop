@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useContextMenu } from '../composables/useContextMenu'
 
 const { state, close, run } = useContextMenu()
 
-// Keep the menu on-screen: nudge left/up when it would overflow the viewport (rough item metrics).
+// Keep the menu on-screen: nudge left/up when it would overflow the viewport. Labels vary in length, so
+// the rendered menu is measured (post-flush, before paint); the item-count estimate only covers that gap.
+const menu = ref<HTMLElement | null>(null)
+const size = ref({ w: 190, h: 0 })
+watch(() => state.value.open && state.value.items, () => {
+  if (menu.value) size.value = { w: menu.value.offsetWidth, h: menu.value.offsetHeight }
+}, { flush: 'post' })
 const pos = computed(() => {
-  const w = 190, h = 12 + state.value.items.length * 34
+  const w = size.value.w, h = size.value.h || 12 + state.value.items.length * 34
   const x = Math.min(state.value.x, window.innerWidth - w - 8)
   const y = Math.min(state.value.y, window.innerHeight - h - 8)
   return { left: `${Math.max(8, x)}px`, top: `${Math.max(8, y)}px` }
@@ -17,7 +23,7 @@ const pos = computed(() => {
   <Teleport to="body">
     <template v-if="state.open">
       <div class="cm-back" @click="close" @contextmenu.prevent="close" @wheel="close" />
-      <div class="cm" :style="pos" @contextmenu.prevent>
+      <div ref="menu" class="cm" :style="pos" @contextmenu.prevent>
         <button v-for="(it, i) in state.items" :key="i" class="cm-item" :class="{ danger: it.danger }" @click="run(it)">
           <span v-if="it.icon" class="cm-ic">{{ it.icon }}</span>{{ it.label }}
         </button>

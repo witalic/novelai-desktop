@@ -143,6 +143,20 @@ export interface PersistedImage {
   source?: string
 }
 
+// A saved combination: a named, ordered set of composition blocks kept in the work (blocks only — no
+// generation params). Each block is a component (Library ref + frozen text copy) plus its frozen state.
+export interface PersistedComboBlock extends PersistedComponent {
+  frozen?: boolean
+}
+export interface PersistedCombo {
+  id: string
+  name: string
+  blocks: PersistedComboBlock[]
+  origin: 'user' | 'agent' // agent-made combinations are badged until the user edits them
+  created_at?: string // backend-stamped on first save
+  updated_at?: string
+}
+
 // The generation output pile ("stack") — persists so reopening a work restores the drafts.
 export interface PersistedStackItem {
   id: string
@@ -176,15 +190,16 @@ interface CanvasNodeBase {
 // The generation station: two zones (Generation output | Composition block list). `ratio` is the
 // Generation zone's share; `axis` splits them side-by-side ('h') or stacked ('v'); `genFirst` picks
 // which zone leads (left/top vs right/bottom).
+// `comboId` links the composition to the combination it was restored from / saved as (the header names it).
 export interface StationNode extends CanvasNodeBase {
   type: 'station'
-  data: { ratio?: number; axis?: 'h' | 'v'; genFirst?: boolean }
+  data: { ratio?: number; axis?: 'h' | 'v'; genFirst?: boolean; comboId?: string }
 }
 
 export interface ZoneNode extends CanvasNodeBase {
   type: 'zone'
   data: {
-    role: 'library' | 'gallery'
+    role: 'library' | 'gallery' | 'combos'
     // gallery-zone (structured gallery widget) layout — additive optional fields, backend stores canvas opaquely
     blocks?: GalleryBlock[] // the composed block stack (schema v6 — grids own imageIds)
     outlineOpen?: boolean // Outline nav panel open (persisted layout)
@@ -269,6 +284,7 @@ export interface WorkDoc {
   images: PersistedImage[]
   stack: PersistedStackItem[]
   favorites: string[] // Library block ids starred for quick access in this work
+  combos: PersistedCombo[] // saved block sets for this work (schema v7)
   preview_image_id: string | null
 }
 

@@ -94,6 +94,7 @@ function pick(id: string | number) {
 // ---- widgets palette (informational) ----
 const WIDGETS = [
   { icon: '✦', name: 'Prompt blocks', desc: 'search + pin prompt blocks', placed: true },
+  { icon: '◈', name: 'Combinations', desc: 'saved block sets for this work', placed: true },
   { icon: '▤', name: 'Gallery', desc: 'kept images for this work', placed: true },
   { icon: '✎', name: 'Notes', desc: 'freeform text on the canvas', soon: true },
   { icon: '◨', name: 'Reference', desc: 'img2img / reference source', soon: true },
@@ -217,7 +218,7 @@ watch(() => props.drafts, (ds) => {
             <span v-else class="wgrip">⠿</span>
           </div>
         </div>
-        <div class="whint">Notes and Reference widgets are coming; Prompt blocks and Gallery are always on the canvas.</div>
+        <div class="whint">Notes and Reference widgets are coming; Prompt blocks, Combinations and Gallery are always on the canvas.</div>
       </div>
     </template>
   </aside>
