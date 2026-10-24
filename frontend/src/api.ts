@@ -313,6 +313,38 @@ export async function clearNovelaiToken(): Promise<TokenStatus> {
   return jsonOrThrow(await fetch('/api/settings/novelai-token', { method: 'DELETE' }), 'Failed to clear token')
 }
 
+// ---- Agent access (MCP) — the app's own loopback endpoint for AI agents; config + live status ----
+export interface AgentPermissions { read: boolean }
+export interface AgentConfig { enabled: boolean; permissions: AgentPermissions }
+// One feed row; repeated reads of one kind within a minute share a row (`count`).
+export interface AgentActivity { at: string; action: string; detail: string; outcome: 'ok' | 'denied' | 'error'; count: number }
+// `address` is where agents connect — the app picks the port (8790 unless that's taken; `note` says so).
+export interface AgentStatus {
+  config: AgentConfig; running: boolean; address: string; note: string | null; error: string | null; connected: number
+  token_hint: string | null; activity: AgentActivity[]
+}
+export interface AgentPatch { enabled?: boolean; permissions?: Partial<AgentPermissions> }
+
+export async function getAgent(): Promise<AgentStatus> {
+  return jsonOrThrow(await fetch('/api/agent'), 'Failed to read agent access')
+}
+
+export async function patchAgent(patch: AgentPatch): Promise<AgentStatus> {
+  return jsonOrThrow(await fetch('/api/agent', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+  }), 'Failed to save agent access')
+}
+
+// The full agent token the running listener accepts — only for an explicit Copy (404 while access is off);
+// the page otherwise shows `token_hint`.
+export async function revealAgentToken(): Promise<string> {
+  return (await jsonOrThrow<{ token: string }>(await fetch('/api/agent/token'), 'Failed to read the agent token')).token
+}
+
+export async function regenerateAgentToken(): Promise<AgentStatus> {
+  return jsonOrThrow(await fetch('/api/agent/token', { method: 'POST' }), 'Failed to regenerate the agent token')
+}
+
 // Save image(s) to the Downloads folder via the backend (no OS save dialog). `images` are raw base64.
 export async function saveDownloads(images: string[]): Promise<{ count: number; dir: string }> {
   const resp = await fetch('/api/download', {

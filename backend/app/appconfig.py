@@ -1,6 +1,6 @@
 """Persisted app settings in the OS config dir: the vault list + active vault, UI prefs (theme,
-accent), autosave interval, download folder. Secrets (the NovelAI token) live in the OS keychain,
-never here.
+accent), autosave interval, download folder, agent access (MCP). Secrets (the NovelAI and agent
+tokens) live in the OS keychain, never here.
 
 Resilient by design: a corrupt ``settings.json`` or a missing/wrong-typed key never breaks the app —
 every field falls back to a sane default (see ``_coerce``). The config dir is OS-conventional
@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from app.agent import config as agentcfg
 from app.settings import Settings
 from app.vault import config as vaultcfg
 
@@ -42,6 +43,7 @@ def defaults(settings: Settings) -> dict:
         "theme": "dark",
         "accent": "#0c66e4",
         "download_dir": settings.download_dir,  # env default (~/Downloads) unless overridden
+        "agent": agentcfg.coerce(None),
     }
 
 
@@ -60,6 +62,7 @@ def _coerce(raw: object, settings: Settings) -> dict:
     for key in ("theme", "accent", "download_dir"):
         if isinstance(raw.get(key), str) and raw[key]:
             d[key] = raw[key]
+    d["agent"] = agentcfg.coerce(raw.get("agent"))
     return d
 
 

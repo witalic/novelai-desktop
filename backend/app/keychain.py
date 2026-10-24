@@ -1,9 +1,11 @@
 """OS keychain access for secrets (``rules/security.md``): the single chokepoint for reading/writing
-the NovelAI token. Secret values are never logged. Store the token out-of-band with the keyring CLI:
+the NovelAI token and the agent (MCP) token. Secret values are never logged. Store the NovelAI token
+out-of-band with the keyring CLI:
 
     .venv\\Scripts\\keyring.exe set novelai-desktop novelai-token
 """
 import logging
+import secrets
 
 import keyring
 from keyring.errors import KeyringError, PasswordDeleteError
@@ -12,6 +14,7 @@ log = logging.getLogger(__name__)
 
 SERVICE = "novelai-desktop"
 _NOVELAI_TOKEN = "novelai-token"
+_AGENT_TOKEN = "agent-token"  # the key agents present to the MCP endpoint — never the NovelAI token
 
 
 def get_novelai_token() -> str | None:
@@ -39,3 +42,31 @@ def delete_novelai_token() -> None:
         keyring.delete_password(SERVICE, _NOVELAI_TOKEN)
     except (PasswordDeleteError, KeyringError) as exc:
         log.warning("Keychain delete skipped: %s", exc)
+
+
+def read_agent_token() -> str | None:
+    """The agent (MCP) token, or None if none was issued yet. A keychain failure RAISES (whatever the backend
+    throws — Windows' backend re-raises raw OS errors), so a passing glitch is never mistaken for "no token"."""
+    return keyring.get_password(SERVICE, _AGENT_TOKEN)
+
+
+def agent_token_hint() -> str | None:
+    """The token's last 4 characters, to recognise it in Settings without revealing it; None if unreadable."""
+    try:
+        token = read_agent_token()
+    except Exception as exc:  # noqa: BLE001 — a status hint must never fail the page
+        log.warning("Keychain read failed: %s", exc)
+        return None
+    return token[-4:] if token else None
+
+
+def ensure_agent_token() -> str:
+    """The agent token, issuing one on first use. Raises when the keychain can't be read or written."""
+    return read_agent_token() or regenerate_agent_token()
+
+
+def regenerate_agent_token() -> str:
+    """Issue a fresh agent token (the old one stops working). The value is never logged."""
+    token = secrets.token_urlsafe(32)
+    keyring.set_password(SERVICE, _AGENT_TOKEN, token)
+    return token

@@ -8,6 +8,7 @@ import {
   moveStatus, patchAppSettings, setActiveVault, setNovelaiToken, startMoveVault, type VaultConfig,
 } from '../api'
 import { browseFolder, openInFileManager } from '../electron'
+import AgentAccessCard from '../components/AgentAccessCard.vue'
 
 const { theme, accent, accents } = useTheme()
 const { push } = useToast()
@@ -155,6 +156,9 @@ async function changeInterval(v: number) {
           </div>
         </div>
       </div>
+
+      <!-- Agent access (MCP) + what agents did -->
+      <AgentAccessCard />
 
       <!-- Vaults -->
       <div class="card">
