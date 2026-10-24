@@ -7,23 +7,27 @@ import base64
 import json
 import logging
 import socket
-from collections import deque
+import threading
+import time
+from collections import OrderedDict, deque
 
 import httpx
 import keyring
 import pytest
+from fastapi import HTTPException
 
 from app import appconfig, keychain
 from app import main as app_main
-from app.agent import activity, store
+from app.agent import activity, changes, store
 from app.agent import server as agent_server
-from app.agent.config import AgentConfig, coerce
+from app.agent.config import AgentConfig, AgentPermissions, coerce
 from app.agent.server import _Config, build_app, listener
 from app.routers import agent as agent_router
 from app.main import app
 from app.novelai._png import solid_png
 from app.settings import Settings, VaultSettings, get_settings
 from app.vault import service
+from app.vault import store as vault_store
 from app.vault.models import BlockDoc, Image, WorkDoc
 
 TOKEN = "test-agent-token"
@@ -39,6 +43,8 @@ def settings(tmp_path):
 def _fresh_state(monkeypatch):
     monkeypatch.setattr(activity, "_entries", deque(maxlen=activity.MAX_ENTRIES))
     monkeypatch.setattr(activity, "_sessions", {})
+    monkeypatch.setattr(changes, "_log", OrderedDict())
+    monkeypatch.setattr(changes, "_subscribers", set())
     monkeypatch.setattr(listener, "_lock", asyncio.Lock())  # each test runs on its own event loop
     listener.error = None
 
@@ -77,14 +83,19 @@ def seed(settings: Settings) -> None:
 
 
 # ---- config ----
-def test_off_by_default_reads_allowed():
+def test_off_by_default_and_everything_but_deleting_allowed():
     cfg = AgentConfig()
-    assert not cfg.enabled and cfg.permissions.read
+    assert not cfg.enabled
+    assert cfg.permissions.model_dump() == {"read": True, "blocks_write": True, "blocks_delete": False,
+                                            "works_write": True, "combos_write": True, "works_delete": False}
 
 
 def test_coerce_keeps_good_fields_and_drops_bad_ones():
     out = coerce({"enabled": True, "port": 9001, "permissions": "junk"})
-    assert out == {"enabled": True, "permissions": {"read": True}}  # the port is no setting — an old one is dropped
+    # the port is no setting — an old one is dropped
+    assert out == {"enabled": True, "permissions": AgentPermissions().model_dump()}
+    # a config saved before the write switches existed gets their defaults
+    assert coerce({"permissions": {"read": False}})["permissions"] == {**AgentPermissions().model_dump(), "read": False}
     assert coerce(None) == AgentConfig().model_dump()
 
 
@@ -242,6 +253,229 @@ async def test_malformed_requests_are_refused_cleanly(settings):
         assert big.status_code == 413
 
 
+# ---- write tools ----
+def allowing(**switches: bool) -> AgentConfig:
+    """Agent access on, with these permission switches set (e.g. a delete one turned on)."""
+    cfg = AgentConfig(enabled=True)
+    for key, value in switches.items():
+        setattr(cfg.permissions, key, value)
+    return cfg
+
+
+async def test_new_blocks_follow_the_import_rules(settings):
+    seed(settings)
+    with changes.subscribe() as notices:
+        async with mcp_client(settings) as c:
+            out = await call_json(c, "create_blocks", {"blocks": [
+                {"category": "Character", "name": "Yae", "text": "yae miko", "tags": ["genshin", " genshin "]},
+                {"text": "Raiden   SHOGUN"},  # the seeded block, spelled differently
+                {"text": "  "},
+                {"category": "no such category", "text": "x"},
+                {"text": "yae miko", "polarity": "positive"},  # repeats the first one
+            ]})
+        notice = await asyncio.wait_for(notices.get(), 1)
+    [made] = out["created"]
+    assert made["category"] == "character" and made["name"] == "Yae"
+    assert [(d["index"], d["existing_id"]) for d in out["duplicates"]] == [(1, "block-raiden"), (4, made["id"])]
+    assert [e["index"] for e in out["errors"]] == [2, 3] and "list_categories" in out["errors"][1]["error"]
+    [stored] = service.resolve_blocks(settings, [made["id"]])
+    assert (stored.text, stored.tags, stored.version) == ("yae miko", ["genshin"], 1)
+    row = activity.recent()[0]
+    assert (row["action"], row["detail"]) == ("Added 1 block", "Library → Character (2 duplicates skipped)")
+    assert notice == {"kind": "library", "work_id": None,
+                      "message": "Agent added 1 block — Library → Character (2 duplicates skipped)"}
+
+
+async def test_blocks_are_edited_and_deleted_only_when_allowed(settings):
+    seed(settings)
+    async with mcp_client(settings) as c:
+        edited = await call_json(c, "update_block", {"id": "block-raiden", "text": "raiden shogun, electro"})
+        assert edited["version"] == 2 and edited["name"] == "Raiden"  # only the given field changed
+        refused = await call(c, "delete_blocks", {"ids": ["block-raiden"]})
+        assert refused["isError"] and "Delete blocks" in refused["content"][0]["text"]
+    assert activity.recent()[0]["outcome"] == "denied"
+    async with mcp_client(settings, allowing(blocks_delete=True)) as c:
+        out = await call_json(c, "delete_blocks", {"ids": ["block-raiden", "block-nope"]})
+    assert out == {"deleted": ["block-raiden"], "missing": ["block-nope"]}
+    assert service.resolve_blocks(settings, ["block-raiden"]) == []
+    assert activity.recent()[0]["detail"] == "“Raiden”"
+
+
+async def test_works_are_created_renamed_and_their_images_described(settings):
+    seed(settings)
+    async with mcp_client(settings) as c:
+        made = await call_json(c, "create_work", {"title": "Autumn set"})
+        assert (await call_json(c, "get_work", {"work_id": made["id"]}))["title"] == "Autumn set"
+        await call_json(c, "rename_work", {"work_id": made["id"], "title": "Autumn"})
+        out = await call_json(c, "update_images", {"work_id": "work-1", "images": [
+            {"id": "img-1", "tags": ["vampire", "night"], "description": "moonlit", "favorite": False}]})
+        assert out == {"updated": ["img-1"]}
+        scratch = await call(c, "update_images", {"work_id": "work-1", "images": [{"id": "img-scratch", "tags": []}]})
+        assert scratch["isError"] and "No gallery image" in scratch["content"][0]["text"]
+    assert service.load_work(settings, made["id"]).title == "Autumn"
+    im = next(i for i in service.load_work(settings, "work-1").images if i.id == "img-1")
+    assert (im.tags, im.description, im.favorite) == (["vampire", "night"], "moonlit", False)
+    assert [r["action"] for r in activity.recent()] == ["Updated 1 image", "Renamed a work", "Get a work", "Created a work"]
+    assert activity.recent()[1]["detail"] == "“Autumn set” → “Autumn”"
+
+
+async def test_deleted_images_leave_every_structure(settings):
+    png = base64.b64encode(solid_png(8, 8)).decode("ascii")
+    service.save_work(settings, WorkDoc(
+        id="work-2", title="Two", preview_image_id="img-a",
+        images=[Image(id="img-a", image_b64=png), Image(id="img-b", image_b64=png)],
+        canvas={"nodes": [{"id": "gallery", "type": "zone", "data": {"role": "gallery", "blocks": [
+                    {"id": "gb-1", "type": "grid", "imageIds": ["img-a", "img-b"]}]}},
+                {"id": "img-a", "type": "image", "parentNode": "gallery"},
+                {"id": "img-b", "type": "image", "parentNode": "gallery"}]}))
+    async with mcp_client(settings, allowing(works_delete=True)) as c:
+        out = await call_json(c, "delete_images", {"work_id": "work-2", "image_ids": ["img-a", "img-zz"]})
+    assert out == {"deleted": ["img-a"], "missing": ["img-zz"]}
+    doc = service.load_work(settings, "work-2")
+    assert [im.id for im in doc.images] == ["img-b"] and doc.preview_image_id == "img-b"
+    assert [n["id"] for n in doc.canvas["nodes"]] == ["gallery", "img-b"]
+    assert doc.canvas["nodes"][0]["data"]["blocks"][0]["imageIds"] == ["img-b"]
+    work_dir = next((appconfig.active_vault(settings) / "works").iterdir())
+    assert sorted(p.name for p in (work_dir / "images").iterdir()) == ["img-b.json", "img-b.png"]
+
+
+async def test_combinations_are_made_from_library_and_custom_blocks(settings):
+    seed(settings)
+    async with mcp_client(settings, allowing(works_delete=True)) as c:
+        made = await call_json(c, "create_combination", {"work_id": "work-1", "name": "Raiden — night", "blocks": [
+            {"block_id": "block-raiden"}, {"text": "night sky", "frozen": True}]})
+        again = await call_json(c, "create_combination", {"work_id": "work-1", "name": "Raiden — night",
+                                                          "blocks": [{"text": "moon"}]})
+        assert again["name"] == "Raiden — night (2)"
+        repeat = await call(c, "create_combination", {"work_id": "work-1", "name": "x",
+                                                      "blocks": [{"text": "moon"}, {"text": "Moon "}]})
+        assert repeat["isError"] and "repeats blocks[0]" in repeat["content"][0]["text"]
+        unknown = await call(c, "create_combination", {"work_id": "work-1", "name": "x", "blocks": [{"block_id": "b-0"}]})
+        assert unknown["isError"]
+        listed = await call_json(c, "list_combinations", {"work_id": "work-1"})
+        assert [x["id"] for x in listed] == [again["id"], made["id"]]  # newest first
+        lib, custom = listed[1]["blocks"]
+        assert (lib["source"], lib["block_id"], lib["version"], lib["text"]) == ("library", "block-raiden", 1, "raiden shogun")
+        assert (custom["source"], custom["category"], custom["frozen"]) == ("custom", "custom", True)
+        assert listed[1]["origin"] == "agent" and listed[1]["created_at"]
+
+        await call_json(c, "update_combination", {"work_id": "work-1", "combination_id": made["id"],
+                                                  "name": "Raiden — dusk", "blocks": [{"text": "dusk"}]})
+        await call_json(c, "delete_combination", {"work_id": "work-1", "combination_id": again["id"]})
+    [left] = service.load_work(settings, "work-1").combos
+    assert (left.name, [b.text for b in left.blocks]) == ("Raiden — dusk", ["dusk"])
+    assert left.updated_at > left.created_at
+
+
+async def test_the_open_app_replays_agent_edits_instead_of_reloading(api, settings):
+    seed(settings)
+    base = service.load_work(settings, "work-1").updated_at
+    async with mcp_client(settings) as c:
+        made = await call_json(c, "create_combination", {"work_id": "work-1", "name": "Set", "blocks": [{"text": "a"}]})
+        await call_json(c, "update_images", {"work_id": "work-1", "images": [{"id": "img-1", "favorite": False}]})
+    stored = service.load_work(settings, "work-1").updated_at
+    res = (await api.get("/api/agent/works/work-1/changes", params={"since": base})).json()
+    assert res["at"] == stored
+    assert [op["op"] for op in res["ops"]] == ["combo", "image"]
+    assert res["ops"][0]["combo"]["id"] == made["id"] and res["ops"][0]["combo"]["created_at"]
+    assert res["ops"][1] == {"op": "image", "id": "img-1", "set": {"favorite": False}}
+    assert (await api.get("/api/agent/works/work-1/changes", params={"since": stored})).json() == {"at": stored, "ops": []}
+
+    # the app saves (its own edit), then the agent edits again: from the app's new base only the agent's edit
+    # replays; from the old base the chain is broken by a save that wasn't the agent's → a real conflict
+    doc = service.load_work(settings, "work-1")
+    doc.title = "Halloween night"
+    app_base = service.save_work(settings, doc)["updated_at"]
+    async with mcp_client(settings) as c:
+        await call_json(c, "rename_work", {"work_id": "work-1", "title": "Halloween ✦"})
+    res = (await api.get("/api/agent/works/work-1/changes", params={"since": app_base})).json()
+    assert res["ops"] == [{"op": "title", "title": "Halloween ✦"}]
+    assert (await api.get("/api/agent/works/work-1/changes", params={"since": base})).status_code == 409
+
+
+async def test_an_app_save_landing_mid_edit_is_kept_and_the_edit_redone(settings, monkeypatch):
+    seed(settings)
+    real_save = service.save_work
+    raced: list[bool] = []
+
+    def save_after_the_app(s, doc, **kw):
+        if not raced:  # the app's autosave lands between the agent's load and its save
+            raced.append(True)
+            mine = service.load_work(s, doc.id)
+            mine.title = "Renamed in the app"
+            real_save(s, mine)
+        return real_save(s, doc, **kw)
+
+    monkeypatch.setattr(service, "save_work", save_after_the_app)
+    async with mcp_client(settings) as c:
+        await call_json(c, "update_images", {"work_id": "work-1", "images": [{"id": "img-1", "tags": ["redone"]}]})
+    doc = service.load_work(settings, "work-1")
+    assert doc.title == "Renamed in the app" and doc.images[0].tags == ["redone"]
+
+
+def test_two_saves_on_one_base_never_both_land(settings, monkeypatch):
+    """The app and an agent save in parallel threads from the same copy: one lands, the other is told it's stale
+    — never a silent last-writer-wins that drops the first one's new image (its file gc'd as an orphan)."""
+    seed(settings)
+    base = service.load_work(settings, "work-1")
+    real_write = vault_store.write_work
+
+    def slow_write(work_dir, doc):  # a save writing big new PNGs takes a while
+        time.sleep(0.2)
+        real_write(work_dir, doc)
+
+    monkeypatch.setattr(vault_store, "write_work", slow_write)
+    png = base64.b64encode(solid_png(8, 8)).decode("ascii")
+    outcomes: dict[str, object] = {}
+
+    def save(who: str) -> None:
+        doc = base.model_copy(deep=True)
+        if who == "app":
+            doc.images.append(Image(id="img-new", image_b64=png))
+        else:
+            doc.title = "Agent's title"
+        try:
+            outcomes[who] = service.save_work(settings, doc)["updated_at"]
+        except HTTPException as exc:
+            outcomes[who] = exc.status_code
+
+    threads = [threading.Thread(target=save, args=(who,)) for who in ("app", "agent")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(isinstance(v, str) for v in outcomes.values()) == [False, True]
+    assert 409 in outcomes.values()
+    stored = service.load_work(settings, "work-1")
+    if isinstance(outcomes["app"], str):  # whichever landed is whole on disk
+        assert "img-new" in [im.id for im in stored.images]
+    else:
+        assert stored.title == "Agent's title"
+    # an edit of a work deleted meanwhile is refused, never a resurrection with its image files gone
+    with pytest.raises(HTTPException) as gone:
+        service.save_work(settings, WorkDoc(id="work-gone", updated_at=base.updated_at), must_exist=True)
+    assert gone.value.status_code == 404
+
+
+async def test_notices_stream_to_the_app_until_it_goes():
+    res = await agent_router.events()
+    stream = res.body_iterator
+    assert await stream.__anext__() == ": connected\n\n"
+    changes.publish({"kind": "library", "work_id": None, "message": "Agent added 1 block — Library → Character"})
+    frame = await asyncio.wait_for(stream.__anext__(), 1)
+    assert json.loads(frame.removeprefix("data: "))["message"].startswith("Agent added 1 block")
+    await stream.aclose()
+    assert not changes._subscribers  # a closed stream stops listening
+
+
+async def test_write_tools_say_what_they_are(settings):
+    async with mcp_client(settings) as c:
+        tools = {t["name"]: t["annotations"] for t in (await rpc(c, "tools/list"))["result"]["tools"]}
+    assert tools["search_blocks"] == {"title": "Search Library blocks", "readOnlyHint": True}
+    assert tools["create_blocks"]["readOnlyHint"] is False and tools["create_blocks"]["destructiveHint"] is False
+    assert all(tools[n]["destructiveHint"] for n in ("delete_blocks", "delete_images", "delete_combination"))
+
+
 # ---- Settings API + the real listener ----
 @pytest.fixture
 async def api(settings):
@@ -278,7 +512,7 @@ def ports(monkeypatch):
 
 async def test_settings_api_starts_serves_and_stops_the_listener(api, ports):
     off = (await api.get("/api/agent")).json()
-    assert off["running"] is False and off["config"] == {"enabled": False, "permissions": {"read": True}}
+    assert off["running"] is False and off["config"] == AgentConfig().model_dump()
     assert off["token_hint"] is None and off["address"] == f"http://127.0.0.1:{ports[0]}/mcp"
     assert (await api.get("/api/agent/token")).status_code == 404  # off → nothing to hand out, nothing issued
 

@@ -75,8 +75,14 @@ def _norm(text: str) -> str:
     return " ".join(text.split()).strip().lower()
 
 
-def _existing_index(settings) -> dict[str, tuple[str, str]]:  # noqa: ANN001
-    """``"<polarity>|<normalised text>" -> (id, name)`` over every block on disk (files are truth)."""
+def dedupe_key(polarity: str, text: str) -> str:
+    """Two blocks are the same block when polarity and prompt text match (whitespace and case aside)."""
+    return f"{polarity}|{_norm(text)}"
+
+
+def existing_index(settings) -> dict[str, tuple[str, str]]:  # noqa: ANN001
+    """``dedupe_key -> (id, name)`` over every block on disk (files are truth). Agents' new blocks follow the
+    same duplicate rule (``app.agent.tools``)."""
     root = service.blocks_root(settings)
     idx: dict[str, tuple[str, str]] = {}
     if not root.is_dir():
@@ -90,7 +96,7 @@ def _existing_index(settings) -> dict[str, tuple[str, str]]:  # noqa: ANN001
         text = str(d.get("text") or "")
         if not bid or not text.strip():
             continue
-        idx.setdefault(f"{d.get('polarity', 'positive')}|{_norm(text)}", (bid, str(d.get("name") or "")))
+        idx.setdefault(dedupe_key(d.get("polarity", "positive"), text), (bid, str(d.get("name") or "")))
     return idx
 
 
@@ -104,7 +110,7 @@ def _to_candidate(raw: object, source: str, existing: dict[str, tuple[str, str]]
     category = layout.slugify(str(raw.get("category") or "")) or "custom"
     name = str(raw.get("name") or "").strip()
     tags = [t.strip() for t in (raw.get("tags") or []) if isinstance(t, str) and t.strip()]
-    ex = existing.get(f"{polarity}|{_norm(text)}")
+    ex = existing.get(dedupe_key(polarity, text))
     return ImportCandidate(
         name=name, text=text, polarity=polarity, category=category, tags=tags,
         existing_id=ex[0] if ex else None, existing_name=ex[1] if ex else None,
@@ -185,7 +191,7 @@ def _collect(req: ImportParseRequest) -> tuple[list[tuple[str, object]], list[Im
 
 def parse(settings, req: ImportParseRequest) -> ImportParseResult:  # noqa: ANN001
     raws, skips = _collect(req)
-    existing = _existing_index(settings)
+    existing = existing_index(settings)
     candidates: list[ImportCandidate] = []
     for source, raw in raws:
         result = _to_candidate(raw, source, existing)

@@ -7,7 +7,9 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { getVaultConfig, listCategories, resolveBlocks } from '../api'
+import { agentWorkChanges, getVaultConfig, listCategories, resolveBlocks } from '../api'
+import { onAgentNotice } from '../composables/useAgentNotices'
+import { planAgentOps, type AgentOp } from '../vault/agentOps'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
@@ -163,14 +165,35 @@ const combos = ref<PersistedCombo[]>([])
 // Vault autosave (dirty flag, flush, save state). Owns the state + logic; the lifecycle (window listeners,
 // the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
 const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
-  onBeforeUnload, refreshInterval, stopAutosave, resetBaseline } = useAutosave({
+  onBeforeUnload, refreshInterval, stopAutosave, resetBaseline, onAgentEdit } = useAutosave({
   nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
   combos: () => combos.value,
   onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
+  agentChanges: agentWorkChanges, applyAgentOps,
 })
 // A concurrent edit (409) → the view re-fetches the FULL work (params + draft stack + canvas doc), not
 // just the canvas nodes, so the next save doesn't write stale params/stack over the fresh version (H3/#4).
 function reloadWork() { emit('reload-work') }
+// An agent's edits of this work, replayed over the live canvas (vault/agentOps): its title, combinations and
+// image metadata change; gallery images it deleted leave their albums. Everything else stays as it is.
+function applyAgentOps(ops: AgentOp[]) {
+  const edits = planAgentOps(ops, combos.value)
+  if (edits.title !== undefined) title.value = edits.title
+  combos.value = edits.combos
+  for (const [id, set] of edits.images) {
+    const n = findNode(id)
+    if (n?.type === 'image') n.data = { ...n.data, ...set }
+  }
+  const gone = edits.deleted.filter((id) => findNode(id))
+  for (const id of gone) removeImageFromGridAlbums(id)
+  if (gone.length) removeNodes(gone)
+}
+// What agents change elsewhere: this work → catch up now; the Library → the prompt widget, the category palette
+// and the combinations' drift badges re-read it.
+onAgentNotice((n) => {
+  if (n.kind === 'work' && n.work_id === workId.value) onAgentEdit()
+  if (n.kind === 'library') { widgetRevalidate.value++; loadCategoryColors() }
+})
 // After a save, point kept gallery images at their on-disk vault URL so later saves don't re-serialize their
 // base64 (a 30-image work would otherwise ship hundreds of MB per flush). Display is unaffected — the shown
 // src (shownSrc) still holds the data: URL until the next scale swaps in the sized thumbnail.
@@ -1296,6 +1319,9 @@ onDeactivated(() => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function loadDoc(doc: any) {
   const { nodes: ns, viewport: vp } = workToCanvas(doc)
+  // A work made outside the canvas (an agent's create_work) has no layout yet → the default widgets, fitted.
+  const unlaid = !ns.some((n) => ANCHORS.has(n.id))
+  if (unlaid) ns.unshift(...zoneNodes())
   setNodes(ns as unknown as FlowNode[]) // persisted nodes are plain data; Vue Flow hydrates the runtime fields
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
@@ -1304,7 +1330,8 @@ function loadDoc(doc: any) {
   hideStationBlocks() // composition blocks render as the station's list, never free on the canvas
   hideGalleryImages() // gallery images render inside the structured gallery widget, not free on the canvas
   widgetRevalidate.value++ // a freshly opened work re-reads the Library (categories/counts)
-  if (vp) setViewport(vp)
+  if (unlaid) nextTick(fitWidgets)
+  else if (vp) setViewport(vp)
   workId.value = doc.id
   baseUpdatedAt.value = doc.updated_at || '' // optimistic-lock base for the next save (H3)
   title.value = doc.title || ''

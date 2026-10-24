@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listTags, reorderCategories, resolveBlocks, restoreCategories, saveBlock, saveCategory } from '../api'
+import { onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
@@ -117,6 +118,29 @@ async function refreshAll() {
 }
 // onActivated also fires on first mount under KeepAlive, so a separate setup-time call would double-load.
 onActivated(refreshAll)
+// An agent changed the Library: refresh while it's on screen (coming back here refreshes anyway) — once per
+// burst of changes, keeping the selection (minus blocks the agent deleted).
+let shown = false
+let agentTimer: ReturnType<typeof setTimeout> | null = null
+onActivated(() => { shown = true })
+onDeactivated(() => { shown = false })
+onUnmounted(() => { if (agentTimer) clearTimeout(agentTimer) })
+onAgentNotice((n) => {
+  if (n.kind !== 'library' || !shown) return
+  if (agentTimer) clearTimeout(agentTimer)
+  agentTimer = setTimeout(refreshForAgent, 300)
+})
+async function refreshForAgent() {
+  const keep = [...selected.value]
+  await loadCategories()
+  page.value = 1
+  await Promise.all([loadPage(true), loadTags()])
+  if (!keep.length) return
+  try {
+    const live = new Set((await resolveBlocks(keep)).map((b) => b.id))
+    selected.value = selected.value.filter((id) => live.has(id))
+  } catch { /* keep the selection as it was */ }
+}
 
 // Deep-link from the prompt widget's footer: adopt its category + tags, then reload. `immediate` so
 // the very first navigation applies too — under KeepAlive the prop is already set when the view first

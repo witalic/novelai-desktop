@@ -10,6 +10,7 @@ import WorksView from './views/WorksView.vue'
 import LibraryView from './views/LibraryView.vue'
 import PresetsView from './views/PresetsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import { onAgentNotice } from './composables/useAgentNotices'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
 import type { Preset, PresetParams } from './types'
@@ -18,7 +19,17 @@ useTheme()
 export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
 const view = ref<ViewId>('generate')
 const views = { generate: GenerateView, works: WorksView, library: LibraryView, presets: PresetsView, settings: SettingsView }
-const { toasts } = useToast()
+const { toasts, push } = useToast()
+
+// Whatever an agent changes is said out loud (security.md: nothing happens silently). A busy agent's burst
+// updates the one toast on screen instead of stacking a column of them.
+let agentToast = { id: 0, more: 0 }
+onAgentNotice((n) => {
+  const shown = toasts.value.find((t) => t.id === agentToast.id)
+  if (!shown) { agentToast = { id: push(n.message, 'ok'), more: 0 }; return }
+  agentToast.more += 1
+  shown.text = `${n.message} · and ${agentToast.more} more change${agentToast.more === 1 ? '' : 's'}`
+})
 
 const activeWorkId = ref<string | null>(null)
 

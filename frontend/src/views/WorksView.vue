@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onActivated, onUnmounted, ref } from 'vue'
+import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { ApiError, deleteWork, listWorks, type WorkSort } from '../api'
+import { onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import WorkEditor from './WorkEditor.vue'
@@ -103,6 +104,11 @@ async function removeWork(w: WorkListItem) {
 // separate setup-time fetch would just double-load.
 onActivated(() => fetchPage())
 onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
+// An agent created or changed a work: refresh the list while it's on screen (the open editor catches up itself).
+let shown = false
+onActivated(() => { shown = true })
+onDeactivated(() => { shown = false })
+onAgentNotice((n) => { if (n.kind === 'work' && shown && !openWork.value) fetchPage() })
 </script>
 
 <template>

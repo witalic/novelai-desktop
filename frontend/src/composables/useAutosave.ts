@@ -6,6 +6,7 @@ import { ApiError, getAppSettings, saveWork } from '../api'
 import { canvasToWork } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { useToast } from './useToast'
+import { catchUpQueue, type AgentOp } from '../vault/agentOps'
 import type { GenResult, PanelParams, PersistedCombo, WorkDoc } from '../types'
 
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved'
@@ -21,9 +22,14 @@ interface Deps {
   onNoVault: () => void // no vault configured → route the user to Settings
   onSaved?: (workId: string) => void // after a successful save: swap just-persisted data: URLs for vault URLs
   onConflict?: () => void // a concurrent edit was detected (409) → the host reloads the work
+  // What agents changed in the stored copy since `since` (null: it was also saved some other way) …
+  agentChanges?: (workId: string, since: string) => Promise<{ at: string; ops: AgentOp[] } | null>
+  applyAgentOps?: (ops: AgentOp[]) => void // … and how the host replays those edits over the canvas
 }
 
-export function useAutosave({ nodes, viewport, params, drafts, favorites, combos, onNoVault, onSaved, onConflict }: Deps) {
+export function useAutosave({
+  nodes, viewport, params, drafts, favorites, combos, onNoVault, onSaved, onConflict, agentChanges, applyAgentOps,
+}: Deps) {
   const toast = useToast()
   const title = ref('')
   const vaultReady = ref(false)
@@ -75,8 +81,44 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, combos
     if (saveState.value !== 'saving') saveState.value = 'dirty'
   }
 
+  // An agent edited the stored copy (backend app/agent/changes): replay its edits over the canvas — our unsaved
+  // edits stay — and take the stored stamp as the new lock base, so the next save doesn't 409. True when the base
+  // moved on; false when there was nothing to replay or the stored copy also got there some other way (only the
+  // 409 reload catches up then). One catch-up at a time (catchUpQueue).
+  const catchUp = catchUpQueue(runCatchUp)
+  async function runCatchUp(): Promise<boolean> {
+    if (!agentChanges || !applyAgentOps) return false
+    const wid = workId.value
+    for (let tries = 0; tries < 3; tries++) {
+      const since = baseUpdatedAt.value
+      if (!since) return false // never saved — there's no stored copy to catch up with
+      let res: Awaited<ReturnType<typeof agentChanges>>
+      try { res = await agentChanges(wid, since) } catch { return false }
+      if (workId.value !== wid) return false // another work was opened meanwhile
+      if (baseUpdatedAt.value !== since) continue // one of our saves landed meanwhile → ask again from its stamp
+      if (!res) return false
+      if (res.ops.length) {
+        const wasDirty = dirty
+        ignoreDirty = true
+        applyAgentOps(res.ops)
+        await nextTick() // the deep watcher fires inside the suppression
+        ignoreDirty = false
+        if (!wasDirty) lastSig = changeKey() // nothing of ours was unsaved → the canvas now IS the stored copy
+      }
+      baseUpdatedAt.value = res.at
+      return res.at !== since
+    }
+    return false
+  }
+  // An agent notice for this work: let a running save land (or 409 and catch up itself) first.
+  async function onAgentEdit() {
+    if (inflight) await inflight
+    await catchUp()
+  }
+
   // One save attempt. Returns true if the work is persisted (or nothing needed saving), false on error.
-  async function doSave(): Promise<boolean> {
+  // `conflicts`: 409s already answered by catching up — a busy agent can land more edits in between.
+  async function doSave(conflicts = 0): Promise<boolean> {
     const key = changeKey()
     if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return true }
     saveState.value = 'saving'
@@ -93,6 +135,8 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, combos
       if (onSaved) { ignoreDirty = true; onSaved(workId.value); await nextTick(); ignoreDirty = false }
       return true
     } catch (e) {
+      // Stored copy is newer: when only an agent changed it, replay its edits and save again on the new base.
+      if (e instanceof ApiError && e.status === 409 && conflicts < 5 && await catchUp()) return doSave(conflicts + 1)
       if (e instanceof ApiError && e.status === 409) { // concurrent edit → let the host reload; don't stay dirty
         saveState.value = 'idle'
         toast.push('This work changed elsewhere — reloading.', 'err')
@@ -165,5 +209,6 @@ export function useAutosave({ nodes, viewport, params, drafts, favorites, combos
   return {
     title, vaultReady, workId, baseUpdatedAt, saveState, savedAt,
     changeKey, markDirty, flush, flushIfDirty, manualSave, onBeforeUnload, refreshInterval, stopAutosave, resetBaseline,
+    onAgentEdit,
   }
 }

@@ -4,7 +4,8 @@
  * loaded WorkDoc (readonly in View); edits mutate the WorkDoc in place and autosave. The Composition
  * facet fills in next. */
 import { computed, nextTick, ref, watch } from 'vue'
-import { ApiError, loadWork, saveWork } from '../api'
+import { agentWorkChanges, ApiError, loadWork, saveWork } from '../api'
+import { onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePreview } from '../composables/useImagePreview'
@@ -12,6 +13,7 @@ import { useImageDownload } from '../composables/useImageDownload'
 import GalleryStack from '../components/GalleryStack.vue'
 import { imageMeta } from '../canvas/imageMeta'
 import { gridsOf, purgeImages, removeIdFromGrids } from '../vault/workOps'
+import { applyAgentOpsToDoc, catchUpQueue } from '../vault/agentOps'
 import type { ImageNodeData, WorkDoc, ZoneNode } from '../types'
 
 const props = defineProps<{ workId: string; initialMode?: 'view' | 'edit' }>()
@@ -122,21 +124,52 @@ async function flush() {
   inflight = (async () => { do { pending = false; await saveOnce() } while (pending && doc.value) })()
   try { await inflight } finally { inflight = null }
 }
+let conflicts = 0 // 409s in a row answered by catching up — a busy agent can land more edits in between
 async function saveOnce() {
   if (!doc.value) return
   try {
     // doc.updated_at is the base the editor loaded — the server 409s if the stored copy is newer (H3).
     const res = await saveWork(doc.value)
+    conflicts = 0
     saveState.value = 'saved'
     suppressWatch = true
     doc.value.updated_at = res.updated_at // new base for the next save — must not re-trigger autosave
     await nextTick(); suppressWatch = false
   } catch (e) {
+    // Stored copy is newer: when only an agent changed it, replay its edits and let the flush loop save again.
+    if (e instanceof ApiError && e.status === 409 && conflicts < 5 && await catchUp()) { conflicts++; pending = true; return }
+    conflicts = 0
     if (e instanceof ApiError && e.status === 409) { pending = false; push('This work changed elsewhere — reloading.', 'err'); await load() }
     else { saveState.value = 'idle'; push(e instanceof Error ? e.message : 'Save failed', 'err') }
   }
 }
 function onTitleInput(v: string) { if (doc.value) doc.value.title = v } // deep watch autosaves
+
+// An agent edited this work (backend app/agent/changes): replay its edits over our copy — a pending edit of ours
+// stays — and take the stored stamp as the new lock base. True when the base moved on; false when there was
+// nothing to replay or it was also saved some other way. One catch-up at a time (catchUpQueue).
+const catchUp = catchUpQueue(async () => {
+  const d = doc.value
+  for (let tries = 0; d && d.updated_at && tries < 3; tries++) {
+    const since = d.updated_at
+    let res: Awaited<ReturnType<typeof agentWorkChanges>>
+    try { res = await agentWorkChanges(d.id, since) } catch { return false }
+    if (doc.value !== d) return false // reloaded or closed meanwhile
+    if (d.updated_at !== since) continue // one of our saves landed meanwhile → ask again from its stamp
+    if (!res) return false
+    suppressWatch = true
+    applyAgentOpsToDoc(d, res.ops)
+    d.updated_at = res.at
+    await nextTick(); suppressWatch = false
+    return res.at !== since
+  }
+  return false
+})
+onAgentNotice(async (n) => {
+  if (n.kind !== 'work' || n.work_id !== doc.value?.id) return
+  if (inflight) await inflight // a running save lands (or 409s and catches up itself) first
+  await catchUp()
+})
 
 // ---- download (shared save-to-Downloads pipeline) ----
 const { downloadUrls } = useImageDownload()

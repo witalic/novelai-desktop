@@ -4,16 +4,16 @@
 
 Permissions are checked here, per call, against the config the listener holds — a refused call is a tool
 error that names the switch to turn on. Every call lands in the activity feed (reads folded), so the user
-sees what left the vault.
+sees what left the vault; every write is also announced to the open app (``changes``).
 """
 import json
 import logging
 from dataclasses import dataclass
 
-from starlette.concurrency import run_in_threadpool
+import anyio
 
 from app import __version__
-from app.agent import activity, tools
+from app.agent import activity, changes, tools
 from app.agent.config import AgentConfig
 from app.settings import Settings
 
@@ -21,15 +21,25 @@ log = logging.getLogger(__name__)
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")  # newest first; we answer in the client's if known
 
+# Agent calls run on a few worker threads of their own: a burst of parallel calls (waiting on each other's vault
+# locks) never takes the shared pool the app's own requests — saves included — run on.
+_THREADS = anyio.CapacityLimiter(4)
+
 PERMISSION_LABELS = {  # as the switches read in Settings → Agent access
     "read": "Browse the Library and works",
+    "blocks_write": "Create and edit blocks",
+    "blocks_delete": "Delete blocks",
+    "works_write": "Create works, edit titles and image metadata",
+    "combos_write": "Create and edit combinations",
+    "works_delete": "Delete images and combinations",
 }
 
 INSTRUCTIONS = (
     "novelai-desktop is the user's NovelAI image studio. The Library holds reusable prompt blocks "
     "(category + name + tag text, positive or negative); works hold generated images, their recipes and saved "
-    "block combinations. What you may do is set by the user in Settings → Agent access — a refused call names "
-    "the permission that is off."
+    "block combinations (ready block sets for the generation station). What you may do is set by the user in "
+    "Settings → Agent access — a refused call names the permission that is off. Whatever you change shows up in "
+    "the open app at once, and the user sees a log of it."
 )
 
 
@@ -56,10 +66,11 @@ def _text(text: str, *, error: bool = False) -> dict:
 
 
 def _describe(tool: tools.Tool) -> dict:
-    return {
-        "name": tool.name, "title": tool.title, "description": tool.description, "inputSchema": tool.schema,
-        "annotations": {"title": tool.title, "readOnlyHint": tool.permission == "read"},
-    }
+    annotations = {"title": tool.title, "readOnlyHint": tool.permission == "read"}
+    if tool.permission != "read":
+        annotations["destructiveHint"] = tool.permission.endswith("_delete")
+    return {"name": tool.name, "title": tool.title, "description": tool.description, "inputSchema": tool.schema,
+            "annotations": annotations}
 
 
 def _summary(args: dict) -> str:
@@ -119,7 +130,7 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
             f"Refused: “{label}” is turned off in Settings → Agent access. Ask the user to allow it.", error=True))
 
     try:
-        out = await run_in_threadpool(tools.run, tool, ctx.settings, args)
+        out = await anyio.to_thread.run_sync(tools.run, tool, ctx.settings, args, limiter=_THREADS)
     except tools.ToolError as exc:
         return _result(msg_id, _text(str(exc), error=True))
     except Exception:  # noqa: BLE001 — an agent call must never take the listener down
@@ -127,7 +138,13 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
         activity.record(tool.title, "see the app log", "error")
         return _result(msg_id, _text("Internal error — see the app log.", error=True))
 
-    activity.record_read(tool.title, _summary(args))
+    if isinstance(out, tools.Written):
+        activity.record(out.action, out.detail, "ok")
+        changes.publish({"kind": "work" if out.work_id else "library", "work_id": out.work_id,
+                         "message": f"Agent {out.action[0].lower()}{out.action[1:]} — {out.detail}"})
+        out = out.result
+    else:  # a read, or a write that turned out to change nothing (all duplicates, nothing found)
+        activity.record_read(tool.title, _summary(args))
     if isinstance(out, tools.ImageResult):
         return _result(msg_id, {"content": [tools.image_block(out)], "isError": False})
     return _result(msg_id, _text(json.dumps(out, ensure_ascii=False)))

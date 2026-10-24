@@ -5,6 +5,7 @@ Files on disk are authoritative; the SQLite index is opened per call and rebuilt
 import json
 import logging
 import shutil
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,11 @@ from app.vault.models import (
 )
 
 log = logging.getLogger(__name__)
+
+# One work write at a time: the optimistic-lock check, the files, the thumbnail and the index row land together.
+# Two writers exist — the app's saves and agents' edits (app.agent) — and both run in worker threads, so without
+# it both could pass the check and the later write would drop the other's images (gc'd as orphans) or edits.
+_works_lock = threading.Lock()
 
 
 def _now() -> str:
@@ -40,25 +46,31 @@ def _guard_no_move() -> None:
         raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
 
 
-def save_work(settings: Settings, doc: WorkDoc) -> dict:
+def save_work(settings: Settings, doc: WorkDoc, *, must_exist: bool = False) -> dict:
+    """Write a work. ``must_exist``: an edit of a stored work (an agent's) — 404 if it was deleted meanwhile,
+    rather than bring it back with images whose files are gone."""
     if not layout.valid_id(doc.id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
     _guard_no_move()
     vault = _vault(settings)
+    with _works_lock:
+        return _save_work_locked(vault, doc, must_exist)
+
+
+def _save_work_locked(vault: Path, doc: WorkDoc, must_exist: bool) -> dict:
     conn = index.open_index(vault)
     try:
         # Full id (not a prefix) in the directory name — a short prefix can collide for two same-title works
         # created close together, and the second write_work would overwrite the first's work.json.
         existing_dir = index.find_work_dir(conn, doc.id)
+        if must_exist and not existing_dir:
+            raise HTTPException(status_code=404, detail="Work not found.")
         dir_name = existing_dir or f"{_now()[:10]}__{layout.slugify(doc.title)}__{doc.id}"
         work_dir = layout.safe_join(vault / "works", dir_name)
         doc.slug = layout.slugify(doc.title)
         # Optimistic concurrency (H3): if the stored copy is newer than the base the client loaded
         # (its incoming updated_at), another editor saved in between — refuse so it doesn't clobber.
         # A client that sends no base (empty) opts out (fresh works, best-effort close beacon).
-        # Accepted limitation: the compare and the write below are not atomic (no per-work lock), so two
-        # PUTs racing with the SAME base can both pass the check → last-writer-wins. That needs a real
-        # concurrent-multi-writer scenario against one loopback backend; not worth a mutex at this scale.
         if existing_dir and doc.updated_at:
             stored = index.work_updated_at(conn, doc.id)
             if stored and stored > doc.updated_at:
@@ -124,17 +136,18 @@ def delete_work(settings: Settings, work_id: str) -> dict:
         raise HTTPException(status_code=400, detail="Invalid work id.")
     _guard_no_move()
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
-        dir_name = index.find_work_dir(conn, work_id)
-        if not dir_name:
-            raise HTTPException(status_code=404, detail="Work not found.")
-        index.remove_work(conn, work_id)
-    finally:
-        conn.close()
-    work_dir = layout.safe_join(vault / "works", dir_name)
-    if work_dir.is_dir():
-        shutil.rmtree(work_dir)
+    with _works_lock:  # never under a save that is writing into the same folder
+        conn = index.open_index(vault)
+        try:
+            dir_name = index.find_work_dir(conn, work_id)
+            if not dir_name:
+                raise HTTPException(status_code=404, detail="Work not found.")
+            index.remove_work(conn, work_id)
+        finally:
+            conn.close()
+        work_dir = layout.safe_join(vault / "works", dir_name)
+        if work_dir.is_dir():
+            shutil.rmtree(work_dir)
     return {"deleted": work_id}
 
 

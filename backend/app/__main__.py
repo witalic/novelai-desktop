@@ -32,7 +32,9 @@ def main() -> None:
     # module by name, which fails inside a PyInstaller-frozen binary. We use neither reload nor workers, so
     # the object form is equivalent.
     from app.main import app
-    uvicorn.run(app, host=host, port=port, log_level=settings.log.level.lower())
+    # The open app holds an endless event stream (/api/agent/events): a bounded graceful shutdown ends it instead
+    # of waiting on it forever.
+    uvicorn.run(app, host=host, port=port, log_level=settings.log.level.lower(), timeout_graceful_shutdown=3)
 
 
 if __name__ == "__main__":

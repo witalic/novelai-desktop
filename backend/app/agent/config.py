@@ -7,9 +7,15 @@ from pydantic import BaseModel, Field, ValidationError
 
 
 class AgentPermissions(BaseModel):
-    """One switch per kind of action (Settings → Agent access), checked on every tool call."""
+    """One switch per kind of action (Settings → Agent access), checked on every tool call. Everything but
+    deleting is on by default (owner decision)."""
 
     read: bool = True  # browse the Library and works
+    blocks_write: bool = True  # create and edit Library blocks
+    blocks_delete: bool = False
+    works_write: bool = True  # create works, rename them, edit image metadata
+    combos_write: bool = True  # create and edit a work's block combinations
+    works_delete: bool = False  # delete images and combinations
 
 
 class AgentConfig(BaseModel):

@@ -1,3 +1,4 @@
+import type { AgentOp } from './vault/agentOps'
 import type {
   BlocksPage, Catalog, CategoryCount, GenerateParams, ImportParseResult,
   ImportSaveResult, LibraryBlock, Preset, PresetParams, StreamEvent, Subscription, TagCount,
@@ -314,7 +315,11 @@ export async function clearNovelaiToken(): Promise<TokenStatus> {
 }
 
 // ---- Agent access (MCP) — the app's own loopback endpoint for AI agents; config + live status ----
-export interface AgentPermissions { read: boolean }
+export interface AgentPermissions {
+  read: boolean
+  blocks_write: boolean; blocks_delete: boolean
+  works_write: boolean; combos_write: boolean; works_delete: boolean
+}
 export interface AgentConfig { enabled: boolean; permissions: AgentPermissions }
 // One feed row; repeated reads of one kind within a minute share a row (`count`).
 export interface AgentActivity { at: string; action: string; detail: string; outcome: 'ok' | 'denied' | 'error'; count: number }
@@ -343,6 +348,14 @@ export async function revealAgentToken(): Promise<string> {
 
 export async function regenerateAgentToken(): Promise<AgentStatus> {
   return jsonOrThrow(await fetch('/api/agent/token', { method: 'POST' }), 'Failed to regenerate the agent token')
+}
+
+// What agents changed in a work since our copy was saved at `since` (its lock base): the operations to replay and
+// the stored copy's stamp. null (409) when it was also saved some other way — only a reload catches up then.
+export async function agentWorkChanges(workId: string, since: string): Promise<{ at: string; ops: AgentOp[] } | null> {
+  const resp = await fetch(`/api/agent/works/${encodeURIComponent(workId)}/changes?${new URLSearchParams({ since })}`)
+  if (resp.status === 409) return null
+  return jsonOrThrow(resp, 'Failed to read the agent’s changes')
 }
 
 // Save image(s) to the Downloads folder via the backend (no OS save dialog). `images` are raw base64.

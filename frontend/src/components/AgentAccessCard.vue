@@ -17,9 +17,19 @@ const { confirm } = useConfirm()
 const st = ref<AgentStatus | null>(null)
 const busy = ref(false)
 
-const PERMS: { group: string; items: { key: keyof AgentPermissions; name: string; desc: string }[] }[] = [
+// Grouped as in the mockup; deleting is marked and off by default (backend AgentPermissions).
+const PERMS: { group: string; items: { key: keyof AgentPermissions; name: string; desc: string; danger?: true }[] }[] = [
   { group: 'Read', items: [
     { key: 'read', name: 'Browse the Library and works', desc: 'blocks, categories, tags, works, image metadata and images, models' },
+  ] },
+  { group: 'Library', items: [
+    { key: 'blocks_write', name: 'Create and edit blocks', desc: 'same rules as Library import — duplicates are skipped' },
+    { key: 'blocks_delete', name: 'Delete blocks', desc: 'removes blocks from the Library', danger: true },
+  ] },
+  { group: 'Works', items: [
+    { key: 'works_write', name: 'Create works, edit titles and image metadata', desc: 'tags, descriptions, favorites' },
+    { key: 'combos_write', name: 'Create and edit combinations', desc: 'ready block sets inside a work' },
+    { key: 'works_delete', name: 'Delete images and combinations', desc: 'permanent', danger: true },
   ] },
 ]
 
@@ -127,13 +137,14 @@ onUnmounted(stopPoll)
 
     <div class="perm">
       <div class="txt"><div class="name">What agents may do</div>
-        <div class="desc">Each switch takes effect on the agent's next call; a refused call shows up in the activity below.</div></div>
+        <div class="desc">Everything except deleting is on by default. Each switch takes effect on the agent's next call;
+          what agents change shows up in the app at once, and a refused call shows up in the activity below.</div></div>
       <template v-for="g in PERMS" :key="g.group">
         <div class="pgrp">{{ g.group }}</div>
-        <div v-for="p in g.items" :key="p.key" class="prow">
-          <div><div class="pn">{{ p.name }}</div><div class="pd">{{ p.desc }}</div></div>
+        <div v-for="p in g.items" :key="p.key" class="prow" :class="{ dng: p.danger }">
+          <div><div class="pn">{{ p.name }}<span v-if="p.danger" class="tag">DELETE</span></div><div class="pd">{{ p.desc }}</div></div>
           <span class="sp"></span>
-          <button class="switch" :class="{ on: cfg?.permissions[p.key] }" role="switch" :aria-checked="!!cfg?.permissions[p.key]"
+          <button class="switch" :class="{ on: cfg?.permissions[p.key], dng: p.danger }" role="switch" :aria-checked="!!cfg?.permissions[p.key]"
             :disabled="!cfg || busy" :title="p.name" @click="setPerm(p.key, !cfg?.permissions[p.key])"><span class="knob"></span></button>
         </div>
       </template>
@@ -178,6 +189,7 @@ onUnmounted(stopPoll)
 .switch .knob{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--text-faint);transition:left .15s,background .15s}
 .switch.on{background:var(--accent);border-color:var(--accent)}
 .switch.on .knob{left:18px;background:var(--on-accent)}
+.switch.dng.on{background:var(--danger);border-color:var(--danger)}
 .switch:disabled{opacity:.5;cursor:default}
 
 .kv{display:grid;grid-template-columns:auto 1fr auto;gap:8px 12px;align-items:center;justify-items:start}
@@ -198,6 +210,9 @@ onUnmounted(stopPoll)
 .prow + .prow{border-top:1px dashed var(--border)}
 .pn{font-size:13px;display:flex;align-items:center;gap:8px}
 .pd{font-size:11.5px;color:var(--text-faint)}
+.prow.dng .pn{color:var(--danger)}
+.tag{font-size:9.5px;font-weight:800;letter-spacing:.3px;border-radius:9px;padding:0 6px;line-height:15px;border:1px solid
+  color-mix(in srgb,var(--danger) 50%,var(--border));color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,transparent)}
 
 .empty{padding:16px 18px;font-size:12.5px;color:var(--text-faint)}
 .log{max-height:280px;overflow-y:auto;padding:6px 0}
