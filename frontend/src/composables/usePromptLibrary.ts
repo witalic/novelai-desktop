@@ -1,6 +1,7 @@
 /* Data layer for the prompt widget's direct Library browser (design/prompt-widget-rework-mockup.html).
- * Single-select category (the rail), tag multi-select, a debounced search over name+prompt+tags, and a
- * per-work favorites filter. Race-guarded so a slow earlier response never overwrites a newer one.
+ * Single-select category rail — a group (all its categories) or one subgroup (vault/categoryTree) — tag
+ * multi-select, a debounced search over name+prompt+tags, and a per-work favorites filter. Race-guarded so
+ * a slow earlier response never overwrites a newer one.
  *
  * Two data paths:
  *  - normal: page the vault via listBlocks (infinite scroll), rail counts from listCategories.
@@ -8,8 +9,9 @@
  *    (resolveBlocks) once and filter them client-side; the rail counts are derived from that set.
  *
  * Deps are injectable so the logic is unit-testable without a network (the component passes api.ts). */
-import { ref, type Ref } from 'vue'
+import { computed, ref, type Ref } from 'vue'
 import { ApiError } from '../api'
+import { buildCategoryTree, scopeOf, tagsInScope } from '../vault/categoryTree'
 import type { BlocksPage, CategoryCount, LibraryBlock, TagCount } from '../types'
 
 export interface LibraryDeps {
@@ -25,13 +27,17 @@ const DEBOUNCE_MS = 300
 
 export function usePromptLibrary(deps: LibraryDeps) {
   const search = ref('')
-  const category = ref('')        // single-select rail: '' = all
+  const category = ref('')        // single-select rail: '' = all, a group key, or a subgroup slug
   const tags = ref<string[]>([])
   const favOnly = ref(false)      // ANDs with the category
   const items: Ref<LibraryBlock[]> = ref([])
   const total = ref(0)
   const allCount = ref(0)         // blocks in the current view before the category narrows it (rail "All")
-  const categories: Ref<CategoryCount[]> = ref([]) // rail palette: slug/name/color + count (view-scoped)
+  // Rail palette: EVERY category (slug/name/color) with its view-scoped count — empty ones included, so the
+  // tree's group keys stay stable; the rail hides empties itself (nonEmpty).
+  const categories: Ref<CategoryCount[]> = ref([])
+  const tree = computed(() => buildCategoryTree(categories.value))
+  const scope = computed(() => scopeOf(tree.value, category.value)) // the categories the selection covers
   const tagOptions: Ref<TagCount[]> = ref([])      // tag pins for the current category
   const loading = ref(false)
   const noVault = ref(false)
@@ -43,7 +49,7 @@ export function usePromptLibrary(deps: LibraryDeps) {
 
   function matches(b: LibraryBlock): boolean {
     const q = search.value.trim().toLowerCase()
-    return (!category.value || b.category === category.value)
+    return (!scope.value.length || scope.value.includes(b.category))
       && tags.value.every((t) => b.tags.includes(t))
       && (!q || `${b.name} ${b.text} ${b.tags.join(' ')}`.toLowerCase().includes(q))
   }
@@ -76,7 +82,7 @@ export function usePromptLibrary(deps: LibraryDeps) {
         noVault.value = false
       } else {
         const res = await deps.listBlocks({
-          categories: category.value ? [category.value] : [], tags: tags.value,
+          categories: scope.value, tags: tags.value,
           search: search.value.trim() || undefined, page, perPage: PER_PAGE,
         })
         if (token !== req) return
@@ -105,7 +111,7 @@ export function usePromptLibrary(deps: LibraryDeps) {
         const inTags = (b: LibraryBlock) => tags.value.every((t) => b.tags.includes(t))
         const counts: Record<string, number> = {}
         for (const b of favCache) if (inTags(b)) counts[b.category] = (counts[b.category] || 0) + 1
-        categories.value = cats.map((c) => ({ ...c, count: counts[c.slug] || 0 })).filter((c) => c.count > 0)
+        categories.value = cats.map((c) => ({ ...c, count: counts[c.slug] || 0 }))
         allCount.value = favCache.filter(inTags).length
       } else {
         categories.value = cats
@@ -122,10 +128,10 @@ export function usePromptLibrary(deps: LibraryDeps) {
       if (favOnly.value) {
         await resolveFavs()
         const counts: Record<string, number> = {}
-        for (const b of favCache) if (!category.value || b.category === category.value) for (const t of b.tags) counts[t] = (counts[t] || 0) + 1
+        for (const b of favCache) if (!scope.value.length || scope.value.includes(b.category)) for (const t of b.tags) counts[t] = (counts[t] || 0) + 1
         tagOptions.value = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }))
       } else {
-        tagOptions.value = await deps.listTags(category.value)
+        tagOptions.value = await tagsInScope(scope.value, deps.listTags)
       }
     } catch {
       tagOptions.value = []
@@ -193,7 +199,7 @@ export function usePromptLibrary(deps: LibraryDeps) {
   }
 
   return {
-    search, category, tags, favOnly, items, total, allCount, categories, tagOptions, loading, noVault,
+    search, category, tags, favOnly, items, total, allCount, categories, tree, tagOptions, loading, noVault,
     activate, reload, refreshFilters, setSearch, setCategory, toggleTag, setFavOnly, clearFilters,
     loadMore, onFavoritesChanged, dispose,
   }

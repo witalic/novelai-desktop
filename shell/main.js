@@ -25,6 +25,16 @@ ipcMain.handle('shell:openPath', async (_e, target) => {
   } catch { /* missing / not a directory */ }
   return false
 })
+// The app draws its own title bar (titleBarStyle 'hidden'), so its window buttons come through here. No
+// arguments — the renderer can only minimize / maximize-or-restore / close its own window.
+const ownWindow = (e) => (win && e.sender === win.webContents ? win : null)
+ipcMain.handle('window:minimize', (e) => { ownWindow(e)?.minimize() })
+ipcMain.handle('window:toggle-maximize', (e) => {
+  const w = ownWindow(e)
+  if (w) w.isMaximized() ? w.unmaximize() : w.maximize()
+})
+ipcMain.handle('window:close', (e) => { ownWindow(e)?.close() }) // → the flush-before-quit handshake below
+ipcMain.handle('window:is-maximized', (e) => !!ownWindow(e)?.isMaximized())
 
 function createWindow (apiOrigin) {
   Menu.setApplicationMenu(null)
@@ -32,6 +42,10 @@ function createWindow (apiOrigin) {
     width: 1280,
     height: 860,
     title: 'NovelAI Desktop',
+    // No OS title bar or buttons: the UI draws its own app bar (brand + window buttons, a drag region).
+    // Edge-resize and snapping stay native.
+    titleBarStyle: 'hidden',
+    backgroundColor: '#101214',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -51,6 +65,10 @@ function createWindow (apiOrigin) {
     return { action: 'deny' }
   })
   win.loadURL(`${apiOrigin}/app/`)
+  // Keep the app bar's maximize/restore icon in step with the window (snap, double-click, Win+↑ …).
+  const sendMaximized = () => win.webContents.send('window:maximized', win.isMaximized())
+  win.on('maximize', sendMaximized)
+  win.on('unmaximize', sendMaximized)
 
   // Give the renderer a chance to flush unsaved work before the window closes.
   let quitting = false

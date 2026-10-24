@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import AppBar from './components/AppBar.vue'
 import Sidebar from './components/Sidebar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
@@ -62,10 +63,13 @@ const viewBindings = computed(() =>
 
 <template>
   <div class="app">
-    <Sidebar :current="view" @navigate="view = $event" />
-    <KeepAlive>
-      <component :is="views[view]" v-bind="viewBindings" />
-    </KeepAlive>
+    <AppBar />
+    <div class="shell">
+      <Sidebar :current="view" @navigate="view = $event" />
+      <KeepAlive>
+        <component :is="views[view]" v-bind="viewBindings" />
+      </KeepAlive>
+    </div>
 
     <div class="toasts">
       <div v-for="t in toasts" :key="t.id" class="toast" :class="t.kind">
@@ -80,7 +84,8 @@ const viewBindings = computed(() =>
 </template>
 
 <style scoped>
-.app { display: flex; height: 100vh; overflow: hidden; }
+.app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.shell { flex: 1; display: flex; min-height: 0; }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 3000; }
 .toast { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; padding: 10px 14px;
   border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border);

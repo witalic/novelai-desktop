@@ -25,6 +25,9 @@ import {
   libraryDrift, lostOnReplace, matchesComposition, newCombo, planAdd, withLatestLibrary, type CompBlockData,
 } from '../vault/combos'
 import { dedupePrompt } from '../canvas/dedup'
+import { imageMeta } from '../canvas/imageMeta'
+import { RAIL_MIN, startRailResize } from '../canvas/railResize'
+import { buildCategoryTree, groupDot, groupOf, labelOf, nonEmpty, scopeOf } from '../vault/categoryTree'
 import PromptWidget from './PromptWidget.vue'
 import GalleryStack from './GalleryStack.vue'
 import CombosWidget from './CombosWidget.vue'
@@ -53,6 +56,7 @@ const emit = defineEmits<{
   'open-library': [{ category: string; tags: string[] }] // widget footer → Library, pre-filtered
   'new-work': []
   'reload-work': [] // a concurrent edit (409) → the view re-fetches the full work (params + stack + canvas)
+  'view-stack': [string] // open the image viewer over the stack at this draft (the view owns the stack)
 }>()
 
 const {
@@ -85,12 +89,14 @@ const widgetRevalidate = ref(0)
 const vaultCatColors = ref<Record<string, string>>({})
 const vaultCatNames = ref<Record<string, string>>({})
 const vaultCatOrder = ref<string[]>([]) // slugs in the vault's user-defined order (shared everywhere)
+const vaultCats = ref<{ slug: string; name: string; color: string }[]>([]) // the whole palette, for the group tree
 async function loadCategoryColors() {
   try {
     const cats = await listCategories()
     vaultCatColors.value = Object.fromEntries(cats.map((c) => [c.slug, c.color]))
     vaultCatNames.value = Object.fromEntries(cats.map((c) => [c.slug, c.name]))
     vaultCatOrder.value = cats.map((c) => c.slug)
+    vaultCats.value = cats.map(({ slug, name, color }) => ({ slug, name, color }))
   } catch { /* backend not ready / no vault — fall back to the builtin palette */ }
 }
 const catColor = (c: string) => vaultCatColors.value[c] ?? CATS[c] ?? CATS.custom
@@ -138,7 +144,6 @@ const tokenizerName = computed(() => TOKENIZER_NAMES[modelSpec(props.params.mode
 const scratchCount = computed(() => nodes.value.filter((n) => (n.type === 'block' || n.type === 'image') && !ANCHORS.has(n.parentNode ?? '')).length)
 
 const flowRef = ref<HTMLElement | null>(null)
-const topSelected = ref(false)
 
 // Image-rendering pipeline (decode sizing, ?w= thumbnails, flash-free swap, reference scaling). `dims` and
 // `sizeOf` are hoisted node-size helpers shared with arrange/settle; the pipeline gets them by reference.
@@ -215,15 +220,16 @@ function onCanvasDrop(e: DragEvent) {
   }
   if (payload.startsWith('nai-comp:')) { // a composition row dragged out of the station → MOVE it loose onto the canvas
     const src = findNode(payload.slice('nai-comp:'.length))
-    if (src && src.type === 'block') {
-      const pos = toFlow(e.clientX, e.clientY)
-      src.parentNode = undefined
-      src.hidden = false
-      src.data = { ...src.data, expanded: false, editing: false }
-      src.position = { x: pos.x - 88, y: pos.y - 17 }
-      src.style = { width: '176px' }
-      nudgeIfOverlapping(src)
-    }
+    const pos = toFlow(e.clientX, e.clientY)
+    // Let go anywhere over the station (not only on another row) = it stays in the composition — it used to
+    // fall through to here, get detached and land on top of (or, selected, under) the station.
+    if (!src || src.type !== 'block' || overStationAt(pos)) return
+    src.parentNode = undefined
+    src.hidden = false
+    src.data = { ...src.data, expanded: false, editing: false }
+    src.position = clearOfStation({ x: pos.x - 88, y: pos.y - 17 }, 176, 34)
+    src.style = { width: '176px' }
+    nudgeIfOverlapping(src)
     return
   }
   if (payload.startsWith('nai-galimg:')) { // a gallery thumbnail dragged out → MOVE it to the canvas as scratch
@@ -399,12 +405,23 @@ function applyScaleAll(scale: number) {
 /* ============================ Composition (station block list) ============================ */
 // The station renders its child blocks as an ordered HTML list (order = position.y); they stay hidden
 // so Vue Flow never free-renders them on the canvas.
-const compFilter = ref('') // single-select category rail; '' = all
+const compFilter = ref('') // single-select category rail: '' = all, a group key, or a subgroup slug
+// The composition's categories as two-level groups (vault/categoryTree) — the whole palette with the station's
+// counts, so group keys match the Library widget's; the rail shows only what the composition holds.
+const compTree = computed(() => {
+  const counts: Record<string, number> = {}
+  for (const b of compBlocks.value) counts[b.data.category] = (counts[b.data.category] || 0) + 1
+  const known = new Set(vaultCats.value.map((c) => c.slug))
+  const strays = Object.keys(counts).filter((s) => !known.has(s)) // a category the vault no longer has
+  return buildCategoryTree([...vaultCats.value, ...strays.map((s) => ({ slug: s, name: catName(s), color: catColor(s) }))]
+    .map((c) => ({ ...c, count: counts[c.slug] || 0 })))
+})
+const compScope = computed(() => scopeOf(compTree.value, compFilter.value))
 const compRows = computed(() => {
-  let rows = compBlocks.value.filter((n) => !compFilter.value || n.data.category === compFilter.value)
-  // In "All" group by the vault category order (then manual position.y within a category); a filtered
-  // category keeps pure position.y. Drag-reorder stays enabled in both (manual order within a category).
-  if (!compFilter.value) {
+  let rows = compBlocks.value.filter((n) => !compScope.value.length || compScope.value.includes(n.data.category))
+  // Across several categories (All, or a whole group) group by the vault category order (then manual
+  // position.y within a category); one category keeps pure position.y. Drag-reorder works in both.
+  if (compScope.value.length !== 1) {
     rows = rows.slice().sort((a, b) => catRank(a.data.category) - catRank(b.data.category) || (a.position.y - b.position.y))
   }
   return rows.map((n) => ({
@@ -418,13 +435,52 @@ const compRows = computed(() => {
     frozen: !!n.data?.frozen,
   }))
 })
-// Rail categories derived from the composition (only categories present), with counts + colors.
-const compRail = computed(() => {
-  const counts: Record<string, number> = {}
-  for (const b of compBlocks.value) counts[b.data.category] = (counts[b.data.category] || 0) + 1
-  return Object.entries(counts).sort((a, b) => catRank(a[0]) - catRank(b[0])) // vault order, not by count
-    .map(([slug, count]) => ({ slug, name: catName(slug), color: catColor(slug), count }))
+// The rail: only the groups/subgroups present in the composition (plus the selection), vault order.
+const compRail = computed(() => nonEmpty(compTree.value, compFilter.value))
+// Open groups: toggled by their chevron; selecting into a group opens it (and it can still be closed after).
+const compOpened = ref(new Set<string>())
+const compIsOpen = (key: string) => compOpened.value.has(key)
+function toggleCompGroup(key: string) {
+  const next = new Set(compOpened.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  compOpened.value = next
+}
+watch(compFilter, (key) => {
+  const g = groupOf(compTree.value, key)
+  if (g?.children.length && !compOpened.value.has(g.key)) compOpened.value = new Set([...compOpened.value, g.key])
 })
+// "＋ New block" lands in the rail's selection — a group's own category, a subgroup, else Custom.
+const compNewCategory = computed(() => {
+  const g = compTree.value.find((x) => x.key === compFilter.value)
+  return g ? g.self?.slug ?? 'custom' : compFilter.value || 'custom'
+})
+function onStationNewBlock() {
+  const cat = compNewCategory.value
+  newCompBlock(cat)
+  if (compScope.value.length && !compScope.value.includes(cat)) compFilter.value = '' // keep the new row in view
+}
+const compSelName = computed(() => labelOf(compTree.value, compFilter.value, catName))
+const compRailEl = ref<HTMLElement | null>(null)
+function onCompRailResize(e: PointerEvent) {
+  const st = findNode(STATION)
+  if (st && compRailEl.value) startRailResize(e, compRailEl.value, 'left', (w) => { st.data.railW = w })
+}
+function resetCompRail() { const st = findNode(STATION); if (st) delete st.data.railW }
+
+// ---- the colour-dot group picker: move a composition row into another group ----
+const catPicker = ref<{ nodeId: string; x: number; y: number } | null>(null)
+const pickerTree = computed(() => buildCategoryTree(vaultCats.value.map((c) => ({ ...c, count: 0 })))) // every group, empty or not
+function openCatPicker(e: MouseEvent, nodeId: string) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  catPicker.value = { nodeId, x: Math.min(r.left, window.innerWidth - 250), y: Math.min(r.bottom + 6, window.innerHeight - 380) }
+}
+function pickCategory(slug: string) {
+  const p = catPicker.value
+  catPicker.value = null
+  if (p) patchCompBlock({ nodeId: p.nodeId, patch: { category: slug } })
+}
+const pickedCategory = computed(() => (catPicker.value ? findNode(catPicker.value.nodeId)?.data?.category : null))
 
 function hideStationBlocks() {
   for (const n of nodes.value) if (n.parentNode === STATION && n.type === 'block') n.hidden = true
@@ -769,6 +825,25 @@ function overStationAt(pos: { x: number; y: number }): boolean {
   return pos.x >= stPos.x && pos.x <= stPos.x + w && pos.y >= stPos.y && pos.y <= stPos.y + h
 }
 
+// A loose block's top-left that keeps its whole box off the station: dropped just past an edge, it would
+// otherwise cover the station's edge. Pushed out the short way.
+function clearOfStation(p: { x: number; y: number }, w: number, h: number): { x: number; y: number } {
+  const st = findNode(STATION)
+  if (!st) return p
+  const sp = st.computedPosition || st.position
+  const { w: sw, h: sh } = dims(st)
+  const gap = 12
+  const overlaps = p.x < sp.x + sw && p.x + w > sp.x && p.y < sp.y + sh && p.y + h > sp.y
+  if (!overlaps) return p
+  const moves = [
+    { d: sp.x - gap - w - p.x, at: { x: sp.x - gap - w, y: p.y } }, // out the left side
+    { d: sp.x + sw + gap - p.x, at: { x: sp.x + sw + gap, y: p.y } }, // the right
+    { d: sp.y - gap - h - p.y, at: { x: p.x, y: sp.y - gap - h } }, // the top
+    { d: sp.y + sh + gap - p.y, at: { x: p.x, y: sp.y + sh + gap } }, // the bottom
+  ]
+  return moves.reduce((best, m) => (Math.abs(m.d) < Math.abs(best.d) ? m : best)).at
+}
+
 // Drop from the Library widget (drag-out): an independent copy joins the composition when dropped
 // over the station, else lands loose on the canvas as scratch.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -780,7 +855,7 @@ function dropBlockAt(data: any, pos: { x: number; y: number }) {
   const bw = 176, bh = 34
   addNodes([{
     id: newId('blk'), type: 'block', zIndex: 2,
-    position: { x: pos.x - bw / 2, y: pos.y - bh / 2 }, style: { width: `${bw}px` },
+    position: clearOfStation({ x: pos.x - bw / 2, y: pos.y - bh / 2 }, bw, bh), style: { width: `${bw}px` },
     data,
   }])
 }
@@ -792,24 +867,36 @@ function libraryBlockData(b: LibraryBlock): any {
 }
 
 // ⇢ / drop / ＋: an independent copy appended to the END of the composition list (position.y order).
-// Polarity is the block's own (no lanes); duplicates (same polarity + text) are refused, not stacked.
+// Polarity is the block's own (no lanes); duplicates (same polarity + text) are refused, not stacked —
+// an empty block is a placeholder still to be written, never a duplicate. Returns the new row's id.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function appendToComp(data: any) {
-  if (!findNode(STATION)) return
-  if (stationHasBlock(data.polarity ?? 'positive', data.text)) { warnDuplicate(); return }
+function appendToComp(data: any, expanded = false): string | null {
+  if (!findNode(STATION)) return null
+  if (String(data.text || '').trim() && stationHasBlock(data.polarity ?? 'positive', data.text)) { warnDuplicate(); return null }
+  const id = newId('blk')
   addNodes([{
-    id: newId('blk'), type: 'block', parentNode: STATION, zIndex: 2, hidden: true,
+    id, type: 'block', parentNode: STATION, zIndex: 2, hidden: true,
     position: { x: 0, y: nextCompY() }, style: { width: '176px' },
-    data: { ...data, expanded: false },
+    data: { ...data, expanded },
   }])
+  return id
 }
 function useLibraryBlock(b: LibraryBlock) {
   appendToComp(libraryBlockData(b))
 }
 
-// ＋ New block (from the Library widget): a fresh work-local block appended to the composition.
+// ＋ New block (the station's composition header, or the Library widget): a fresh work-local block appended to
+// the composition, opened for typing.
 function newCompBlock(category: string) {
-  appendToComp({ category: category || 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] })
+  const id = appendToComp({ category: category || 'custom', name: 'Untitled', text: '', polarity: 'positive', tags: [] }, true)
+  if (id) focusWhenRendered(`ctext-${id}`)
+}
+// Vue Flow renders added nodes a little later — wait for the row's field before focusing it (timers, not
+// animation frames: those don't run while the window isn't painting).
+function focusWhenRendered(elementId: string, tries = 10) {
+  const el = document.getElementById(elementId)
+  if (el) el.focus()
+  else if (tries > 0) setTimeout(() => focusWhenRendered(elementId, tries - 1), 16)
 }
 
 // ↥ Save a station block to the vault. The shared editor opens in-place (no tab switch); on save
@@ -1019,17 +1106,62 @@ function onGalleryImageMenu(p: { event: MouseEvent; id: string }) {
   if (!n || n.type !== 'image') return
   const recipe = comboBlocksFromComponents(imageComponents(p.id))
   const items: MenuItem[] = [
-    { label: 'Preview', icon: '⤢', onClick: () => openPreview(n.data.url) },
+    { label: 'Preview', icon: '⤢', onClick: () => viewGallery(p.id) },
     { label: n.data.favorite ? 'Unfavorite' : 'Favorite', icon: '★', onClick: () => toggleImageFavorite(p.id) },
   ]
   if (recipe.length) {
-    items.push({ label: 'Restore recipe to the station', icon: '↺', onClick: () => askReplace(recipe, 'this image’s recipe') })
-    items.push({ label: 'Save recipe as combination…', icon: '◈', onClick: () => {
-      comboDialog.value = { mode: 'save', title: 'Save recipe as combination', name: suggestComboName(recipe), blocks: recipe, link: false }
-    } })
+    items.push({ label: 'Restore recipe to the station', icon: '↺', onClick: () => restoreRecipe(p.id) })
+    items.push({ label: 'Save recipe as combination…', icon: '◈', onClick: () => saveRecipe(p.id) })
   }
   items.push({ label: 'Delete', icon: '🗑', danger: true, onClick: () => onGalleryDeleteImg(p.id) })
   openMenu(p.event, items)
+}
+function restoreRecipe(id: string) {
+  const recipe = comboBlocksFromComponents(imageComponents(id))
+  if (recipe.length) askReplace(recipe, 'this image’s recipe')
+  else toast.push('This image has no recipe to restore', 'err')
+}
+function saveRecipe(id: string) {
+  const recipe = comboBlocksFromComponents(imageComponents(id))
+  if (!recipe.length) { toast.push('This image has no recipe to save', 'err'); return }
+  comboDialog.value = { mode: 'save', title: 'Save recipe as combination', name: suggestComboName(recipe), blocks: recipe, link: false }
+}
+
+// ---- the image viewer over a gallery set: one grid (in order) or Quick access ----
+// The set an image belongs to — its grid's ids ("Grid N", as the Outline names it), or Quick access (gallery
+// images in no grid), oldest first.
+function gallerySetOf(id: string): { source: string; ids: () => string[] } {
+  const grids = galleryGrids()
+  const at = grids.findIndex((g) => g.imageIds.includes(id))
+  if (at >= 0) {
+    const gridId = grids[at].id
+    return { source: `Grid ${at + 1}`, ids: () => (galleryGrids().find((g) => g.id === gridId)?.imageIds ?? []) as string[] }
+  }
+  return {
+    source: 'Quick access',
+    ids: () => {
+      const inGrids = new Set(galleryGrids().flatMap((g) => g.imageIds as string[]))
+      return galleryImages.value.filter((n) => !inGrids.has(n.id)).map((n) => n.id)
+    },
+  }
+}
+function viewGallery(startId: string) {
+  const { source, ids } = gallerySetOf(startId)
+  openViewer({
+    source,
+    items: () => ids().map((id) => findNode(id)).filter((n) => n?.type === 'image' && n.data.url).map((n) => {
+      const params = (n!.data.snapshot as SnapshotData | undefined)?.params as { width?: number; height?: number; seed?: number } | undefined
+      return { id: n!.id, url: n!.data.url as string, favorite: !!n!.data.favorite, meta: imageMeta(params, n!.data.created_at) }
+    }),
+    actions: [
+      { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', run: (it) => toggleImageFavorite(it.id) },
+      { label: 'Restore recipe', icon: '↺', closes: true, enabled: (it) => imageComponents(it.id).length > 0, run: (it) => restoreRecipe(it.id) },
+      { label: 'Save recipe as combination…', icon: '◈', closes: true, enabled: (it) => imageComponents(it.id).length > 0,
+        run: (it) => saveRecipe(it.id) },
+      { label: 'Download', icon: '⤓', run: (it) => downloadUrls([it.url]) },
+      { label: 'Delete', icon: '🗑', key: 'Delete', danger: true, run: (it) => onGalleryDeleteImg(it.id) },
+    ],
+  }, startId)
 }
 
 function doGenerate() {
@@ -1048,7 +1180,9 @@ function doGenerate() {
 
 // ---- vault: title/save state + logic live in useAutosave (above). Keyboard shortcuts below. ----
 function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && catPicker.value) { catPicker.value = null; return }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); manualSave(); return }
+  if (viewerOpen()) return // the image viewer (and any dialog over it) owns the keys — never delete canvas nodes under it
   const t = e.target as HTMLElement | null
   const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
   if (e.key === '/' && !typing) {
@@ -1119,7 +1253,7 @@ function loadDoc(doc: any) {
 
 // Right-click menu for images + prompt blocks (shared ContextMenu): preview, arrange, download, delete.
 const { open: openMenu, close: closeMenu } = useContextMenu()
-const { preview: openPreview } = useImagePreview() // `preview` is already a prop (the live generation image)
+const { preview: openPreview, openViewer, isOpen: viewerOpen } = useImagePreview() // `preview` is already a prop (the live generation image)
 const { downloadUrls } = useImageDownload()
 const REMOVABLE = new Set(['image', 'block'])
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1143,7 +1277,7 @@ function onStationMenu(e: MouseEvent) {
   const d = props.drafts[0]
   if (!d) return
   openMenu(e, [
-    { label: 'Preview', icon: '⤢', onClick: () => openPreview(d.url) },
+    { label: 'Preview', icon: '⤢', onClick: () => emit('view-stack', d.id) },
     { label: 'Move to Quick access', icon: '⤒', onClick: () => keepDraftsBatch([d.id]) },
     { label: 'Remove from stack', icon: '🗑', danger: true, onClick: () => emit('take', d.id) },
   ])
@@ -1235,8 +1369,9 @@ function startName(data: any, e: MouseEvent) {
 
     <div class="flowwrap" ref="flowRef" @drop="onCanvasDrop" @dragover.prevent>
       <div v-if="scratchCount" class="scratch-banner">{{ scratchCount }} scratch item{{ scratchCount > 1 ? 's' : '' }} outside the zones</div>
+      <!-- elevate-nodes-on-select off: a selected zone (+1000 z) would otherwise cover the loose blocks/images on it -->
       <VueFlow :min-zoom="0.2" :max-zoom="2.5" :delete-key-code="null" :only-render-visible-elements="true"
-               :multi-selection-key-code="['Control', 'Meta']" :selection-key-code="'Shift'"
+               :multi-selection-key-code="['Control', 'Meta']" :selection-key-code="'Shift'" :elevate-nodes-on-select="false"
                :zoom-on-double-click="false" style="height:100%;width:100%">
         <Background pattern-color="var(--border-strong)" :gap="18" :size="1.2" />
         <Controls position="bottom-left" :show-interactive="false" />
@@ -1268,15 +1403,15 @@ function startName(data: any, e: MouseEvent) {
                 <div class="zlbl">Output</div>
                 <div class="outbody">
                   <img v-if="busy && preview" class="liveprev" :src="preview" alt="generating preview" />
-                  <div v-else-if="drafts.length" class="topwrap nodrag" :class="{ selected: topSelected }" draggable="true"
-                    @dragstart="onDraftDragStart" @pointerdown.stop @click.stop="topSelected = !topSelected"
-                    @contextmenu.stop="onStationMenu" title="Drag onto the canvas to keep · right-click for actions">
+                  <div v-else-if="drafts.length" class="topwrap nodrag" draggable="true"
+                    @dragstart="onDraftDragStart" @pointerdown.stop @click.stop="emit('view-stack', drafts[0].id)"
+                    @contextmenu.stop="onStationMenu" title="Click to view the stack · drag onto the canvas to keep · right-click for actions">
                     <img class="topimg" :src="drafts[0].url" alt="latest generation" draggable="false" />
                     <span v-if="drafts[0].mock" class="mockbadge" title="Offline placeholder — no NovelAI token set">MOCK</span>
+                    <span class="viewhint">⤢ Click to view{{ drafts.length > 1 ? ` all ${drafts.length}` : '' }}</span>
                     <span class="stackbadge">{{ drafts.length }} in stack</span>
                     <span class="draghint">⤴ drag to keep</span>
                     <div class="topacts nodrag">
-                      <button class="tact" title="Preview" @click.stop="openPreview(drafts[0].url)" @pointerdown.stop>⤢</button>
                       <button class="tact" title="Move to gallery Quick access" @click.stop="keepDraftsBatch([drafts[0].id])" @pointerdown.stop>⤒</button>
                       <button class="tact del" title="Remove from stack" @click.stop="$emit('take', drafts[0].id)" @pointerdown.stop>🗑</button>
                     </div>
@@ -1290,15 +1425,23 @@ function startName(data: any, e: MouseEvent) {
               <div class="compzone" :style="{ flexGrow: 1 - (data.ratio ?? 0.3) }">
                 <div class="complist nodrag nowheel" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive"
                   @click="stopIfInteractive" @drop="onCompDrop" @dragover.prevent>
+                  <div class="comphd">
+                    <span class="zlbl">Composition · {{ compBlocks.length }}</span>
+                    <button class="newblk" :title="`Add an empty block to ${catName(compNewCategory)}`"
+                      @click.stop="onStationNewBlock" @pointerdown.stop>＋ New block
+                      <i :style="{ background: catColor(compNewCategory) }"></i>{{ catName(compNewCategory) }}</button>
+                  </div>
                   <div v-if="!compRows.length" class="comphint">
-                    {{ compFilter ? `No ${catName(compFilter)} blocks.` : 'Drop blocks from the Library widget to build the prompt.' }}
+                    {{ compFilter ? `No ${compSelName} blocks.` : 'Drop blocks from the Library widget to build the prompt.' }}
                   </div>
                   <div v-for="b in compRows" :key="b.nodeId" class="crow"
                     :class="[b.frozen ? 'frozen' : (b.polarity === 'negative' ? 'neg' : 'pos'), { drop: compDropBefore === b.nodeId }]"
                     draggable="true" @dragstart="onCompDragStart($event, b.nodeId)" @dragover="onCompDragOver($event, b.nodeId)" @dragend="onCompDragEnd">
                     <div class="cr1">
                       <span class="grip" title="Drag to reorder or out to the canvas">⠿</span>
-                      <span class="cdot2" :style="{ background: catColor(b.category) }" :title="catName(b.category)"></span>
+                      <button class="cdot2 pick" :class="{ act: catPicker?.nodeId === b.nodeId }" :style="{ background: catColor(b.category) }"
+                        :title="`${catName(b.category)} — click to move to another group`"
+                        @click.stop="openCatPicker($event, b.nodeId)" @pointerdown.stop></button>
                       <input v-if="renamingId === b.nodeId" :id="`cname-${b.nodeId}`" class="cnamein nodrag" :value="b.name"
                         @pointerdown.stop @click.stop @input="patchCompBlock({ nodeId: b.nodeId, patch: { name: ($event.target as HTMLInputElement).value } })"
                         @blur="renamingId = null" @keyup.enter="renamingId = null" @keyup.esc="renamingId = null" />
@@ -1313,21 +1456,33 @@ function startName(data: any, e: MouseEvent) {
                       <button class="cicon" title="Save to Library…" @click.stop="saveToLibrary(b.nodeId)" @pointerdown.stop>↥</button>
                       <button class="cicon del" title="Delete from composition" @click.stop="deleteCompBlock(b.nodeId)" @pointerdown.stop>✕</button>
                     </div>
-                    <textarea v-if="b.expanded" v-autosize class="ctext nodrag nowheel" :value="b.text" placeholder="tags…"
+                    <textarea v-if="b.expanded" :id="`ctext-${b.nodeId}`" v-autosize class="ctext nodrag nowheel" :value="b.text" placeholder="tags…"
                       @pointerdown.stop @click.stop
                       @input="patchCompBlock({ nodeId: b.nodeId, patch: { text: ($event.target as HTMLTextAreaElement).value } }); autosize($event.target as HTMLTextAreaElement)"></textarea>
                     <div v-else class="cprev">{{ b.text || 'empty' }}</div>
                   </div>
                 </div>
-                <div class="comprail nodrag nowheel" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
+                <div ref="compRailEl" class="comprail nodrag nowheel" :style="{ width: `${data.railW ?? RAIL_MIN}px` }"
+                  @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
+                  <div class="railgrip" title="Drag to resize · double-click to reset" @pointerdown="onCompRailResize" @dblclick.stop="resetCompRail"></div>
                   <div class="railnavs">
                     <button class="cnav" :class="{ on: !compFilter }" @click.stop="compFilter = ''" @pointerdown.stop>
-                      <span class="gl">▦</span><span class="cn">All</span><span class="cc">{{ compBlocks.length }}</span>
+                      <span class="chv"></span><span class="gl">▦</span><span class="cn">All</span><span class="cc">{{ compBlocks.length }}</span>
                     </button>
-                    <button v-for="c in compRail" :key="c.slug" class="cnav" :class="{ on: compFilter === c.slug }"
-                      @click.stop="compFilter = c.slug" @pointerdown.stop>
-                      <span class="cdot2" :style="{ background: c.color }"></span><span class="cn">{{ c.name }}</span><span class="cc">{{ c.count }}</span>
-                    </button>
+                    <template v-for="g in compRail" :key="g.key">
+                      <button class="cnav" :class="{ on: compFilter === g.key }" :title="g.children.length ? `${g.name} — the whole group` : g.name"
+                        @click.stop="compFilter = g.key" @pointerdown.stop>
+                        <span class="chv" :title="compIsOpen(g.key) ? 'Hide subgroups' : 'Show subgroups'"
+                          @click.stop="g.children.length && toggleCompGroup(g.key)">{{ g.children.length ? (compIsOpen(g.key) ? '▾' : '▸') : '' }}</span>
+                        <span class="cdot2" :style="{ background: groupDot(g) }"></span><span class="cn">{{ g.name }}</span><span class="cc">{{ g.count }}</span>
+                      </button>
+                      <template v-if="compIsOpen(g.key)">
+                        <button v-for="c in g.children" :key="c.slug" class="cnav child" :class="{ on: compFilter === c.slug, own: c.own }"
+                          :title="c.own ? `${g.name} only — without its subgroups` : c.name" @click.stop="compFilter = c.slug" @pointerdown.stop>
+                          <span class="cdot2" :style="{ background: c.color }"></span><span class="cn">{{ c.short }}</span><span class="cc">{{ c.count }}</span>
+                        </button>
+                      </template>
+                    </template>
                   </div>
                   <template v-if="compBlocks.length">
                     <button v-if="comboLinkState === 'edited'" class="railsave on" :title="`Overwrite “${linkedCombo?.name}” with the current blocks`"
@@ -1384,7 +1539,7 @@ function startName(data: any, e: MouseEvent) {
           </template>
           <template v-else>
             <NodeResizer :min-width="360" :min-height="280" :is-visible="selected" color="var(--accent)" />
-            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="openPreview" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" @image-menu="onGalleryImageMenu" />
+            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="viewGallery" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" @image-menu="onGalleryImageMenu" />
           </template>
         </template>
 
@@ -1421,6 +1576,26 @@ function startName(data: any, e: MouseEvent) {
       :name="comboDialog.mode === 'save' ? comboDialog.name : undefined" :blocks="comboDialog.blocks" :cat-color="catColor"
       :message="comboDialog.mode === 'replace' ? comboDialog.message : undefined"
       @save="onComboDialogSave" @replace="onComboDialogReplace" @close="comboDialog = null" />
+    <!-- A composition row's colour dot → move the block into another group (every group, empty or not). -->
+    <Teleport to="body">
+      <template v-if="catPicker">
+        <div class="cpk-back" @click="catPicker = null" @contextmenu.prevent="catPicker = null" @wheel="catPicker = null"></div>
+        <div class="cpk" :style="{ left: `${catPicker.x}px`, top: `${catPicker.y}px` }" @keydown.esc="catPicker = null">
+          <div class="cpk-hd">Move to group</div>
+          <template v-for="g in pickerTree" :key="g.key">
+            <div v-if="g.self?.slug === 'custom'" class="cpk-sep"></div>
+            <button v-if="g.self" class="cpk-o grp" :class="{ on: pickedCategory === g.self.slug }" @click="pickCategory(g.self.slug)">
+              <i :style="{ background: g.self.color }"></i>{{ g.name }}<span v-if="pickedCategory === g.self.slug" class="ck">✓</span>
+            </button>
+            <div v-else class="cpk-o virt">{{ g.name }}</div>
+            <button v-for="c in g.children.filter((x) => !x.own)" :key="c.slug" class="cpk-o child" :class="{ on: pickedCategory === c.slug }"
+              @click="pickCategory(c.slug)">
+              <i :style="{ background: c.color }"></i>{{ c.short }}<span v-if="pickedCategory === c.slug" class="ck">✓</span>
+            </button>
+          </template>
+        </div>
+      </template>
+    </Teleport>
   </section>
 </template>
 
@@ -1498,12 +1673,15 @@ function startName(data: any, e: MouseEvent) {
 .outhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;font-size:12px;color:var(--text-faint)}
 .liveprev{position:absolute;inset:8px;width:calc(100% - 16px);height:calc(100% - 16px);object-fit:contain;border-radius:8px;
   border:1px solid var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
-.topwrap{position:absolute;inset:8px;display:flex;align-items:center;justify-content:center;cursor:grab}
+.topwrap{position:absolute;inset:8px;display:flex;align-items:center;justify-content:center;cursor:zoom-in}
 .topwrap:active{cursor:grabbing}
 .topimg{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;border:1px solid var(--border);box-shadow:0 2px 10px rgba(0,0,0,.35);transition:box-shadow .12s,border-color .12s}
 .topwrap:hover .topimg{border-color:var(--border-strong)}
 .mockbadge{position:absolute;top:14px;left:14px;font-size:9px;font-weight:800;letter-spacing:.5px;background:var(--warn,#b65c02);color:#fff;padding:2px 7px;border-radius:10px;pointer-events:none}
-.topwrap.selected .topimg{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
+/* hover hint: a click opens the viewer over the whole stack */
+.viewhint{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:11.5px;font-weight:700;color:#fff;
+  background:color-mix(in srgb,#000 58%,transparent);padding:6px 11px;border-radius:8px;opacity:0;transition:opacity .12s;pointer-events:none;white-space:nowrap}
+.topwrap:hover .viewhint{opacity:1}
 .stackbadge{position:absolute;top:2px;right:2px;font-size:10px;font-weight:600;background:color-mix(in srgb,#000 58%,transparent);color:#fff;padding:2px 8px;border-radius:20px}
 .draghint{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:600;background:var(--accent);color:var(--on-accent);padding:3px 10px;border-radius:20px;opacity:0;transition:opacity .12s;pointer-events:none;white-space:nowrap}
 .topwrap:hover .draghint{opacity:1}
@@ -1539,7 +1717,10 @@ function startName(data: any, e: MouseEvent) {
 .cprev{font-size:11px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .ctext{width:100%;min-height:52px;margin-top:5px;resize:vertical;font:inherit;font-size:11.5px;color:var(--text);background:var(--surface-1);border:1px solid var(--border);border-radius:5px;padding:6px;outline:none}
 .ctext:focus{border-color:var(--accent)}
-.comprail{width:118px;flex-shrink:0;border-left:1px solid var(--border);display:flex;flex-direction:column;padding:6px;background:color-mix(in srgb,var(--surface-1) 45%,transparent)}
+.comprail{position:relative;flex-shrink:0;border-left:1px solid var(--border);display:flex;flex-direction:column;padding:6px;background:color-mix(in srgb,var(--surface-1) 45%,transparent)}
+/* the rail's resize handle, on its left edge (the rail sits on the right) */
+.railgrip{position:absolute;top:0;bottom:0;left:-4px;width:8px;cursor:col-resize;z-index:2}
+.railgrip:hover,.railgrip:active{background:linear-gradient(to right,transparent 2px,var(--accent) 2px,var(--accent) 5px,transparent 5px)}
 .railnavs{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px}
 .clearall{flex-shrink:0;margin-top:5px;border:1px solid var(--border);border-radius:var(--radius);background:transparent;color:var(--text-faint);font:inherit;font-size:10.5px;font-weight:600;padding:5px 6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
 .clearall:hover{color:var(--danger,#e2483d);border-color:var(--danger,#e2483d)}
@@ -1555,6 +1736,38 @@ function startName(data: any, e: MouseEvent) {
 .cnav .cn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cnav .cc{margin-left:auto;color:var(--text-faint);font-weight:500;font-variant-numeric:tabular-nums;font-size:10px}
 .cnav.on .cc{color:var(--accent)}
+/* group chevron (blank when a group has no subgroups, so names stay aligned); subgroups indent under it */
+.cnav .chv{width:9px;flex-shrink:0;margin-right:-2px;text-align:center;font-size:9px;color:var(--text-faint)}
+.cnav .chv:hover{color:var(--text)}
+.cnav.child{padding-left:25px;font-weight:500}
+.cnav.child.own .cn{font-style:italic} /* "General" = the group's own category, without its subgroups */
+/* the composition's header: count + ＋ New block (into the rail's selection) */
+/* pinned while the list scrolls (ui-design.md: action rows don't scroll away) */
+.comphd{position:sticky;top:-8px;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0;
+  margin:-8px -8px 0;padding:8px 8px 5px;background:var(--surface-1)}
+.comphd .zlbl{padding:0 2px;height:auto}
+.newblk{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border-strong);background:transparent;color:var(--text-dim);
+  border-radius:6px;font:inherit;font-size:11px;font-weight:650;padding:3px 9px;cursor:pointer;white-space:nowrap}
+.newblk:hover{color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.newblk i{width:8px;height:8px;border-radius:50%;display:inline-block}
+/* a row's colour dot is the group picker's handle */
+.cdot2.pick{width:11px;height:11px;border:0;padding:0;cursor:pointer;box-shadow:0 0 0 2px transparent;transition:box-shadow .12s}
+.cdot2.pick:hover,.cdot2.pick.act{box-shadow:0 0 0 2px var(--surface-2),0 0 0 4px var(--accent)}
+/* the group picker (teleported) */
+.cpk-back{position:fixed;inset:0;z-index:2600}
+.cpk{position:fixed;z-index:2601;width:236px;max-height:360px;overflow-y:auto;background:var(--surface-1);border:1px solid var(--border-strong);
+  border-radius:var(--radius-lg);box-shadow:0 14px 36px rgba(0,0,0,.45);padding:5px;display:flex;flex-direction:column}
+.cpk-hd{font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:4px 8px 5px}
+.cpk-o{display:flex;align-items:center;gap:8px;border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12px;
+  text-align:left;padding:5px 8px;border-radius:5px;cursor:pointer}
+.cpk-o i{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.cpk-o:hover,.cpk-o.on{background:var(--surface-3);color:var(--text)}
+.cpk-o.grp{font-weight:650;color:var(--text)}
+.cpk-o.child{padding-left:26px}
+.cpk-o.virt{cursor:default;font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint);padding-top:7px}
+.cpk-o.virt:hover{background:transparent}
+.cpk-o .ck{margin-left:auto;color:var(--accent);font-weight:800}
+.cpk-sep{height:1px;background:var(--border);margin:4px 2px;flex-shrink:0}
 /* meta footer: assembled +/- prompts + the orientation control on the right */
 .stmeta{flex-shrink:0;border-top:1px solid var(--border);background:var(--surface-1);padding:7px 12px;display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-dim)}
 .stmeta .mrows{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;max-height:52px;overflow-y:auto}

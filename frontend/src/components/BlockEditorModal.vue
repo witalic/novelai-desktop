@@ -7,6 +7,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { deleteBlock, listCategories, listExamples, listTags, saveBlock, saveCategory, type ExampleImage } from '../api'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import { buildCategoryTree } from '../vault/categoryTree'
 import type { CategoryCount, LibraryBlock, TagCount } from '../types'
 
 const props = defineProps<{ block: LibraryBlock; isNew: boolean }>()
@@ -20,6 +21,7 @@ const PALETTE = ['#6e5dc6', '#0c66e4', '#ae4787', '#1f845a', '#b65c02', '#12b5a6
 const block = ref<LibraryBlock>({ ...props.block, tags: [...props.block.tags] })
 
 const categories = ref<CategoryCount[]>([])
+const catTree = computed(() => buildCategoryTree(categories.value)) // the picker lists every group, grouped
 const catColor = (slug: string) => categories.value.find((c) => c.slug === slug)?.color || '#738496'
 const catName = (slug: string) => categories.value.find((c) => c.slug === slug)?.name || slug
 async function loadCategories() { try { categories.value = await listCategories() } catch { /* keep prior */ } }
@@ -139,9 +141,15 @@ async function remove() {
                     <span class="chev">▾</span>
                   </button>
                   <div v-if="blockCatOpen" class="catseldrop" :style="blockCatStyle">
-                    <div v-for="c in categories" :key="c.slug" class="co" @click="chooseBlockCat(c.slug)">
-                      <span class="cdot" :style="{ background: c.color }"></span>{{ c.name }}
-                    </div>
+                    <template v-for="g in catTree" :key="g.key">
+                      <div v-if="g.self" class="co grp" @click="chooseBlockCat(g.self.slug)">
+                        <span class="cdot" :style="{ background: g.self.color }"></span>{{ g.name }}
+                      </div>
+                      <div v-else class="co virt">{{ g.name }}</div>
+                      <div v-for="c in g.children.filter((x) => !x.own)" :key="c.slug" class="co child" @click="chooseBlockCat(c.slug)">
+                        <span class="cdot" :style="{ background: c.color }"></span>{{ c.short }}
+                      </div>
+                    </template>
                     <div class="co create" @click="openCreateCategory">＋ New category…</div>
                   </div>
                 </div>
@@ -272,6 +280,10 @@ async function remove() {
 .catseldrop .co{display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:12.5px;color:var(--text-dim);cursor:pointer}
 .catseldrop .co:hover{background:var(--surface-3)}
 .catseldrop .co .cdot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+.catseldrop .co.grp{font-weight:650;color:var(--text)}
+.catseldrop .co.child{padding-left:27px}
+.catseldrop .co.virt{cursor:default;font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint);padding-bottom:4px}
+.catseldrop .co.virt:hover{background:transparent}
 .catseldrop .co.create{color:var(--accent);font-weight:600;border-top:1px dashed var(--border)}
 
 .tagedit{display:flex;flex-wrap:wrap;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:7px}

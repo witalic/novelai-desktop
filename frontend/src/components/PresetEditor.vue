@@ -41,7 +41,7 @@ function save() {
 
 <style scoped>
 .back{position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.35)}
-.drawer{position:fixed;top:0;right:0;bottom:0;z-index:901;width:min(400px,92vw);display:flex;flex-direction:column;
+.drawer{position:fixed;top:var(--appbar-h);right:0;bottom:0;z-index:901; /* below the app bar — never over the window buttons */width:min(400px,92vw);display:flex;flex-direction:column;
   background:var(--surface-1);border-left:1px solid var(--border);box-shadow:-8px 0 30px rgba(0,0,0,.4)}
 .dhd{display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--border);font-weight:600;font-size:15px;flex-shrink:0}
 .dhd .x{cursor:pointer;color:var(--text-faint);font-size:13px}

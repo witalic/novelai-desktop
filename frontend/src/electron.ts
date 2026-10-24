@@ -1,9 +1,18 @@
 // Thin wrapper over the Electron preload bridge (window.electronAPI). In a plain browser (dev/preview)
-// there is no bridge, so folder-pick falls back to a path prompt and open-in-explorer is a no-op.
+// there is no bridge, so folder-pick falls back to a path prompt, open-in-explorer is a no-op, and there
+// are no window controls (the browser has its own).
+export interface WindowControls {
+  minimize(): Promise<void>
+  toggleMaximize(): Promise<void>
+  close(): Promise<void>
+  isMaximized(): Promise<boolean>
+  onMaximizedChange(handler: (maximized: boolean) => void): () => void
+}
 interface ElectronAPI {
   pickFolder(): Promise<string | null>
   openPath(target: string): Promise<boolean>
   onBeforeQuit(handler: () => Promise<void> | void): () => void
+  windowControls: WindowControls
 }
 declare global {
   interface Window { electronAPI?: ElectronAPI }
@@ -24,3 +33,6 @@ export async function browseFolder(promptText = 'Enter a folder path'): Promise<
 export async function openInFileManager(target: string): Promise<void> {
   if (window.electronAPI) await window.electronAPI.openPath(target)
 }
+
+// The app bar's minimize / maximize / close — null outside Electron.
+export const windowControls = (): WindowControls | null => window.electronAPI?.windowControls ?? null

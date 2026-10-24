@@ -9,7 +9,9 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { listBlocks, listCategories, listTags, resolveBlocks } from '../api'
 import { usePromptLibrary } from '../composables/usePromptLibrary'
+import { RAIL_MIN, startRailResize } from '../canvas/railResize'
 import { blockIdentity } from '../vault/combos'
+import { groupDot, groupOf, labelOf, nonEmpty } from '../vault/categoryTree'
 import type { LibraryBlock, ZoneNode } from '../types'
 
 const props = defineProps<{
@@ -28,7 +30,7 @@ const emit = defineEmits<{
 }>()
 
 const {
-  search, category, tags, favOnly, items, total, allCount, categories, tagOptions, loading, noVault,
+  search, category, tags, favOnly, items, total, allCount, categories, tree, tagOptions, loading, noVault,
   activate, reload, setSearch, setCategory, toggleTag, setFavOnly, clearFilters, loadMore, onFavoritesChanged, dispose,
 } = usePromptLibrary({ listBlocks, listCategories, listTags, resolveBlocks, favorites: () => props.favorites })
 
@@ -43,11 +45,39 @@ const isUsed = (b: LibraryBlock) => props.usedKeys?.has(blockIdentity(b)) ?? fal
 const catColor = (slug: string) => categories.value.find((c) => c.slug === slug)?.color || '#738496'
 const catName = (slug: string) => categories.value.find((c) => c.slug === slug)?.name
   || (slug.startsWith('cat-') ? 'custom' : slug)
-const newLabel = computed(() => (category.value ? catName(category.value) : 'custom'))
-const tagLabel = computed(() => (category.value ? `Tags · ${catName(category.value)}` : 'Tags · all') + (favOnly.value ? ' · ★' : ''))
+// ---- the category rail: two-level groups (vault/categoryTree), empty ones hidden; resizable ----
+const railTree = computed(() => nonEmpty(tree.value, category.value))
+// Open groups: toggled by their chevron; selecting into a group opens it (and it can still be closed after).
+const opened = ref(new Set<string>())
+const isOpen = (key: string) => opened.value.has(key)
+function toggleGroup(key: string) {
+  const next = new Set(opened.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  opened.value = next
+}
+watch(category, (key) => {
+  const g = groupOf(tree.value, key)
+  if (g?.children.length && !opened.value.has(g.key)) opened.value = new Set([...opened.value, g.key])
+})
+const selName = (key: string) => labelOf(tree.value, key, catName)
+// "＋ New block" lands in the selected category — a group's own, else Custom (a pure group has none).
+const newCategory = computed(() => {
+  const g = tree.value.find((x) => x.key === category.value)
+  return g ? g.self?.slug ?? '' : category.value
+})
+const railEl = ref<HTMLElement | null>(null)
+const railWidth = computed(() => `${props.data.railW ?? RAIL_MIN}px`)
+function onRailResize(e: PointerEvent) {
+  if (railEl.value) startRailResize(e, railEl.value, 'right', (w) => { props.data.railW = w })
+}
+function resetRail() { delete props.data.railW }
+
+const newLabel = computed(() => (newCategory.value ? catName(newCategory.value) : 'custom'))
+const tagLabel = computed(() => (category.value ? `Tags · ${selName(category.value)}` : 'Tags · all') + (favOnly.value ? ' · ★' : ''))
 const filterSummary = computed(() => {
   const parts: string[] = []
-  if (category.value) parts.push(catName(category.value))
+  if (category.value) parts.push(selName(category.value))
   if (favOnly.value) parts.push('★ favorites')
   if (tags.value.length) parts.push(`${tags.value.length} tag${tags.value.length > 1 ? 's' : ''}`)
   return parts.join(' · ')
@@ -112,21 +142,33 @@ function onListScroll(e: Event) {
 
     <div class="pwbody nodrag" @pointerdown="stopIfInteractive" @mousedown="stopIfInteractive" @click="stopIfInteractive">
       <!-- left rail: ★ Favorites toggle + All + categories (single-select) -->
-      <div class="pwrail">
+      <div ref="railEl" class="pwrail" :style="{ width: railWidth }">
         <div class="railscroll nowheel">
           <button class="catnav fav" :class="{ on: favOnly }" title="Filter to this work’s favorites — combines with the category"
             @click="setFavOnly(!favOnly)">
-            <span class="gl">{{ favOnly ? '★' : '☆' }}</span><span class="cn">Favorites</span><span class="cc">{{ favorites.length }}</span>
+            <span class="chv"></span><span class="gl">{{ favOnly ? '★' : '☆' }}</span><span class="cn">Favorites</span><span class="cc">{{ favorites.length }}</span>
           </button>
           <div class="railsep"></div>
           <button class="catnav" :class="{ on: !category }" @click="setCategory('')">
-            <span class="gl">▦</span><span class="cn">All blocks</span><span class="cc">{{ allCount }}</span>
+            <span class="chv"></span><span class="gl">▦</span><span class="cn">All blocks</span><span class="cc">{{ allCount }}</span>
           </button>
           <div class="railgroup">Categories</div>
-          <button v-for="c in categories" :key="c.slug" class="catnav" :class="{ on: category === c.slug }" @click="setCategory(c.slug)">
-            <span class="cdot" :style="{ background: c.color }"></span><span class="cn">{{ c.name }}</span><span class="cc">{{ c.count }}</span>
-          </button>
+          <template v-for="g in railTree" :key="g.key">
+            <button class="catnav" :class="{ on: category === g.key }" :title="g.children.length ? `${g.name} — the whole group` : g.name"
+              @click="setCategory(g.key)">
+              <span class="chv" :title="isOpen(g.key) ? 'Hide subgroups' : 'Show subgroups'"
+                @click.stop="g.children.length && toggleGroup(g.key)">{{ g.children.length ? (isOpen(g.key) ? '▾' : '▸') : '' }}</span>
+              <span class="cdot" :style="{ background: groupDot(g) }"></span><span class="cn">{{ g.name }}</span><span class="cc">{{ g.count }}</span>
+            </button>
+            <template v-if="isOpen(g.key)">
+              <button v-for="c in g.children" :key="c.slug" class="catnav child" :class="{ on: category === c.slug, own: c.own }"
+                :title="c.own ? `${g.name} only — without its subgroups` : c.name" @click="setCategory(c.slug)">
+                <span class="cdot" :style="{ background: c.color }"></span><span class="cn">{{ c.short }}</span><span class="cc">{{ c.count }}</span>
+              </button>
+            </template>
+          </template>
         </div>
+        <div class="railgrip" title="Drag to resize · double-click to reset" @pointerdown="onRailResize" @dblclick.stop="resetRail"></div>
       </div>
 
       <!-- content: header (search + tags) → list -->
@@ -155,7 +197,7 @@ function onListScroll(e: Event) {
             </div>
           </template>
           <template v-else>
-            <button class="newrow" @click="$emit('new-block', category)">＋ New block in <b>{{ newLabel }}</b></button>
+            <button class="newrow" @click="$emit('new-block', newCategory)">＋ New block in <b>{{ newLabel }}</b></button>
             <template v-if="loading && !items.length">
               <div v-for="i in 3" :key="i" class="skel"></div>
             </template>
@@ -228,8 +270,11 @@ function onListScroll(e: Event) {
 .ptitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .pwbody{display:flex;flex:1;min-height:0}
-.pwrail{width:138px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;
+.pwrail{position:relative;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;
   background:color-mix(in srgb,var(--surface-1) 60%,transparent)}
+/* the rail's resize handle, on its right edge */
+.railgrip{position:absolute;top:0;bottom:0;right:-4px;width:8px;cursor:col-resize;z-index:2}
+.railgrip:hover,.railgrip:active{background:linear-gradient(to right,transparent 2px,var(--accent) 2px,var(--accent) 5px,transparent 5px)}
 .railscroll{flex:1;min-height:0;overflow-y:auto;padding:6px 6px 8px}
 .railgroup{font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text-faint);padding:8px 8px 4px}
 .catnav{display:flex;align-items:center;gap:7px;width:100%;border:0;background:transparent;color:var(--text-dim);
@@ -244,6 +289,11 @@ function onListScroll(e: Event) {
 .catnav.fav .gl{color:var(--star,#e0a534)}
 .catnav.fav.on{background:color-mix(in srgb,var(--star,#e0a534) 15%,transparent);color:var(--star,#e0a534)}
 .catnav.fav.on .cc{color:var(--star,#e0a534)}
+/* group chevron (blank for groups without subgroups, so names stay aligned); subgroups indent under it */
+.catnav .chv{width:9px;flex-shrink:0;margin-right:-3px;text-align:center;font-size:9px;color:var(--text-faint)}
+.catnav .chv:hover{color:var(--text)}
+.catnav.child{padding-left:28px;font-weight:500}
+.catnav.child.own .cn{font-style:italic} /* "General" = the group's own category, without its subgroups */
 .railsep{height:1px;background:var(--border);margin:6px 8px 2px}
 
 /* one shared horizontal gutter so the tag-scroll and the list-scroll line up on the same inset */

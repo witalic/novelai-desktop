@@ -14,8 +14,6 @@ const version = __APP_VERSION__ // from frontend/package.json via Vite define
 
 <template>
   <aside class="sidebar">
-    <div class="brand"><span class="logo">N</span><div>novelai studio</div></div>
-
     <div class="navgroup">Workspace</div>
     <div class="navitem" :class="{ active: current === 'generate' }" @click="emit('navigate', 'generate')">
       <i>✦</i> Generate
@@ -35,23 +33,20 @@ const version = __APP_VERSION__ // from frontend/package.json via Vite define
       <i>⚙</i> Settings
     </div>
 
-    <div class="bottom">
-      <div v-if="subscription" class="acct" :title="`${subscription.tier_name} subscription — remaining Anlas`">
+    <!-- one account card: tier + balance, the app version as its footer line -->
+    <div class="acct">
+      <div v-if="subscription" class="top" :title="`${subscription.tier_name} subscription — remaining Anlas`">
         <span class="tier">{{ subscription.tier_name }}</span>
         <span class="bal"><span class="dia">◆</span><span class="amt">{{ subscription.anlas.toLocaleString() }}</span><span class="lbl">Anlas</span></span>
       </div>
-      <div class="ver">v{{ version }}</div>
+      <div class="foot"><span>novelai studio</span><span class="ver">v{{ version }}</span></div>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .sidebar{width:224px;flex-shrink:0;background:var(--surface-1);border-right:1px solid var(--border);
-  display:flex;flex-direction:column;padding:14px 12px}
-.brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px;font-weight:600}
-.logo{width:28px;height:28px;border-radius:7px;background:var(--accent);color:#fff;
-  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px}
-.brand .sub{font-size:11px;color:var(--text-faint);font-weight:500}
+  display:flex;flex-direction:column;padding:10px 12px 12px}
 .navgroup{font-size:11px;font-weight:700;color:var(--text-faint);letter-spacing:.4px;
   text-transform:uppercase;padding:10px 10px 6px}
 .navitem{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:var(--radius);
@@ -62,14 +57,16 @@ const version = __APP_VERSION__ // from frontend/package.json via Vite define
 .navitem.disabled{opacity:.55;cursor:default}
 .navitem .soon{margin-left:auto;font-size:10px;font-weight:600;color:var(--text-faint);
   border:1px solid var(--border-strong);padding:0 6px;border-radius:20px}
-.bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:12px}
-.acct{display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;border:1px solid var(--border);
-  border-radius:var(--radius);background:var(--surface-2);font-size:12px}
+.acct{margin-top:auto;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-2);overflow:hidden}
+.acct .top{display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:12px}
 .acct .tier{font-size:10px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--accent);
   background:var(--nav-active);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--border));border-radius:10px;padding:1px 7px}
 .acct .bal{margin-left:auto;display:flex;align-items:center;gap:4px}
 .acct .dia{color:var(--accent);font-size:11px}
 .acct .amt{font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
 .acct .lbl{color:var(--text-faint);font-size:11px}
-.ver{font-size:11px;color:var(--text-faint);padding:4px 8px}
+.acct .foot{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;font-size:10.5px;color:var(--text-faint);
+  background:color-mix(in srgb,var(--surface-1) 50%,transparent)}
+.acct .top + .foot{border-top:1px solid var(--border)}
+.acct .ver{font-variant-numeric:tabular-nums}
 </style>

@@ -10,6 +10,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useImagePreview } from '../composables/useImagePreview'
 import { useImageDownload } from '../composables/useImageDownload'
 import GalleryStack from '../components/GalleryStack.vue'
+import { imageMeta } from '../canvas/imageMeta'
 import { gridsOf, purgeImages, removeIdFromGrids } from '../vault/workOps'
 import type { ImageNodeData, WorkDoc, ZoneNode } from '../types'
 
@@ -17,7 +18,7 @@ const props = defineProps<{ workId: string; initialMode?: 'view' | 'edit' }>()
 const emit = defineEmits<{ back: []; openInGenerate: [string] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
-const { preview } = useImagePreview()
+const { openViewer } = useImagePreview()
 
 const doc = ref<WorkDoc | null>(null)
 const loading = ref(true)
@@ -140,6 +141,31 @@ function onTitleInput(v: string) { if (doc.value) doc.value.title = v } // deep 
 // ---- download (shared save-to-Downloads pipeline) ----
 const { downloadUrls } = useImageDownload()
 function downloadAll() { downloadUrls(galleryImages.value.map((im) => im.data.url || '').filter(Boolean)) }
+
+// ---- the image viewer over the clicked image's set: its grid, or Quick access. View mode only pages and
+// downloads; Edit adds favourite + delete (no station here, so no recipe actions). ----
+function viewImage(startId: string) {
+  const at = grids().findIndex((g) => g.imageIds.includes(startId))
+  const grid = at >= 0 ? grids()[at] : undefined
+  const ids = (): string[] => {
+    if (grid) return grids().find((g) => g.id === grid.id)?.imageIds ?? []
+    const inGrids = new Set(grids().flatMap((g) => g.imageIds))
+    return galleryImages.value.filter((im) => !inGrids.has(im.id)).map((im) => im.id)
+  }
+  const download = { label: 'Download', icon: '⤓', run: (it: { url: string }) => downloadUrls([it.url]) }
+  openViewer({
+    source: grid ? `Grid ${at + 1}` : 'Quick access',
+    items: () => ids().map((id) => galleryImages.value.find((im) => im.id === id)).filter((im) => !!im).map((im) => ({
+      id: im!.id, url: im!.data.url || '', favorite: !!im!.data.favorite,
+      meta: imageMeta(im!.data.snapshot?.params as { width?: number; height?: number; seed?: number } | undefined, im!.data.created_at),
+    })),
+    actions: mode.value === 'view' ? [download] : [
+      { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', run: (it) => onFavorite(it.id) },
+      download,
+      { label: 'Delete', icon: '🗑', key: 'Delete', danger: true, run: (it) => onDeleteImg(it.id) },
+    ],
+  }, startId)
+}
 </script>
 
 <template>
@@ -168,7 +194,7 @@ function downloadAll() { downloadUrls(galleryImages.value.map((im) => im.data.ur
     <div v-if="loading" class="wstate">Loading work…</div>
     <div v-else-if="doc" class="wbody">
       <GalleryStack v-if="galleryData" :data="galleryData" :images="galleryImages" :readonly="mode === 'view'" embedded
-        @favorite="onFavorite" @preview="preview" @to-quick="onToQuick" @delete-img="onDeleteImg"
+        @favorite="onFavorite" @preview="viewImage" @to-quick="onToQuick" @delete-img="onDeleteImg"
         @clear-quick="onClearQuick" @download="downloadUrls" @drop-on-grid="onDropOnGrid" @drop-on-quick="onDropOnQuick" />
       <div v-else class="placeholder">This work has no gallery zone.</div>
     </div>

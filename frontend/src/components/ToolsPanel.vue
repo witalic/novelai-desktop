@@ -10,7 +10,6 @@ import { presetParamsDiffer } from '../presets/diff'
 import { anlasCost } from '../presets/cost'
 import { useAccount } from '../composables/useAccount'
 import { useContextMenu } from '../composables/useContextMenu'
-import { useImagePreview } from '../composables/useImagePreview'
 import { downscaleDataUrl } from '../canvas/thumb'
 import type { GenResult, PanelParams, Preset } from '../types'
 
@@ -30,6 +29,7 @@ const emit = defineEmits<{
   'clear-stack': []
   'keep-many': [string[]] // materialise these drafts onto the canvas, in order
   'remove-many': [string[]] // drop these drafts from the stack
+  view: [string] // open the image viewer over the stack at this draft
   navigate: [string]
 }>()
 
@@ -63,10 +63,9 @@ function thumbSrc(d: GenResult): string {
 
 // Right-click a stack thumbnail → preview (full res) / keep on canvas / remove from the stack.
 const { open: openMenu } = useContextMenu()
-const { preview } = useImagePreview()
 function onThumbMenu(e: MouseEvent, d: GenResult) {
   openMenu(e, [
-    { label: 'Preview', icon: '⤢', onClick: () => preview(d.url) },
+    { label: 'Preview', icon: '⤢', onClick: () => emit('view', d.id) },
     { label: 'Move to Quick access', icon: '⤒', onClick: () => emit('keep-many', [d.id]) },
     { label: 'Remove from stack', icon: '🗑', danger: true, onClick: () => emit('remove-many', [d.id]) },
   ])
@@ -113,8 +112,17 @@ function onThumbDragStart(e: DragEvent, d: GenResult) {
   }
 }
 
-// ---- stack multi-select ----
+// ---- stack: a click views; multi-select is an explicit mode (Select … Done) ----
+const selecting = ref(false)
 const selected = ref<Set<string>>(new Set())
+function setSelecting(on: boolean) {
+  selecting.value = on
+  if (!on) selected.value = new Set()
+}
+function onThumbClick(d: GenResult) {
+  if (selecting.value) toggleSelect(d.id)
+  else emit('view', d.id)
+}
 function toggleSelect(id: string) {
   const next = new Set(selected.value)
   next.has(id) ? next.delete(id) : next.add(id)
@@ -134,8 +142,10 @@ function removeSelected() {
   if (selected.value.size) emit('remove-many', [...selected.value])
   selected.value = new Set()
 }
-// Prune the selection when the stack changes underneath it (kept/cleared elsewhere).
+// Prune the selection when the stack changes underneath it (kept/cleared elsewhere); an emptied stack ends
+// select mode, so the next generations open in the default (click = view) mode.
 watch(() => props.drafts, (ds) => {
+  if (!ds.length) { setSelecting(false); return }
   const live = new Set(ds.map((d) => d.id))
   if ([...selected.value].some((id) => !live.has(id))) selected.value = new Set([...selected.value].filter((id) => live.has(id)))
 })
@@ -182,23 +192,29 @@ watch(() => props.drafts, (ds) => {
         <template v-else>
           <div class="stackbar">
             <span class="cnt">{{ drafts.length }} generated</span>
-            <button class="stacklink" @click="toggleSelectAll">{{ allSelected ? 'Deselect all' : 'Select all' }}</button>
+            <button v-if="selecting" class="stacklink" @click="toggleSelectAll">{{ allSelected ? 'Deselect all' : 'Select all' }}</button>
             <div class="sp"></div>
-            <button class="stackbtn danger" @click="emit('clear-stack')">Clear all</button>
+            <button v-if="selecting" class="stackbtn on" @click="setSelecting(false)">✓ Done</button>
+            <template v-else>
+              <button class="stackbtn" @click="setSelecting(true)">☐ Select</button>
+              <button class="stackbtn danger" @click="emit('clear-stack')">Clear all</button>
+            </template>
           </div>
 
-          <div v-if="selected.size" class="selbar">
+          <div v-if="selecting && selected.size" class="selbar">
             <span class="selcnt">{{ selected.size }} selected</span>
             <div class="sp"></div>
-            <button class="stackbtn" @click="keepSelected">⤒ Move to Quick access</button>
+            <button class="stackbtn" @click="keepSelected">⤒ To Quick access</button>
             <button class="stackbtn danger" @click="removeSelected">Remove</button>
           </div>
-          <div v-else class="hint">Click to select · drag a thumbnail onto the canvas to place it, or onto the gallery to keep it.</div>
+          <div v-else-if="selecting" class="hint">Click images to select them · drag a selection onto the canvas or the gallery.</div>
+          <div v-else class="hint">Click to view · drag onto the canvas to place it, or onto the gallery to keep it.</div>
 
-          <div class="thumbs">
+          <div class="thumbs" :class="{ selecting }">
             <div v-for="(d, i) in drafts" :key="d.id" class="thumb" :class="{ top: i === 0, on: selected.has(d.id) }"
-              draggable="true" @dragstart="onThumbDragStart($event, d)" @click="toggleSelect(d.id)" @contextmenu="onThumbMenu($event, d)">
-              <span class="check">{{ selected.has(d.id) ? '✓' : '' }}</span>
+              draggable="true" @dragstart="onThumbDragStart($event, d)" @click="onThumbClick(d)" @contextmenu="onThumbMenu($event, d)">
+              <span v-if="selecting" class="check">{{ selected.has(d.id) ? '✓' : '' }}</span>
+              <span v-else class="zoom" aria-hidden="true">⤢</span>
               <span v-if="i === 0" class="topbadge">TOP</span>
               <span v-if="d.mock" class="mockbadge">MOCK</span>
               <img class="timg" :src="thumbSrc(d)" alt="generation" draggable="false" />
@@ -268,13 +284,19 @@ watch(() => props.drafts, (ds) => {
 .stackbtn{border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);font:inherit;font-size:11px;font-weight:600;padding:4px 10px;cursor:pointer}
 .stackbtn:hover{color:var(--text);border-color:var(--border-strong)}
 .stackbtn.danger:hover{color:var(--danger);border-color:var(--danger)}
+.stackbtn.on{color:var(--accent);border-color:var(--accent);background:var(--nav-active)}
 .selbar{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid color-mix(in srgb,var(--accent) 40%,var(--border));
   border-radius:var(--radius);background:color-mix(in srgb,var(--accent) 8%,var(--surface-2))}
 .selbar .selcnt{font-size:11px;font-weight:600;color:var(--accent)}
 .selbar .sp{flex:1}
 .hint{font-size:10.5px;color:var(--text-faint)}
 .thumbs{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.thumb{position:relative;aspect-ratio:2/3;border-radius:8px;border:1px solid var(--border);overflow:hidden;cursor:pointer;background:var(--surface-2)}
+.thumb{position:relative;aspect-ratio:2/3;border-radius:8px;border:1px solid var(--border);overflow:hidden;cursor:zoom-in;background:var(--surface-2)}
+.thumbs.selecting .thumb{cursor:pointer}
+/* hover cue: a click opens the viewer (browse mode) */
+.thumb .zoom{position:absolute;top:5px;right:5px;z-index:2;width:22px;height:22px;border-radius:6px;background:color-mix(in srgb,#000 45%,transparent);
+  color:#fff;font-size:12px;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .12s}
+.thumb:hover .zoom{opacity:1}
 .thumb.on{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
 /* Decode at 2× the box, then transform back down — crisp on HiDPI for both data: and vault srcs. */
 .timg{position:absolute;top:50%;left:50%;width:200%;height:200%;object-fit:cover;display:block;

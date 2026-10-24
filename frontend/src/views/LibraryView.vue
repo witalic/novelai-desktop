@@ -6,6 +6,7 @@ import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
 import BlockEditorModal from '../components/BlockEditorModal.vue'
 import { newId } from '../vault/ids'
+import { buildCategoryTree, groupDot, groupOf, labelOf, nonEmpty, scopeOf, tagsInScope } from '../vault/categoryTree'
 import { groupByCategory } from './librarySections'
 import type { CategoryCount, LibraryBlock, TagCount } from '../types'
 
@@ -23,7 +24,7 @@ const blocks = ref<LibraryBlock[]>([]) // accumulated across pages (infinite scr
 const total = ref(0)
 const page = ref(1)
 const perPage = 48
-const activeCategory = ref('') // '' = all
+const activeCategory = ref('') // '' = all, a group key (the whole group), or a subgroup slug
 const selectedTags = ref<string[]>([])
 const tagOptions = ref<TagCount[]>([])
 const search = ref('')
@@ -36,6 +37,36 @@ const catName = (slug: string) => categories.value.find((c) => c.slug === slug)?
 const catCount = (slug: string) => categories.value.find((c) => c.slug === slug)?.count ?? 0
 const allCount = computed(() => categories.value.reduce((n, c) => n + c.count, 0))
 const hasMore = computed(() => blocks.value.length < total.value)
+
+// ---- the rail: two-level groups (vault/categoryTree). Empty ones hide unless "Show empty groups" is on —
+// this page is where blocks get created, so it can show them; the widgets never do. ----
+const tree = computed(() => buildCategoryTree(categories.value))
+const catScope = computed(() => scopeOf(tree.value, activeCategory.value)) // the categories the selection covers
+const showEmpty = ref(false)
+const railTree = computed(() => (showEmpty.value ? tree.value : nonEmpty(tree.value, activeCategory.value)))
+const hiddenCount = computed(() => {
+  const all = tree.value.reduce((n, g) => n + 1 + g.children.length, 0)
+  return all - nonEmpty(tree.value, activeCategory.value).reduce((n, g) => n + 1 + g.children.length, 0)
+})
+// Open groups: toggled by their chevron; selecting into a group opens it (and it can still be closed after).
+const opened = ref(new Set<string>())
+const isOpen = (key: string) => opened.value.has(key)
+function toggleGroup(key: string) {
+  const next = new Set(opened.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  opened.value = next
+}
+watch(activeCategory, (key) => {
+  const g = groupOf(tree.value, key)
+  if (g?.children.length && !opened.value.has(g.key)) opened.value = new Set([...opened.value, g.key])
+})
+const selName = (key: string) => labelOf(tree.value, key, catName)
+// A new block lands in the selection: a group's own category, a subgroup, else Custom.
+const newCategory = computed(() => {
+  const g = tree.value.find((x) => x.key === activeCategory.value)
+  return g ? g.self?.slug ?? 'custom' : activeCategory.value || 'custom'
+})
 // One section per consecutive category run — sort=category makes categories contiguous across pages.
 const sections = computed(() => groupByCategory(blocks.value))
 
@@ -49,7 +80,7 @@ async function loadCategories() {
   }
 }
 async function loadTags() {
-  try { tagOptions.value = await listTags(activeCategory.value) } catch { tagOptions.value = [] }
+  try { tagOptions.value = await tagsInScope(catScope.value, listTags) } catch { tagOptions.value = [] }
 }
 let blocksReq = 0
 // reset=true replaces the list (category/tag/search change); reset=false appends the next page.
@@ -60,7 +91,7 @@ async function loadPage(reset: boolean) {
   try {
     const p = reset ? 1 : page.value + 1
     const res = await listBlocks({
-      categories: activeCategory.value ? [activeCategory.value] : [], tags: selectedTags.value,
+      categories: catScope.value, tags: selectedTags.value,
       search: search.value, sort: 'category', page: p, perPage,
     })
     if (req !== blocksReq) return // superseded
@@ -157,7 +188,7 @@ async function exportScope(scope: 'selected' | 'filter' | 'all') {
   exporting.value = true
   try {
     const items = scope === 'selected' ? await resolveBlocks(selected.value)
-      : scope === 'filter' ? await fetchAllBlocks({ categories: activeCategory.value ? [activeCategory.value] : [], tags: selectedTags.value, search: search.value })
+      : scope === 'filter' ? await fetchAllBlocks({ categories: catScope.value, tags: selectedTags.value, search: search.value })
         : await fetchAllBlocks({})
     if (!items.length) { push('Nothing to export', 'err'); return }
     downloadJson(toExport(items), `library-${scope}-${items.length}.json`)
@@ -340,7 +371,7 @@ onUnmounted(() => {
 // ---- block editor (shared BlockEditorModal) ----
 const editing = ref<{ block: LibraryBlock; isNew: boolean } | null>(null)
 function openNew() {
-  editing.value = { isNew: true, block: { id: newId('block'), category: activeCategory.value || 'custom', name: '', text: '', polarity: 'positive', tags: [] } }
+  editing.value = { isNew: true, block: { id: newId('block'), category: newCategory.value, name: '', text: '', polarity: 'positive', tags: [] } }
 }
 function openEdit(b: LibraryBlock) { editing.value = { isNew: false, block: b } }
 function onEditorSaved() { editing.value = null; refreshAll() }
@@ -375,16 +406,34 @@ async function removeBlock(b: LibraryBlock) {
         </div>
         <div class="catlist">
           <div class="catrow" :class="{ on: activeCategory === '' }" @click="selectCategory('')">
+            <span class="chv"></span>
             <span class="cdot" style="background:var(--text-dim)"></span><span class="cn">All blocks</span><span class="cc">{{ allCount }}</span>
           </div>
-          <div v-for="c in categories" :key="c.slug" class="catrow" :class="{ on: activeCategory === c.slug }"
-            :style="{ '--cat': c.color }" @click="selectCategory(c.slug)">
-            <span class="cdot"></span>
-            <span class="cn">{{ c.name }}</span>
-            <button class="ce" title="Manage categories" @click.stop="openManage">✎</button>
-            <span class="cc">{{ c.count }}</span>
-          </div>
+          <template v-for="g in railTree" :key="g.key">
+            <div class="catrow" :class="{ on: activeCategory === g.key, empty: !g.count }" :title="g.children.length ? `${g.name} — the whole group` : g.name"
+              @click="selectCategory(g.key)">
+              <span class="chv" :title="isOpen(g.key) ? 'Hide subgroups' : 'Show subgroups'"
+                @click.stop="g.children.length && toggleGroup(g.key)">{{ g.children.length ? (isOpen(g.key) ? '▾' : '▸') : '' }}</span>
+              <span class="cdot" :style="{ background: groupDot(g) }"></span>
+              <span class="cn">{{ g.name }}</span>
+              <button class="ce" title="Manage categories" @click.stop="openManage">✎</button>
+              <span class="cc">{{ g.count }}</span>
+            </div>
+            <template v-if="isOpen(g.key)">
+              <div v-for="c in g.children" :key="c.slug" class="catrow child" :class="{ on: activeCategory === c.slug, empty: !c.count, own: c.own }"
+                :title="c.own ? `${g.name} only — without its subgroups` : c.name" @click="selectCategory(c.slug)">
+                <span class="cdot" :style="{ background: c.color }"></span>
+                <span class="cn">{{ c.short }}</span>
+                <button class="ce" title="Manage categories" @click.stop="openManage">✎</button>
+                <span class="cc">{{ c.count }}</span>
+              </div>
+            </template>
+          </template>
         </div>
+        <button v-if="hiddenCount || showEmpty" class="showempty" role="switch" :aria-checked="showEmpty" @click="showEmpty = !showEmpty">
+          <span class="tgl" :class="{ on: showEmpty }"></span>Show empty groups
+          <span class="hn">{{ showEmpty ? '' : `${hiddenCount} hidden` }}</span>
+        </button>
       </div>
 
       <!-- content column: toolbar · tag pins · selection bar · sectioned grid -->
@@ -415,13 +464,13 @@ async function removeBlock(b: LibraryBlock) {
         </div>
 
         <div class="tagbar">
-          <span class="taglbl">Tags · {{ activeCategory ? catName(activeCategory) : 'all' }}</span>
+          <span class="taglbl">Tags · {{ activeCategory ? selName(activeCategory) : 'all' }}</span>
           <div v-if="tagOptions.length" class="tagwrap">
             <button v-for="t in tagOptions" :key="t.name" class="tchip" :class="{ on: selectedTags.includes(t.name) }" @click="toggleTag(t.name)">
               {{ t.name }} <span class="n">{{ t.count }}</span>
             </button>
           </div>
-          <span v-else class="tagempty">No tags {{ activeCategory ? `in ${catName(activeCategory)}` : 'yet' }}.</span>
+          <span v-else class="tagempty">No tags {{ activeCategory ? `in ${selName(activeCategory)}` : 'yet' }}.</span>
         </div>
 
         <div v-if="selected.length" class="selbar" ref="moveCatEl">
@@ -434,9 +483,15 @@ async function removeBlock(b: LibraryBlock) {
           <button class="sbtn del" @click="deleteSelected">🗑 Delete</button>
           <button class="sbtn" @click="clearSelection">Clear</button>
           <div v-if="moveCatOpen" class="movepop" :style="moveCatStyle" @click.stop>
-            <div v-for="c in categories" :key="c.slug" class="mo" @click="moveSelectedTo(c.slug)">
-              <span class="cdot" :style="{ background: c.color }"></span>{{ c.name }}
-            </div>
+            <template v-for="g in tree" :key="g.key">
+              <div v-if="g.self" class="mo grp" @click="moveSelectedTo(g.self.slug)">
+                <span class="cdot" :style="{ background: g.self.color }"></span>{{ g.name }}
+              </div>
+              <div v-else class="mo virt">{{ g.name }}</div>
+              <div v-for="c in g.children.filter((x) => !x.own)" :key="c.slug" class="mo child" @click="moveSelectedTo(c.slug)">
+                <span class="cdot" :style="{ background: c.color }"></span>{{ c.short }}
+              </div>
+            </template>
           </div>
         </div>
 
@@ -560,6 +615,20 @@ async function removeBlock(b: LibraryBlock) {
 .catrow:hover .ce{opacity:1}
 .catrow .ce:hover{color:var(--accent);background:var(--surface-3)}
 .catrow .ce + .cc{margin-left:6px}
+/* group chevron (blank when a group has no subgroups, so names stay aligned); subgroups indent under it */
+.catrow .chv{width:10px;flex-shrink:0;margin-right:-3px;text-align:center;font-size:9px;color:var(--text-faint)}
+.catrow .chv:hover{color:var(--text)}
+.catrow.child{padding-left:31px;font-weight:500}
+.catrow.child.own .cn{font-style:italic} /* "General" = the group's own category, without its subgroups */
+.catrow.empty{opacity:.55}
+.showempty{display:flex;align-items:center;gap:8px;flex-shrink:0;border:0;border-top:1px solid var(--border);background:transparent;
+  color:var(--text-dim);font:inherit;font-size:11.5px;padding:9px 12px;cursor:pointer;text-align:left;white-space:nowrap}
+.showempty:hover{color:var(--text)}
+.showempty .tgl{position:relative;width:26px;height:15px;flex-shrink:0;border-radius:10px;background:var(--surface-3);border:1px solid var(--border-strong)}
+.showempty .tgl::after{content:"";position:absolute;top:2px;left:2px;width:9px;height:9px;border-radius:50%;background:var(--text-faint);transition:left .15s}
+.showempty .tgl.on{background:var(--accent);border-color:var(--accent)}
+.showempty .tgl.on::after{left:13px;background:var(--on-accent)}
+.showempty .hn{margin-left:auto;color:var(--text-faint);font-size:11px}
 
 /* content column */
 .content{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -611,6 +680,10 @@ async function removeBlock(b: LibraryBlock) {
 .movepop .mo{display:flex;align-items:center;gap:8px;padding:8px 11px;font-size:12.5px;color:var(--text-dim);cursor:pointer}
 .movepop .mo:hover{background:var(--surface-3);color:var(--text)}
 .movepop .mo .cdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.movepop .mo.grp{font-weight:650;color:var(--text)}
+.movepop .mo.child{padding-left:28px}
+.movepop .mo.virt{cursor:default;font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--text-faint);padding-bottom:4px}
+.movepop .mo.virt:hover{background:transparent;color:var(--text-faint)}
 
 /* sectioned grid */
 .gridscroll{flex:1;min-height:0;overflow-y:auto;padding:14px 8px 14px 16px;margin-right:8px}

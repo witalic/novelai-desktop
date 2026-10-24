@@ -46,8 +46,8 @@ const BLOCK_FIELDS = [
   'frozen', // composition state: kept in the area but excluded from the prompt
   // layout: order in the station list is position.y; loose scratch blocks use position — no extra fields
 ] as const
-const STATION_FIELDS = ['ratio', 'axis', 'genFirst', 'comboId'] as const // two-zone layout + the linked combination
-const ZONE_FIELDS = ['role', 'blocks', 'outlineOpen', 'quickOpen'] as const // gallery block stack + panel open-state are layout
+const STATION_FIELDS = ['ratio', 'axis', 'genFirst', 'comboId', 'railW'] as const // two-zone layout, rail width + the linked combination
+const ZONE_FIELDS = ['role', 'blocks', 'outlineOpen', 'quickOpen', 'railW'] as const // gallery block stack, panel open-state, rail width are layout
 // image nodes persist as pure layout — their domain record lives in WorkDoc.images, keyed by node id
 
 function pick(data: Record<string, unknown> | undefined, fields: readonly string[]) {

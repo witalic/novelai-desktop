@@ -30,7 +30,8 @@ function imageMenu(event: MouseEvent, id: string) {
   props.onImageMenu({ event, id })
 }
 const emit = defineEmits<{
-  favorite: [string]; preview: [string]
+  favorite: [string]
+  preview: [string] // an image id — the host opens the viewer over that image's set (its grid / Quick access)
   toQuick: [string] // move an image out of its grid into Quick access (unassign)
   deleteImg: [string] // delete an image from the work entirely (guarded by a confirm in the parent)
   clearQuick: [string[]] // delete every unsorted image except favourites (guarded by a confirm in the parent)
@@ -497,7 +498,7 @@ function onOutDrop(targetId: string) {
                   @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
                   @dragover.prevent.stop="onThumbOver(im.id, $event)" @drop.prevent.stop="onThumbDrop(b, im.id, $event)"
                   @contextmenu="imageMenu($event, im.id)"
-                  @pointerdown.stop @click.stop="gridHidden(b) && i === b.cols - 1 ? (b.collapsed = false) : emit('preview', im.data.url || '')">
+                  @pointerdown.stop @click.stop="gridHidden(b) && i === b.cols - 1 ? (b.collapsed = false) : emit('preview', im.id)">
                   <img class="im" :src="thumbSrc(im.data.url, gridTilePx(b.cols))" alt="gallery image" loading="lazy" draggable="false" />
                   <div class="thbar nodrag">
                     <button class="thb dl" title="Download image" @pointerdown.stop @click.stop="emit('download', urlsOf([im]))">⤓</button>
@@ -577,7 +578,7 @@ function onOutDrop(targetId: string) {
         <div v-for="im in unassigned" :key="im.id" class="gthumb qthumb nodrag" :class="{ fav: im.data.favorite }"
           :style="{ '--ar': im.data.ar || (3 / 4) }" :draggable="!readonly" @dragstart="onThumbDrag(im.id, $event)" @dragend="onThumbDragEnd"
           @contextmenu="imageMenu($event, im.id)"
-          @pointerdown.stop @click.stop="emit('preview', im.data.url || '')">
+          @pointerdown.stop @click.stop="emit('preview', im.id)">
           <img class="im" :src="thumbSrc(im.data.url, QUICK_TILE_PX)" alt="gallery image" loading="lazy" draggable="false" />
           <div class="thbar nodrag">
             <button class="thb del" title="Delete image from the work" @pointerdown.stop @click.stop="emit('deleteImg', im.id)">🗑</button>

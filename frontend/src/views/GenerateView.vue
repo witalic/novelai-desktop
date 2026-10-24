@@ -6,7 +6,10 @@ import CanvasBoard from '../components/CanvasBoard.vue'
 import { generateStream, listPresets, loadWork, savePreset } from '../api'
 import { resolveDefaultId, stripSeed } from '../presets/diff'
 import { useAccount } from '../composables/useAccount'
+import { useImageDownload } from '../composables/useImageDownload'
+import { useImagePreview } from '../composables/useImagePreview'
 import { useToast } from '../composables/useToast'
+import { imageMeta } from '../canvas/imageMeta'
 import { newId } from '../vault/ids'
 import { workToDrafts } from '../vault/serialize'
 import type { PanelParams, PresetParams, Preset, GenResult, WorkDoc, SnapshotData } from '../types'
@@ -151,6 +154,22 @@ function onRemoveMany(ids: string[]) { drafts.value = drafts.value.filter((d) =>
 const keepSignal = ref<{ ids: string[]; nonce: number } | null>(null)
 function onKeepMany(ids: string[]) { keepSignal.value = { ids, nonce: Date.now() } }
 
+// The image viewer over the stack — opened from a Stack thumbnail or the station's Output image. Keeping or
+// removing the shown image takes it out of `drafts`, so the viewer moves on to the next one by itself.
+const { openViewer } = useImagePreview()
+const { downloadUrls } = useImageDownload()
+function viewStack(startId: string) {
+  openViewer({
+    source: 'Stack',
+    items: () => drafts.value.map((d) => ({ id: d.id, url: d.url, meta: imageMeta(d.params, d.created_at) })),
+    actions: [
+      { label: 'To Quick access', icon: '⤒', key: 'q', primary: true, run: (it) => onKeepMany([it.id]) },
+      { label: 'Download', icon: '⤓', run: (it) => downloadUrls([it.url]) },
+      { label: 'Remove from stack', icon: '🗑', key: 'Delete', danger: true, run: (it) => onRemoveMany([it.id]) },
+    ],
+  }, startId)
+}
+
 // After a save, the draft stack is on disk under this work — repoint its data: URLs at the vault so later
 // saves don't re-serialize (up to 50) base64 images. Runs synchronously inside the save's dirty-suppression.
 function onWorkSaved(workId: string) {
@@ -183,12 +202,12 @@ function onReloadWork() { if (loadedWork.value) loadWorkIntoView(loadedWork.valu
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate"
+      :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate" @view-stack="viewStack"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
       @new-work="onNewWork" @reload-work="onReloadWork" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
       @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
-      @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @navigate="emit('navigate', $event)" />
+      @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @view="viewStack" @navigate="emit('navigate', $event)" />
     <PresetEditor v-if="presetDraft" :model="presetDraft" @save="onPresetDraftSave" @close="presetDraft = null" />
   </div>
 </template>

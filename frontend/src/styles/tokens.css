@@ -9,6 +9,7 @@
   --text:#c7d1db; --text-dim:#9fadbc; --text-faint:#738496; --nav-active:#1c3049;
   /* Semantic status colors — readable on both palettes, so the theme blocks don't override them. */
   --ok:#3aa675; --warn:#b65c02; --danger:#e2483d; --star:#e0a534; --agent:#6e5dc6;
+  --appbar-h:34px; /* the app bar — the window's own title bar (AppBar.vue) */
   /* Small text in a status color (badges, chips): lighter on dark, the base hue on light. */
   --warn-fg:#e8913a; --agent-fg:#a395f0;
 }
@@ -42,6 +43,10 @@ option{background:var(--surface-2);color:var(--text)}
 /* App chrome is not text-selectable (so Shift+drag box-select doesn't grab sidebar/panel text);
    real inputs stay selectable. */
 #app{user-select:none;-webkit-user-select:none}
+/* The app bar is the window's drag strip (-webkit-app-region: drag), and Electron's drag regions ignore
+   stacking: every full-window overlay opts out, so a click on its backdrop up there dismisses, not drags. */
+:is(.viewer, .confirm-back, .cd-back, .cm-back, .cpk-back, .dd-back, .edit-back, .catmodal-back, .lightbox,
+  .mng-back, .imp-back, .back, .drawer){-webkit-app-region:no-drag}
 input,textarea,[contenteditable="true"]{user-select:text;-webkit-user-select:text}
 
 /* Shared form primitives */

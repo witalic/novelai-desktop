@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canvasToWork, workToCanvas, workToDrafts, COMBOS, GALLERY, LIBRARY, STATION } from './serialize'
+import { canvasToWork, combosZoneNode, workToCanvas, workToDrafts, COMBOS, GALLERY, LIBRARY, STATION } from './serialize'
 import type { PersistedCombo } from '../types'
 
 /* serialize.ts is framework-free by design — these pin the canvas <-> WorkDoc contract:
@@ -257,6 +257,20 @@ describe('combinations', () => {
     expect((doc.canvas.nodes.find((n) => n.id === STATION)!.data as any).comboId).toBe('combo-1')
     const { nodes: back, viewport: vp } = workToCanvas(doc)
     expect(canvasToWork(back, vp, params, { id: 'w1', title: 'T' }, [], [], doc.combos)).toEqual(doc)
+  })
+
+  it('persists the station’s and the Library widget’s rail widths as layout, and round-trips them', () => {
+    const lib = { ...library, data: { ...library.data, railW: 188 } }
+    const nodes = [
+      ...anchors().map((n) => (n.id === STATION ? { ...n, data: { ...n.data, railW: 210 } } : n)),
+      lib, combosZoneNode(lib), galleryImage('img-1', 42),
+    ]
+    const doc = canvasToWork(nodes, viewport, params, { id: 'w1', title: 'T' })
+    const dataOf = (id: string) => doc.canvas.nodes.find((n) => n.id === id)!.data as { railW?: number }
+    expect(dataOf(STATION).railW).toBe(210)
+    expect(dataOf(LIBRARY).railW).toBe(188)
+    const { nodes: back, viewport: vp } = workToCanvas(doc)
+    expect(canvasToWork(back, vp, params, { id: 'w1', title: 'T' })).toEqual(doc)
   })
 
   it('copies combos on save so later edits to the live list never mutate the saved document', () => {

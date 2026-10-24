@@ -193,7 +193,7 @@ interface CanvasNodeBase {
 // `comboId` links the composition to the combination it was restored from / saved as (the header names it).
 export interface StationNode extends CanvasNodeBase {
   type: 'station'
-  data: { ratio?: number; axis?: 'h' | 'v'; genFirst?: boolean; comboId?: string }
+  data: { ratio?: number; axis?: 'h' | 'v'; genFirst?: boolean; comboId?: string; railW?: number } // railW: category rail width (px)
 }
 
 export interface ZoneNode extends CanvasNodeBase {
@@ -204,6 +204,7 @@ export interface ZoneNode extends CanvasNodeBase {
     blocks?: GalleryBlock[] // the composed block stack (schema v6 — grids own imageIds)
     outlineOpen?: boolean // Outline nav panel open (persisted layout)
     quickOpen?: boolean // Quick access panel open (persisted layout)
+    railW?: number // library-zone widget: its category rail's width in px (persisted layout; default when absent)
   }
 }
 
