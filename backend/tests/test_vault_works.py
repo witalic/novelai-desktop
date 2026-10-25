@@ -182,6 +182,30 @@ async def test_save_optimistic_lock_rejects_stale_base(client):
     assert (await ac.put("/api/vault/works", json=w4)).status_code == 200
 
 
+async def test_saves_in_the_same_millisecond_still_move_the_lock_base(client, monkeypatch):
+    """Two editors saving within one clock tick must not share a timestamp — the second one's base would equal
+    the stored copy and its stale save would slip past the check."""
+    from app.vault import service
+    ac, _ = client
+    monkeypatch.setattr(service, "_now", lambda: "2026-10-25T07:00:00.000+00:00")  # a frozen clock
+    assert (await ac.put("/api/vault/works", json=_work("w1"))).status_code == 200
+    base = (await ac.get("/api/vault/works/w1")).json()["updated_at"]
+    w2 = _work("w1"); w2["updated_at"] = base
+    assert (await ac.put("/api/vault/works", json=w2)).status_code == 200
+    assert (await ac.get("/api/vault/works/w1")).json()["updated_at"] == "2026-10-25T07:00:00.001+00:00"
+    w3 = _work("w1"); w3["updated_at"] = base  # the same base again: now it is stale
+    assert (await ac.put("/api/vault/works", json=w3)).status_code == 409
+
+
+def test_a_new_stamp_passes_old_and_odd_stored_values(monkeypatch):
+    from app.vault import service
+    monkeypatch.setattr(service, "_now", lambda: "2026-10-25T07:00:00.000+00:00")
+    assert service._stamp_after(None) == "2026-10-25T07:00:00.000+00:00"
+    # seconds precision (works saved by older builds), a clock that stepped back
+    assert service._stamp_after("2026-10-25T07:00:05+00:00") == "2026-10-25T07:00:05.001+00:00"
+    assert service._stamp_after("not a date") == "2026-10-25T07:00:00.000+00:00"  # hand-edited: replaced
+
+
 async def test_list_works_search_and_sort(client):
     ac, _ = client
     for wid, title, n in [("w1", "Alpha", 1), ("w2", "Beta", 3), ("w3", "alpha two", 2)]:

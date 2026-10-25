@@ -7,7 +7,7 @@ import logging
 import shutil
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -33,6 +33,18 @@ def _now() -> str:
     # Millisecond precision so two saves in the same second get distinct timestamps — the optimistic-lock
     # base comparison (H3) needs a strictly newer stored value to detect a concurrent edit.
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _stamp_after(stored: str | None) -> str:
+    """A save's new ``updated_at``: now — or, for two saves in one millisecond, just past the stored one, so the lock
+    base still moves on. A stored value that doesn't parse (a hand-edited work.json) is simply replaced."""
+    now = _now()
+    if not stored or now > stored:
+        return now
+    try:
+        return (datetime.fromisoformat(stored) + timedelta(milliseconds=1)).isoformat(timespec="milliseconds")
+    except (ValueError, OverflowError):
+        return now
 
 
 def _vault(settings: Settings) -> Path:
@@ -71,11 +83,10 @@ def _save_work_locked(vault: Path, doc: WorkDoc, must_exist: bool) -> dict:
         # Optimistic concurrency (H3): if the stored copy is newer than the base the client loaded
         # (its incoming updated_at), another editor saved in between — refuse so it doesn't clobber.
         # A client that sends no base (empty) opts out (fresh works, best-effort close beacon).
-        if existing_dir and doc.updated_at:
-            stored = index.work_updated_at(conn, doc.id)
-            if stored and stored > doc.updated_at:
-                raise HTTPException(status_code=409, detail="This work was changed elsewhere. Reload to get the latest.")
-        doc.updated_at = _now()
+        stored = index.work_updated_at(conn, doc.id) if existing_dir else None
+        if stored and doc.updated_at and stored > doc.updated_at:
+            raise HTTPException(status_code=409, detail="This work was changed elsewhere. Reload to get the latest.")
+        doc.updated_at = _stamp_after(stored)
         # Server owns the version; the client always sends current-shape data (M1). Refuse a doc claiming a
         # newer schema than this build understands rather than silently downgrading it (data-loss).
         if doc.schema_version and doc.schema_version > migrate.CURRENT:
