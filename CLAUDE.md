@@ -11,8 +11,9 @@ integration for authoring prompts. Scope for now: **images only**.
 
 Image generation, the vault (works + Library blocks/categories + multi-vault manager + thumbnails),
 the Vue-Flow canvas composer, the structured gallery, the full Works browser (view/edit), and the
-Electron shell are **implemented and tested** (v1.0); Claude prompt-authoring is deferred. The full
-phased plan is `ROADMAP.md`. **Phase 1 (recipe as a typed, versioned contract) closed 2026-07-10**;
+Electron shell are **implemented and tested** (v1.0). **Agent access over MCP** (v1.2) lets an external
+agent (Claude Code, …) work with the vault under per-action switches and Anlas limits; in-app Claude
+prompt-authoring is still deferred. The full phased plan is `ROADMAP.md`. **Phase 1 (recipe as a typed, versioned contract) closed 2026-07-10**;
 schema is now at **v7** (works hold saved block `combos`) with read-time migrations, a domain/layout/transient
 whitelist, scratch persistence, server-owned block + schema versioning, and a freeze invariant under
 test. **Phase 2 (structured galleries + widgets) is largely delivered**; the tail is the global
@@ -30,13 +31,14 @@ gallery + tag/content work filters (need the gallery indexed into `index.db`).
 - **Greenfield:** grow rules as real code lands — don't invent conventions for files that don't exist yet.
 
 ## Never
-- **Never print/commit secrets** — the NovelAI token and Anthropic key live in the OS keychain, never in files, logs, or git. (→ `rules/security.md`)
+- **Never print/commit secrets** — the NovelAI token, the agent (MCP) token and the Anthropic key live in the OS keychain, never in files, logs, or git. (→ `rules/security.md`)
 - **Never hammer the NovelAI API** — it is unofficial; respect rate limits and Anlas cost. (→ `rules/novelai-api.md`)
 
 ## Architecture (implemented)
 Electron shell → spawns a **FastAPI** (Python) sidecar on a free loopback port → talks to NovelAI, owns the vault, serves the built UI. Single origin, no CORS.
-- **Backend** (`backend/app/`): FastAPI · `httpx` (async) NovelAI client (real + mock) with SSE stream · Pillow for PNG metadata/disk-cached thumbnails · SQLite index over an on-disk vault. Modules: `novelai/`, `routers/`, `vault/`, `appconfig.py`, `settings.py`, `keychain.py`, `main.py`. (`ai/` — Claude — not built yet.)
-- **Frontend** (`frontend/src/`): Vue 3 + Vite + TS (`<script setup>`), `@vue-flow/core` canvas. `views/` (Generate/Works/Library/Settings), `components/`, `composables/`, `vault/` (serialize/ids). Built static, served by FastAPI at `/app/`.
+- **Backend** (`backend/app/`): FastAPI · `httpx` (async) NovelAI client (real + mock) with SSE stream · Pillow for PNG metadata/disk-cached thumbnails · SQLite index over an on-disk vault. Modules: `novelai/`, `routers/`, `vault/`, `agent/`, `appconfig.py`, `settings.py`, `keychain.py`, `main.py`. (`ai/` — Claude — not built yet.)
+- **Agent access** (`backend/app/agent/`): an MCP (JSON-RPC) listener the sidecar runs on a fixed loopback port (8790–8809) when the user switches it on — its own keychain token, per-action permissions, Anlas-limited generation, an in-memory activity log, and change notices to the open app over SSE (`/api/agent/events`).
+- **Frontend** (`frontend/src/`): Vue 3 + Vite + TS (`<script setup>`), `@vue-flow/core` canvas. `views/` (Generate/Works/Library/Presets/Settings — Settings' sections nest under it in the sidebar), `components/`, `composables/`, `vault/` (serialize/ids). Built static, served by FastAPI at `/app/`.
 - **Shell** (`shell/`): Electron loads `http://127.0.0.1:PORT/app/`. Per-launch cookie-delivered secret guards `/api`, CSP + nav lockdown + deny-all permissions, health-sig backend-identity check. IPC over localhost HTTP + WS (generation progress; Claude streaming later).
 
 ## Commands

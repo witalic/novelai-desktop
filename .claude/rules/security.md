@@ -15,6 +15,12 @@ private creative work — leaking a token or the vault is the core risk.
   confirm it reached its own sidecar (port-TOCTOU). This secret is a transient session token, not a stored
   credential — but never log or commit it either. No token (dev `python -m app`, tests) → guard is a
   pass-through, so **never rely on the guard as the only defense** for a real secret.
+- **Agent access (MCP) is opt-in and local.** Off by default; when on, the sidecar runs a second listener on a
+  fixed loopback port (8790–8809) with its **own** bearer token (keychain — agents never see the NovelAI token)
+  and refuses browser origins. Every tool call is checked against the user's per-action switches; a paid
+  generation needs the agent's `paid: true` *and* the user's switch, within the cap and daily budget. What an
+  agent reads goes on to its model provider — so every call, reads included, lands in Agent activity. Never
+  widen what a tool can reach without a switch for it.
 - **The vault is private:** prompts and generated images are the user's content. Never transmit them anywhere
   except the API they are explicitly bound for (NovelAI for generation, Anthropic for prompt authoring). Never
   commit vault data or generated images to the repo — they live outside version control.

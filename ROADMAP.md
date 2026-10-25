@@ -90,6 +90,8 @@ from the canvas, from Works, and from the global gallery without drift.
 > against concurrent edits). `useConfirm` and the list races are closed.
 > **Remaining:** the global gallery over the index + work filters by tag/content (need the gallery
 > indexed into `index.db`); virtualization of very large lists.
+> **Since (v1.2, 2026-10-25):** saved block **combinations** per work (the station's ready block sets) and
+> the canvas **widget grid** with a default layout for new works.
 
 ---
 
@@ -133,6 +135,15 @@ Goal: a cheap model as a tool over tags and recipes, with Anlas-level transparen
 
 **Exit:** the user has no background off-machine request; each skill shows exactly what was sent and what
 it cost.
+
+> 🟡 **The agent route came first (v1.2, 2026-10-25).** Rather than an in-app model, the app exposes an
+> **MCP endpoint** (`backend/app/agent/`): an external agent the user already runs (Claude Code, …) browses
+> the vault, writes blocks / combinations / image metadata and generates images — opt-in, loopback-only,
+> its own keychain token, a switch per kind of action. Generations are free (Opus) or paid only on the
+> user's say-so within a per-request cap and a daily budget. Transparency holds: every call, reads
+> included, is logged in Settings → Agent activity, and changes show live in the open app.
+> **Remaining:** the in-app skills themselves (the `ai/` module, token streaming, the cost counter) and
+> the vision part.
 
 ---
 

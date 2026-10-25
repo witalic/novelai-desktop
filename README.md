@@ -4,10 +4,10 @@ A desktop app (Electron) that wraps the **NovelAI image API** with an integrated
 **vault** for your prompts and works — every generation and its exact recipe are saved to disk in a
 structured, searchable store as you create.
 
-> **Status:** v1.0. Image generation, the vault (works · block/category library · multi-vault
+> **Status:** v1.x. Image generation, the vault (works · block/category library · multi-vault
 > manager · thumbnails), the Vue-Flow prompt-composition canvas, a structured **gallery** for each
-> work, a full **Works** browser with view/edit, and the Electron shell are implemented and covered
-> by tests. A Claude prompt-authoring assistant is planned. Scope for now is **images only**.
+> work, saved **block combinations**, a full **Works** browser with view/edit, **agent access over
+> MCP**, and the Electron shell are implemented and covered by tests. Scope for now is **images only**.
 > The phased plan lives in [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -33,6 +33,11 @@ worked* is hard to manage. This app stitches generation and storage into one cyc
   rebuildable SQLite index: paginated work listing, delete with image garbage-collection, and
   multiple vaults with safe folder moves.
 - **Prompt library** — categories, tags, and reusable prompt blocks you drop onto the canvas.
+- **Block combinations** — save the station's block set as a named combination in the work, then
+  replace or extend the station with it in one click.
+- **Agent access (MCP)** — let Claude Code or any MCP agent work with your vault: browse it, write
+  blocks and combinations, tag images, generate — under per-action switches and Anlas limits
+  ([below](#connecting-an-ai-agent-mcp)).
 - **Structured gallery** — each work's images organise into a composable stack of typed blocks
   (sections · headings · notes · image grids/albums · metadata) with an outline and a Quick-access
   bin, instead of a loose pile.
@@ -58,11 +63,12 @@ recipe-exchange format. Out of scope for now: text/video generation, collaborati
 │  FastAPI sidecar (backend/)   │
 │   ├─ novelai/  — thin image-API client (+ mock, SSE stream)
 │   ├─ vault/    — files on disk + SQLite index
+│   ├─ agent/    — MCP listener for AI agents (opt-in, loopback :8790)
 │   └─ routers/  — /api/* + /health
 │                               │  serves the built Vue static at /app/
 └──────────────┬────────────────┘
                ▼
-         NovelAI image API       (ai/ — Claude — planned, not built yet)
+         NovelAI image API
 ```
 
 **Key decisions**
@@ -97,6 +103,7 @@ novelai/
 │  └─ app/
 │     ├─ novelai/    # thin image-API client (+ mock)
 │     ├─ vault/      # on-disk store + SQLite index
+│     ├─ agent/      # MCP listener: tools, permissions, activity, change notices
 │     ├─ routers/    # /api/* + /health
 │     └─ …           # appconfig, settings, keychain, main
 ├─ frontend/         # Vue 3 + Vite + TS → builds to frontend/dist
@@ -134,6 +141,49 @@ You need a NovelAI account with an active subscription (Anlas) to generate real 
 token the app runs in mock mode. Add your **persistent API token** (NovelAI → Account → Get
 Persistent API Token) in the app's Settings — it is stored in the OS keychain, never in files.
 
+## Connecting an AI agent (MCP)
+
+AI agents on your computer — Claude Code, Claude Desktop, any MCP client — can work with your vault
+while the app is open. It is **off by default**.
+
+1. In **Settings → Agents**, switch on *Allow agents to connect*. The app starts a
+   loopback-only listener at `http://127.0.0.1:8790/mcp` (if that port is taken, the next free one up
+   to 8809 — the page shows the address in use).
+2. Copy the ready command from that page and run it in a terminal. For Claude Code it looks like this
+   (the copied one carries the real token):
+
+   ```bash
+   claude mcp add --scope user --transport http novelai http://127.0.0.1:8790/mcp --header "Authorization: Bearer <agent token>"
+   ```
+
+   The **agent token** is a separate key just for agents, kept in the OS keychain — not your NovelAI
+   token, which agents never see. *Regenerate* issues a new one and disconnects every agent.
+3. Start a new agent session and ask it to work with your Library or works.
+
+**What agents may do** is set per kind of action; everything but deleting is on by default:
+
+| Switch | Tools |
+|---|---|
+| Browse the Library and works | `search_blocks` `get_blocks` `list_categories` `list_tags` `list_works` `get_work` `get_image` `list_combinations` `get_catalog` `estimate_cost` |
+| Create and edit blocks | `create_blocks` (the Library import's rules — duplicates are skipped) `update_block` |
+| Delete blocks *(off)* | `delete_blocks` |
+| Create works, edit titles and image metadata | `create_work` `rename_work` `update_images` |
+| Create and edit combinations | `create_combination` `update_combination` |
+| Delete images and combinations *(off)* | `delete_images` `delete_combination` |
+| Generate images | `generate_images` |
+
+**Anlas.** Free generations (Opus: up to 1024×1024 px, ≤ 28 steps, one image) always run while
+*Generate images* is on. A paid one runs only when you ask the agent for it (the call says
+`paid: true`) **and** *Allow paid generations* is on — within a per-generation cap and a daily budget;
+the page shows what was spent today. Over a limit the call is refused, never queued. Agent
+generations run one at a time with a pause in between and land in the work's gallery under
+**Quick access**, each with its recipe.
+
+**Nothing happens silently.** Every agent action — reads too, and every refused call — is listed
+in **Settings → Agent activity** (the last 200, until the app restarts); while you are elsewhere, a
+badge on *Settings* counts what's new. Changes show up in the open app at once with a toast, and an agent's edits of
+the work you have open merge with your unsaved ones instead of overwriting them.
+
 ## Security & privacy
 
 - **Secrets live only in the OS keychain.** The NovelAI persistent token and the (future) Anthropic
@@ -144,6 +194,9 @@ Persistent API Token) in the app's Settings — it is stored in the OS keychain,
   secret (see Architecture).
 - **The vault is private.** Prompts and images are your content; they are never sent anywhere except
   the API they are bound for, and never committed to version control.
+- **Agent access is opt-in and local.** The MCP listener binds loopback only, refuses browser
+  requests (any `Origin`), and needs the agent token. What an agent reads goes on to its model
+  provider — which is why every read is logged in the app.
 - **Good API citizen.** The app respects NovelAI rate limits (backs off on 429) and Anlas cost
   (402 = out of Anlas); it never generates in tight loops.
 
