@@ -23,10 +23,11 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def record(action: str, detail: str, outcome: Outcome) -> None:
+def record(action: str, detail: str, outcome: Outcome, *, cost: int | None = None) -> None:
+    """One row; ``cost`` is the Anlas a generation spent (0: free) — None for everything else."""
     with _lock:
         _entries.appendleft({"at": _now(), "action": action, "detail": detail, "outcome": outcome, "count": 1,
-                             "_t": time.monotonic()})
+                             "cost": cost, "_t": time.monotonic()})
 
 
 def record_read(action: str, detail: str) -> None:
@@ -37,7 +38,7 @@ def record_read(action: str, detail: str) -> None:
             top.update(at=_now(), detail=detail, count=top["count"] + 1, _t=time.monotonic())
             return
         _entries.appendleft({"at": _now(), "action": action, "detail": detail, "outcome": "ok", "count": 1,
-                             "_t": time.monotonic()})
+                             "cost": None, "_t": time.monotonic()})
 
 
 def recent() -> list[dict]:

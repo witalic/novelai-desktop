@@ -8,6 +8,7 @@ import {
   getAgent, patchAgent, regenerateAgentToken, revealAgentToken, type AgentPatch, type AgentPermissions, type AgentStatus,
 } from '../api'
 import { copyText } from '../clipboard'
+import { useAccount } from '../composables/useAccount'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 
@@ -31,7 +32,22 @@ const PERMS: { group: string; items: { key: keyof AgentPermissions; name: string
     { key: 'combos_write', name: 'Create and edit combinations', desc: 'ready block sets inside a work' },
     { key: 'works_delete', name: 'Delete images and combinations', desc: 'permanent', danger: true },
   ] },
+  { group: 'Generation', items: [
+    { key: 'generate', name: 'Generate images', desc: "results go into the work's gallery — Quick access" },
+  ] },
 ]
+const spending = computed(() => st.value?.config.spending)
+const spentPct = computed(() => Math.min(100, ((st.value?.spent_today ?? 0) / (spending.value?.daily_budget || 1)) * 100))
+const { subscription } = useAccount()
+const opus = computed(() => !!subscription.value?.active && (subscription.value?.tier ?? 0) >= 3) // free generations
+// A limit is typed, then saved on Enter / leaving the field; whatever isn't saved (not a whole number ≥ 1, refused,
+// or a save already running) snaps back to the saved value.
+async function setLimit(key: 'max_per_request' | 'daily_budget', ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const value = Math.floor(Number(input.value))
+  if (Number.isFinite(value) && value >= 1 && value !== spending.value?.[key]) await save({ spending: { [key]: value } })
+  input.value = String(spending.value?.[key] ?? '')
+}
 
 const cfg = computed(() => st.value?.config)
 const maskedToken = computed(() => (st.value?.token_hint ? `••••••••••••••••••••${st.value.token_hint}` : 'issued when you switch access on'))
@@ -149,6 +165,34 @@ onUnmounted(stopPoll)
         </div>
       </template>
     </div>
+
+    <div class="setting col">
+      <div class="txt"><div class="name">Anlas for agent generations</div>
+        <div class="desc">Free generations always run while “Generate images” is on. A paid one runs only when you ask the agent
+          for it and only within these limits — over a limit it is refused, never queued.</div></div>
+      <div v-if="opus" class="freebox"><span class="ok">✓</span><div><b>Free with Opus:</b> up to 1024×1024 px (e.g. 832×1216),
+        ≤ 28 steps, 1 image.</div></div>
+      <div v-else class="freebox none">This account has no free generations — every agent generation is paid.</div>
+      <div class="lrowset">
+        <div class="txt"><div class="name">Allow paid generations</div><div class="desc">bigger sizes, more steps, several images at once</div></div>
+        <button class="switch" :class="{ on: spending?.paid }" role="switch" :aria-checked="!!spending?.paid" :disabled="!cfg || busy"
+          title="Allow paid generations" @click="save({ spending: { paid: !spending?.paid } })"><span class="knob"></span></button>
+      </div>
+      <div class="lrowset" :class="{ off: !spending?.paid }">
+        <div class="txt"><div class="name">Max per generation</div><div class="desc">one request may not cost more than this</div></div>
+        <label class="anlas">◆<input class="numin" type="text" inputmode="numeric" :value="spending?.max_per_request"
+          :disabled="!spending?.paid || busy" aria-label="Max Anlas per generation"
+          @change="setLimit('max_per_request', $event)" @keydown.enter="($event.target as HTMLInputElement).blur()" /></label>
+      </div>
+      <div class="lrowset" :class="{ off: !spending?.paid }">
+        <div class="txt"><div class="name">Daily budget</div><div class="desc">resets at local midnight</div></div>
+        <label class="anlas">◆<input class="numin" type="text" inputmode="numeric" :value="spending?.daily_budget"
+          :disabled="!spending?.paid || busy" aria-label="Daily Anlas budget"
+          @change="setLimit('daily_budget', $event)" @keydown.enter="($event.target as HTMLInputElement).blur()" /></label>
+      </div>
+      <div class="meter"><span class="hint">Spent today</span><div class="bar"><div class="fill" :style="{ width: `${spentPct}%` }"></div></div>
+        <span class="hint"><b>◆ {{ st?.spent_today ?? 0 }}</b> of {{ spending?.daily_budget }}</span></div>
+    </div>
   </div>
 
   <div class="card">
@@ -161,6 +205,7 @@ onUnmounted(stopPoll)
         <span class="a"><b>{{ a.action }}</b><span v-if="a.count > 1" class="n"> ×{{ a.count }}</span>
           <template v-if="a.detail"> — {{ a.detail }}</template></span>
         <span v-if="a.outcome !== 'ok'" class="c">{{ a.outcome === 'denied' ? 'denied' : 'failed' }}</span>
+        <span v-else-if="a.cost != null" class="c" :class="a.cost ? 'paid' : 'free'">{{ a.cost ? `◆ ${a.cost}` : 'free' }}</span>
       </div>
     </div>
   </div>
@@ -223,4 +268,20 @@ onUnmounted(stopPoll)
 .lrow .a b{color:var(--text);font-weight:600}
 .lrow .a .n{font-weight:700;color:var(--text-faint)}
 .lrow .c{flex-shrink:0;font-size:11px;font-weight:700;color:var(--danger)}
+.lrow .c.free{color:var(--ok)}
+.lrow .c.paid{color:var(--accent)}
+
+.freebox{display:flex;gap:10px;align-items:flex-start;font-size:12px;color:var(--text-dim);padding:9px 12px;border-radius:var(--radius);
+  background:color-mix(in srgb,var(--ok) 9%,transparent);border:1px solid color-mix(in srgb,var(--ok) 35%,var(--border))}
+.freebox b,.freebox .ok{color:var(--ok)}
+.freebox.none{background:var(--surface-2);border-color:var(--border)}
+.lrowset{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.lrowset.off{opacity:.55}
+.anlas{display:flex;align-items:center;gap:6px;color:var(--text-dim)}
+.numin{width:84px;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);
+  border-radius:var(--radius);padding:6px 10px;outline:none;text-align:right}
+.numin:focus{border-color:var(--accent)}
+.meter{display:flex;align-items:center;gap:10px}
+.bar{flex:1;height:6px;background:var(--surface-3);border-radius:20px;overflow:hidden}
+.fill{height:100%;background:var(--accent)}
 </style>

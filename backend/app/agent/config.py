@@ -16,11 +16,31 @@ class AgentPermissions(BaseModel):
     works_write: bool = True  # create works, rename them, edit image metadata
     combos_write: bool = True  # create and edit a work's block combinations
     works_delete: bool = False  # delete images and combinations
+    generate: bool = True  # generate images into a work (free ones; paid ones also need AgentSpending)
+
+
+class AgentSpending(BaseModel):
+    """Anlas for agent generations. Free ones (Opus) need nothing more; a paid one needs ``paid`` on here, the call
+    itself asking to spend (the user told the agent to), and to fit both limits (owner decision)."""
+
+    paid: bool = False
+    max_per_request: int = Field(default=20, ge=1, le=100_000)
+    daily_budget: int = Field(default=200, ge=1, le=1_000_000)
+
+
+class AgentSpent(BaseModel):
+    """What paid agent generations spent on ``day`` (a local date) — the daily budget's meter. State, not a
+    setting: only generations change it."""
+
+    day: str = ""
+    anlas: int = Field(default=0, ge=0)
 
 
 class AgentConfig(BaseModel):
     enabled: bool = False
     permissions: AgentPermissions = Field(default_factory=AgentPermissions)
+    spending: AgentSpending = Field(default_factory=AgentSpending)
+    spent: AgentSpent = Field(default_factory=AgentSpent)
 
 
 def coerce(raw: object) -> dict:

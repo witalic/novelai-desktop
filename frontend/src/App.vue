@@ -10,6 +10,7 @@ import WorksView from './views/WorksView.vue'
 import LibraryView from './views/LibraryView.vue'
 import PresetsView from './views/PresetsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import { useAccount } from './composables/useAccount'
 import { onAgentNotice } from './composables/useAgentNotices'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
@@ -20,11 +21,14 @@ export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
 const view = ref<ViewId>('generate')
 const views = { generate: GenerateView, works: WorksView, library: LibraryView, presets: PresetsView, settings: SettingsView }
 const { toasts, push } = useToast()
+const account = useAccount()
 
 // Whatever an agent changes is said out loud (security.md: nothing happens silently). A busy agent's burst
 // updates the one toast on screen instead of stacking a column of them.
 let agentToast = { id: 0, more: 0 }
 onAgentNotice((n) => {
+  if (n.cost) account.refresh() // a paid agent generation spent Anlas — the balance in the sidebar follows
+  if (n.kind === 'failed') { push(n.message, 'err', 8000); return } // a failure gets its own, longer-lived toast
   const shown = toasts.value.find((t) => t.id === agentToast.id)
   if (!shown) { agentToast = { id: push(n.message, 'ok'), more: 0 }; return }
   agentToast.more += 1

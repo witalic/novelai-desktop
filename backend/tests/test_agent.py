@@ -18,13 +18,15 @@ from fastapi import HTTPException
 
 from app import appconfig, keychain
 from app import main as app_main
-from app.agent import activity, changes, store
+from app.agent import activity, changes, generation, store
 from app.agent import server as agent_server
 from app.agent.config import AgentConfig, AgentPermissions, coerce
 from app.agent.server import _Config, build_app, listener
 from app.routers import agent as agent_router
 from app.main import app
+from app.novelai import MockNovelAIClient
 from app.novelai._png import solid_png
+from app.novelai.errors import NovelAIRateLimitError
 from app.settings import Settings, VaultSettings, get_settings
 from app.vault import service
 from app.vault import store as vault_store
@@ -36,7 +38,9 @@ BASE = "http://127.0.0.1:8790"
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(vault=VaultSettings(dir=str(tmp_path / "vault"), state_dir=str(tmp_path / "state")), _env_file=None)
+    # Downloads too: a test must never write into the real one (rescued agent images land there).
+    return Settings(vault=VaultSettings(dir=str(tmp_path / "vault"), state_dir=str(tmp_path / "state")),
+                    download_dir=str(tmp_path / "downloads"), _env_file=None)
 
 
 @pytest.fixture(autouse=True)
@@ -87,13 +91,15 @@ def test_off_by_default_and_everything_but_deleting_allowed():
     cfg = AgentConfig()
     assert not cfg.enabled
     assert cfg.permissions.model_dump() == {"read": True, "blocks_write": True, "blocks_delete": False,
-                                            "works_write": True, "combos_write": True, "works_delete": False}
+                                            "works_write": True, "combos_write": True, "works_delete": False,
+                                            "generate": True}
+    assert cfg.spending.paid is False  # an agent spends Anlas only once the user allows it
 
 
 def test_coerce_keeps_good_fields_and_drops_bad_ones():
     out = coerce({"enabled": True, "port": 9001, "permissions": "junk"})
     # the port is no setting — an old one is dropped
-    assert out == {"enabled": True, "permissions": AgentPermissions().model_dump()}
+    assert out == {**AgentConfig().model_dump(), "enabled": True}
     # a config saved before the write switches existed gets their defaults
     assert coerce({"permissions": {"read": False}})["permissions"] == {**AgentPermissions().model_dump(), "read": False}
     assert coerce(None) == AgentConfig().model_dump()
@@ -282,7 +288,7 @@ async def test_new_blocks_follow_the_import_rules(settings):
     assert (stored.text, stored.tags, stored.version) == ("yae miko", ["genshin"], 1)
     row = activity.recent()[0]
     assert (row["action"], row["detail"]) == ("Added 1 block", "Library → Character (2 duplicates skipped)")
-    assert notice == {"kind": "library", "work_id": None,
+    assert notice == {"kind": "library", "work_id": None, "cost": None,
                       "message": "Agent added 1 block — Library → Character (2 duplicates skipped)"}
 
 
@@ -455,6 +461,180 @@ def test_two_saves_on_one_base_never_both_land(settings, monkeypatch):
     with pytest.raises(HTTPException) as gone:
         service.save_work(settings, WorkDoc(id="work-gone", updated_at=base.updated_at), must_exist=True)
     assert gone.value.status_code == 404
+
+
+# ---- generation ----
+@pytest.fixture
+def mock_novelai(settings, monkeypatch):
+    """The offline NovelAI client (an Opus account), no pause between generations, a fresh subscription read — and
+    agent access switched on in the stored config, as it is whenever the listener runs."""
+    store.update_config(settings, {"enabled": True})
+    monkeypatch.setattr(settings.novelai, "mock", True)
+    monkeypatch.setattr(generation, "_GAP_S", 0.0)
+    monkeypatch.setattr(generation, "_tier", None)
+    monkeypatch.setattr(generation, "_not_before", 0.0)
+    monkeypatch.setattr(generation, "_backoff", 0.0)
+    return settings
+
+
+def paid_allowed(settings: Settings, **limits: int) -> None:
+    store.update_config(settings, {"spending": {"paid": True, "max_per_request": 50, "daily_budget": 200, **limits}})
+
+
+async def gen(c: httpx.AsyncClient, **args) -> dict:
+    return await call(c, "generate_images", {"work_id": "work-1", "blocks": [{"text": "raiden shogun"}], **args})
+
+
+async def test_a_free_generation_lands_in_quick_access_with_its_recipe(mock_novelai):
+    settings = mock_novelai
+    seed(settings)
+    base = service.load_work(settings, "work-1").updated_at
+    with changes.subscribe() as notices:
+        async with mcp_client(settings) as c:
+            combo = await call_json(c, "create_combination", {"work_id": "work-1", "name": "Raiden", "blocks": [
+                {"block_id": "block-raiden"}, {"text": "night sky", "frozen": True}, {"text": "blurry", "polarity": "negative"}]})
+            out = await call_json(c, "generate_images", {"work_id": "work-1", "combination_id": combo["id"],
+                                                         "width": 832, "height": 1216, "steps": 28})
+        await notices.get()  # the combination
+        notice = await asyncio.wait_for(notices.get(), 1)
+    assert out["anlas"] == 0 and len(out["images"]) == 1
+    doc = service.load_work(settings, "work-1")
+    im = next(i for i in doc.images if i.id == out["images"][0]["id"])
+    snap = next(s for s in doc.snapshots if s.id == im.snapshot_id)
+    assert (im.role, im.ar, im.file) == ("gallery", 832 / 1216, f"images/{im.id}.png")
+    assert (snap.assembled_positive, snap.assembled_negative) == ("raiden shogun", "blurry")  # frozen left out
+    assert snap.params["seed"] == out["images"][0]["seed"] and snap.params["width"] == 832
+    assert [c.text for c in snap.components] == ["raiden shogun", "blurry"]
+    assert notice["message"] == "Agent generated 1 image — in “Halloween” from “Raiden” · free" and notice["cost"] == 0
+    assert activity.recent()[0]["cost"] == 0
+    ops = changes.edits_since("work-1", base, doc.updated_at)
+    assert ops[-1]["op"] == "images_added" and ops[-1]["images"][0]["id"] == im.id
+
+
+async def test_a_paid_generation_needs_the_users_go_ahead_and_fits_their_limits(mock_novelai):
+    settings = mock_novelai
+    seed(settings)
+    two = {"work_id": "work-1", "blocks": [{"text": "raiden shogun"}], "width": 1024, "height": 1024, "steps": 28,
+           "n_samples": 2}  # Opus: the first image free, the second ◆ 20
+    async with mcp_client(settings) as c:
+        async def refused(args: dict) -> str:
+            res = await call(c, "generate_images", args)
+            assert res["isError"], res
+            return res["content"][0]["text"]
+
+        assert "paid: true" in await refused(two)  # the user didn't ask for a paid one
+        assert "Paid generations are off" in await refused({**two, "paid": True})
+        store.update_config(settings, {"spending": {"paid": True, "max_per_request": 15}})
+        assert "per-generation limit" in await refused({**two, "paid": True})
+        store.update_config(settings, {"spending": {"max_per_request": 50, "daily_budget": 30}})
+        out = await call_json(c, "generate_images", {**two, "paid": True})
+        assert (out["anlas"], out["spent_today"], len(out["images"])) == (20, 20, 2)
+        assert "today's budget" in await refused({**two, "paid": True})  # 20 more would pass 30
+        estimate = await call_json(c, "estimate_cost", {"width": 1024, "height": 1024, "steps": 28, "n_samples": 2})
+    assert estimate["anlas"] == 20 and estimate["spent_today"] == 20 and "today's budget" in estimate["refused_even_with_paid"]
+    assert [(r["action"], r["outcome"]) for r in activity.recent()[1:3]] == [("Generate images", "denied"),
+                                                                             ("Generated 2 images", "ok")]
+    seeds = [s.params["seed"] for s in service.load_work(settings, "work-1").snapshots]
+    assert seeds[1] == seeds[0] + 1  # sample k is seed + k
+
+
+async def test_whether_a_generation_is_free_is_read_fresh_every_time(mock_novelai, monkeypatch):
+    settings = mock_novelai
+    seed(settings)
+    async with mcp_client(settings) as c:
+        assert (await call_json(c, "generate_images", {"work_id": "work-1", "blocks": [{"text": "a"}]}))["anlas"] == 0
+        # the Opus subscription lapsed (or another account's token went in) since that generation
+        tablet = {"tier": 1, "tier_name": "Tablet", "active": True, "anlas": 100}
+        monkeypatch.setattr(MockNovelAIClient, "get_subscription", lambda self: _resolved(tablet))
+        res = await gen(c)
+    assert res["isError"] and "no free generations" in res["content"][0]["text"]
+    assert store.spent_today(store.load_config(settings)) == 0
+
+
+async def _resolved(value):
+    return value
+
+
+async def test_generations_are_one_at_a_time_and_follow_the_switches_live(mock_novelai):
+    settings = mock_novelai
+    seed(settings)
+    async with mcp_client(settings) as c:  # the listener's copy of the config still allows generating
+        generation._lock.acquire()  # another agent generation is running
+        try:
+            busy = await gen(c)
+        finally:
+            generation._lock.release()
+        assert busy["isError"] and "Another agent generation is running" in busy["content"][0]["text"]
+        store.update_config(settings, {"permissions": {"generate": False}})  # switched off as the call came in
+        off = await gen(c)
+    assert off["isError"] and "turned off" in off["content"][0]["text"]
+    assert len(service.load_work(settings, "work-1").images) == 2
+
+
+async def test_a_failed_generation_is_logged_and_counted_unless_novelai_refused_it(mock_novelai, monkeypatch):
+    settings = mock_novelai
+    seed(settings)
+    paid_allowed(settings)
+    two = {"width": 1024, "height": 1024, "steps": 28, "n_samples": 2, "paid": True}  # ◆ 20
+
+    async def timeout(self, params):
+        raise httpx.ReadTimeout("no answer")
+
+    async def too_many(self, params):
+        raise NovelAIRateLimitError("NovelAI returned 429: slow down")
+
+    async with mcp_client(settings) as c:
+        monkeypatch.setattr(MockNovelAIClient, "generate", timeout)
+        lost = await gen(c, **two)
+        assert lost["isError"] and "may still have been charged" in lost["content"][0]["text"]
+        assert store.spent_today(store.load_config(settings)) == 20  # it may have been: it counts
+        monkeypatch.setattr(MockNovelAIClient, "generate", too_many)
+        assert (await gen(c, **two))["isError"]
+        assert store.spent_today(store.load_config(settings)) == 20  # a clear refusal is given back
+        backing_off = await gen(c, **two)
+    assert "slow down" in backing_off["content"][0]["text"]  # after a 429 the next one waits its turn
+    rows = activity.recent()
+    assert [r["outcome"] for r in rows[:3]] == ["denied", "error", "error"]
+    assert rows[2]["cost"] == 20 and rows[1]["cost"] is None
+
+
+async def test_images_a_save_could_not_keep_go_to_downloads(mock_novelai, monkeypatch, tmp_path):
+    settings = mock_novelai
+    seed(settings)
+
+    def deleted_meanwhile(*_a, **_kw):
+        raise HTTPException(status_code=404, detail="Work not found.")
+
+    monkeypatch.setattr(service, "save_work", deleted_meanwhile)
+    async with mcp_client(settings) as c:
+        res = await gen(c)
+    text = res["content"][0]["text"]
+    assert res["isError"] and "saved to" in text and "Work not found" in text
+    assert [p.suffix for p in (tmp_path / "downloads").iterdir()] == [".png"]
+
+
+def test_the_daily_budget_starts_over_each_day(settings, monkeypatch):
+    class Day:
+        today_is = "2026-10-24"
+
+        @classmethod
+        def today(cls):
+            return type("D", (), {"isoformat": lambda _self: cls.today_is})()
+
+    monkeypatch.setattr(store, "date", Day)
+    assert store.add_spent(settings, 20) == 20
+    Day.today_is = "2026-10-25"
+    assert store.spent_today(store.load_config(settings)) == 0
+    assert store.add_spent(settings, 5) == 5
+    assert store.add_spent(settings, -9) == 0  # a refund never goes below zero
+
+
+async def test_no_token_means_no_generation(settings):
+    seed(settings)  # not in mock mode, and the (test) keychain holds no NovelAI token
+    async with mcp_client(settings) as c:
+        res = await call(c, "generate_images", {"work_id": "work-1", "blocks": [{"text": "raiden"}]})
+    assert res["isError"] and "No NovelAI token" in res["content"][0]["text"]
+    assert len(service.load_work(settings, "work-1").images) == 2  # nothing was added
 
 
 async def test_notices_stream_to_the_app_until_it_goes():

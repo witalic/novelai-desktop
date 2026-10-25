@@ -93,4 +93,19 @@ describe('applyAgentOpsToDoc', () => {
     expect(doc.preview_image_id).toBe('img-2')
     expect(((doc.canvas.nodes[0].data as any).blocks[0]).imageIds).toEqual(['img-2'])
   })
+
+  it('adds generated images with their recipes — once, however often replayed', () => {
+    const doc = { id: 'w', title: 'T', combos: [], images: [], snapshots: [], preview_image_id: null, canvas: { nodes: [] } } as unknown as WorkDoc
+    const ops: AgentOp[] = [{
+      op: 'images_added',
+      images: [{ id: 'img-g', snapshot_id: 'snap-g', role: 'gallery', ar: 1, file: 'images/img-g.png', created_at: '', group: null, favorite: false, tags: [], description: '' }],
+      snapshots: [{ id: 'snap-g', hash: 'positive:moon', components: [], assembled_positive: 'moon', assembled_negative: '', params: { seed: 3 } }],
+    }]
+    applyAgentOpsToDoc(doc, ops)
+    applyAgentOpsToDoc(doc, ops)
+    expect(doc.images.map((im) => im.id)).toEqual(['img-g'])
+    expect(doc.snapshots.map((s) => s.id)).toEqual(['snap-g'])
+    expect(doc.preview_image_id).toBe('img-g')
+    expect(planAgentOps([...ops, { op: 'images_deleted', ids: ['img-g'] }], []).added).toEqual([]) // made, then deleted
+  })
 })

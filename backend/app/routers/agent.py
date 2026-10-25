@@ -34,6 +34,7 @@ class AgentActivity(BaseModel):
     detail: str
     outcome: Literal["ok", "denied", "error"]
     count: int
+    cost: int | None = None  # Anlas a generation spent (0: free); None for everything else
 
 
 class AgentStatus(BaseModel):
@@ -44,12 +45,14 @@ class AgentStatus(BaseModel):
     error: str | None
     connected: int
     token_hint: str | None  # the token's last 4 characters, to recognise it without revealing it
+    spent_today: int  # Anlas paid agent generations spent today (the daily budget's meter)
     activity: list[AgentActivity]
 
 
 class AgentPatch(BaseModel):
     enabled: bool | None = None
     permissions: dict[str, bool] | None = None
+    spending: dict[str, bool | int] | None = None
 
 
 class WorkChanges(BaseModel):
@@ -59,8 +62,9 @@ class WorkChanges(BaseModel):
 
 def _status(settings: Settings) -> AgentStatus:
     running = listener.running
+    cfg = store.load_config(settings)
     return AgentStatus(
-        config=store.load_config(settings), running=running,
+        config=cfg, running=running, spent_today=store.spent_today(cfg),
         address=f"http://127.0.0.1:{listener.port if running else PORTS[0]}/mcp",
         note=listener.note if running else None, error=listener.error,
         connected=activity.connected() if running else 0,

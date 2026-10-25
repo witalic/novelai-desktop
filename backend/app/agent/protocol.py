@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import anyio
 
 from app import __version__
-from app.agent import activity, changes, tools
+from app.agent import activity, changes, errors, tools
 from app.agent.config import AgentConfig
 from app.settings import Settings
 
@@ -32,6 +32,7 @@ PERMISSION_LABELS = {  # as the switches read in Settings → Agent access
     "works_write": "Create works, edit titles and image metadata",
     "combos_write": "Create and edit combinations",
     "works_delete": "Delete images and combinations",
+    "generate": "Generate images",
 }
 
 INSTRUCTIONS = (
@@ -39,7 +40,8 @@ INSTRUCTIONS = (
     "(category + name + tag text, positive or negative); works hold generated images, their recipes and saved "
     "block combinations (ready block sets for the generation station). What you may do is set by the user in "
     "Settings → Agent access — a refused call names the permission that is off. Whatever you change shows up in "
-    "the open app at once, and the user sees a log of it."
+    "the open app at once, and the user sees a log of it. Generating costs the user's Anlas unless it is free: "
+    "check estimate_cost, and never pass paid: true without the user's say-so."
 )
 
 
@@ -69,6 +71,8 @@ def _describe(tool: tools.Tool) -> dict:
     annotations = {"title": tool.title, "readOnlyHint": tool.permission == "read"}
     if tool.permission != "read":
         annotations["destructiveHint"] = tool.permission.endswith("_delete")
+    if tool.permission == "generate":
+        annotations["openWorldHint"] = True  # reaches NovelAI (and may spend Anlas)
     return {"name": tool.name, "title": tool.title, "description": tool.description, "inputSchema": tool.schema,
             "annotations": annotations}
 
@@ -131,7 +135,15 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
 
     try:
         out = await anyio.to_thread.run_sync(tools.run, tool, ctx.settings, args, limiter=_THREADS)
-    except tools.ToolError as exc:
+    except errors.Refused as exc:  # over the user's limits — shown like a switched-off permission
+        activity.record(tool.title, exc.detail, "denied")
+        return _result(msg_id, _text(f"Refused: {exc}", error=True))
+    except errors.GenerationFailed as exc:  # the request went out: the prompt left the machine, Anlas may be gone
+        activity.record(tool.title, str(exc), "error", cost=exc.cost or None)
+        changes.publish({"kind": "failed", "work_id": None, "cost": exc.cost or None,
+                         "message": f"Agent generation failed — {exc}"})
+        return _result(msg_id, _text(str(exc), error=True))
+    except errors.ToolError as exc:
         return _result(msg_id, _text(str(exc), error=True))
     except Exception:  # noqa: BLE001 — an agent call must never take the listener down
         log.exception("Agent tool %s failed", tool.name)
@@ -139,9 +151,10 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
         return _result(msg_id, _text("Internal error — see the app log.", error=True))
 
     if isinstance(out, tools.Written):
-        activity.record(out.action, out.detail, "ok")
-        changes.publish({"kind": "work" if out.work_id else "library", "work_id": out.work_id,
-                         "message": f"Agent {out.action[0].lower()}{out.action[1:]} — {out.detail}"})
+        activity.record(out.action, out.detail, "ok", cost=out.cost)
+        price = "" if out.cost is None else " · free" if out.cost == 0 else f" · ◆ {out.cost}"
+        changes.publish({"kind": "work" if out.work_id else "library", "work_id": out.work_id, "cost": out.cost,
+                         "message": f"Agent {out.action[0].lower()}{out.action[1:]} — {out.detail}{price}"})
         out = out.result
     else:  # a read, or a write that turned out to change nothing (all duplicates, nothing found)
         activity.record_read(tool.title, _summary(args))

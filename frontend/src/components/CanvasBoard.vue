@@ -21,7 +21,7 @@ import { useImagePreview } from '../composables/useImagePreview'
 import { useImageDownload } from '../composables/useImageDownload'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
-import { workToCanvas, COMBOS, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import { galleryImageNode, workToCanvas, COMBOS, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import {
   DEFAULT_LAYOUT, MIN_SIZE, boundsOf, fitRect, snapMove, snapResize, type Rect, type Snap, type WidgetKey,
 } from '../canvas/widgetGrid'
@@ -175,11 +175,18 @@ const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty,
 // just the canvas nodes, so the next save doesn't write stale params/stack over the fresh version (H3/#4).
 function reloadWork() { emit('reload-work') }
 // An agent's edits of this work, replayed over the live canvas (vault/agentOps): its title, combinations and
-// image metadata change; gallery images it deleted leave their albums. Everything else stays as it is.
+// image metadata change; images it generated join the gallery's Quick access; gallery images it deleted leave
+// their albums. Everything else stays as it is.
 function applyAgentOps(ops: AgentOp[]) {
   const edits = planAgentOps(ops, combos.value)
   if (edits.title !== undefined) title.value = edits.title
   combos.value = edits.combos
+  for (const { image, snapshot } of edits.added) {
+    if (findNode(image.id)) continue
+    const { w, h } = spawnSize(image.ar || 3 / 4)
+    addNodes([{ ...galleryImageNode(workId.value, image, snapshot), hidden: true, style: { width: `${w}px`, height: `${h}px` } } as FlowNode])
+    seedSrc(image.id)
+  }
   for (const [id, set] of edits.images) {
     const n = findNode(id)
     if (n?.type === 'image') n.data = { ...n.data, ...set }

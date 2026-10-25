@@ -3,36 +3,43 @@ permission (``config.AgentPermissions`` field) it needs, and validates its own a
 sync (vault I/O) — the protocol layer runs them in a worker thread.
 
 Results are plain JSON-able values; ``ImageResult`` becomes an MCP image block, and a write returns ``Written``
-— its result plus what it did, for the activity feed and the app's notice (``changes``). A ``ToolError`` is the
-agent's mistake (bad argument, missing work, …) and is reported back as a tool error, not a crash.
+— its result plus what it did, for the activity feed and the app's notice (``changes``). Failures are the
+``errors`` classes, reported back as tool errors, not crashes.
 """
 import base64
 import json
+import secrets
 import threading
+import time
 import uuid
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+import anyio
+import httpx
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from app.agent import changes
+from app import appconfig
+from app.agent import changes, generation, store
+from app.agent.errors import GenerationFailed, Refused, ToolError
+from app.novelai import GenerateParams, get_client
 from app.novelai.catalog import get_catalog
+from app.novelai.cost import anlas_cost
+from app.novelai.errors import NovelAIError, NovelAIRateLimitError
 from app.settings import Settings
 from app.vault import import_blocks, service
-from app.vault.models import BlockDoc, Combo, ComboBlock, Image, WorkDoc
+from app.vault.models import BlockDoc, Combo, ComboBlock, Component, Image, Snapshot, WorkDoc
 
 MAX_PAGE = 200
 MAX_BATCH = 100  # blocks per create/delete call, blocks per combination
 _MAX_TEXT = 4000
 _MAX_NAME = 200
 _MAX_TAGS = 50
-
-
-class ToolError(Exception):
-    """The call can't be done as asked — the message goes back to the agent."""
 
 
 @dataclass(frozen=True)
@@ -44,12 +51,13 @@ class ImageResult:
 class Written:
     """A write's result for the agent, plus what it did: ``action`` (e.g. "Added 3 blocks") and ``detail``
     (what it touched) make the activity row and the app's notice; ``work_id`` is the work it changed (None: the
-    Library)."""
+    Library); ``cost`` the Anlas a generation spent (0: free; None: not a generation)."""
 
     result: Any
     action: str
     detail: str
     work_id: str | None = None
+    cost: int | None = None
 
 
 @dataclass(frozen=True)
@@ -560,6 +568,187 @@ def _delete_combination(settings: Settings, args: dict) -> Written:
     return Written({"deleted": combo_id}, "Deleted a combination", f"“{gone[0]}” from {_title(doc)}", work_id=doc.id)
 
 
+# ---- generation (generation.py: the Anlas rules, one at a time) ----
+_GEN_PARAMS = ("model", "width", "height", "steps", "scale", "sampler", "n_samples", "noise_schedule", "cfg_rescale",
+               "quality_toggle", "uc_preset")
+
+
+def _recipe(settings: Settings, doc: WorkDoc, args: dict) -> tuple[list[ComboBlock], str | None]:
+    """The blocks to generate from — a combination of the work, or blocks given in the call — and the combination's
+    name. Frozen and empty blocks stay out of the prompt, as at the station."""
+    combo_id = _str(args, "combination_id")
+    if combo_id and "blocks" in args:
+        raise ToolError("Give either 'combination_id' or 'blocks', not both.")
+    if combo_id:
+        combo = _find_combo(doc, combo_id)
+        blocks, name = combo.blocks, combo.name
+    elif "blocks" in args:
+        blocks, name = _combo_blocks(settings, args), None
+    else:
+        raise ToolError("Give a 'combination_id' from this work, or 'blocks' to generate from.")
+    live = [b.model_copy(update={"text": b.text.strip()}) for b in blocks if not b.frozen and b.text.strip()]
+    if not any(b.polarity == "positive" for b in live):
+        raise ToolError("Nothing to generate: the blocks hold no positive prompt.")
+    return live, name
+
+
+def _gen_params(doc: WorkDoc, args: dict, prompt: str, negative: str = "") -> GenerateParams:
+    """The work's generation settings (the station's) with the call's own on top — except the image count: one
+    image unless the call asks for more (the station's count would quietly multiply the cost)."""
+    values = {k: doc.params[k] for k in _GEN_PARAMS if k in doc.params and k != "n_samples"}
+    values.update({k: args[k] for k in (*_GEN_PARAMS, "seed") if k in args})
+    try:
+        params = GenerateParams(prompt=prompt, negative_prompt=negative, **values)
+    except ValidationError as exc:
+        err = exc.errors()[0]
+        raise ToolError(f"Bad generation setting '{err['loc'][0]}': {err['msg']}.") from exc
+    if params.model not in {m.id for m in get_catalog().models}:
+        raise ToolError(f"Unknown model “{params.model}” — get_catalog lists them.")
+    return params
+
+
+_MAX_SEED = 4_294_967_295
+
+
+def _recipe_params(doc: WorkDoc, args: dict, blocks: list[ComboBlock]) -> GenerateParams:
+    """The prompt joined as the station joins it, and a seed fixed here so every image's recipe reproduces —
+    image k gets seed + k, which must stay a valid seed too."""
+    def join(polarity: str) -> str:
+        return ", ".join(b.text for b in blocks if b.polarity == polarity)
+
+    params = _gen_params(doc, args, join("positive"), join("negative"))
+    if params.seed is None:
+        return params.model_copy(update={"seed": secrets.randbelow(_MAX_SEED - params.n_samples + 2)})
+    if params.seed + params.n_samples - 1 > _MAX_SEED:
+        raise ToolError(f"With {params.n_samples} images the seed can be at most {_MAX_SEED - params.n_samples + 1}.")
+    return params
+
+
+def _client(settings: Settings) -> generation.Client:
+    client = get_client(settings)
+    if client.is_mock and not settings.novelai.mock:  # no token: the app would only make placeholder images
+        raise ToolError("No NovelAI token is set in the app — ask the user to add it in Settings → NovelAI access.")
+    return client
+
+
+def _has_opus(client: generation.Client, *, for_estimate: bool = False) -> bool:
+    try:
+        return generation.has_opus(client, for_estimate=for_estimate)
+    except (NovelAIError, httpx.HTTPError) as exc:
+        raise ToolError(f"Could not read the NovelAI subscription: {exc}") from exc
+
+
+def _cost_of(params: GenerateParams, opus: bool) -> int:
+    return anlas_cost(params.width, params.height, params.steps, params.n_samples, opus=opus)
+
+
+def _estimate_cost(settings: Settings, args: dict) -> dict:
+    work_id = _str(args, "work_id")
+    doc = service.load_work(settings, work_id) if work_id else WorkDoc(id="-")
+    params = _gen_params(doc, args, prompt="-")  # the cost doesn't depend on the prompt
+    opus = _has_opus(_client(settings), for_estimate=True)
+    cost = _cost_of(params, opus)
+    cfg = store.load_config(settings)
+    refused = generation.refusal(cost, True, cfg, opus) if cost else None
+    return {"anlas": cost, "free": cost == 0, "params": _shown_params(params), "paid_generations": cfg.spending.paid,
+            "max_per_request": cfg.spending.max_per_request, "daily_budget": cfg.spending.daily_budget,
+            "spent_today": store.spent_today(cfg), "refused_even_with_paid": refused[0] if refused else None}
+
+
+def _shown_params(params: GenerateParams) -> dict:
+    return {k: getattr(params, k) for k in ("model", "width", "height", "steps", "n_samples")}
+
+
+def _rescue(settings: Settings, pngs: list[bytes]) -> Path:
+    """Paid-for images that could not be saved into the work go to the Downloads folder instead of being lost."""
+    dest = Path(appconfig.load(settings)["download_dir"])
+    dest.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time())
+    for k, png in enumerate(pngs, start=1):
+        (dest / f"novelai-agent-{stamp}-{k}.png").write_bytes(png)
+    return dest
+
+
+def _send(settings: Settings, client: generation.Client, params: GenerateParams, cost: int) -> list[bytes]:
+    """Send the generation. Its cost is counted before it goes out — an answer lost on the way may still have
+    been charged — and given back only when NovelAI clearly refused it."""
+    if cost:
+        store.add_spent(settings, cost)
+    rate_limited = False
+    try:
+        return anyio.from_thread.run(client.generate, params)
+    except NovelAIError as exc:
+        rate_limited = isinstance(exc, NovelAIRateLimitError)
+        refused = exc.http_status in (400, 401, 402, 429)
+        if cost and refused:
+            store.add_spent(settings, -cost)
+        busy = " (another generation may be running on the account — the app's own, too)" if rate_limited else ""
+        raise GenerationFailed(f"{exc}{busy}", 0 if refused else cost) from exc
+    except (httpx.HTTPError, ValueError, zipfile.BadZipFile) as exc:  # no answer, or no readable images in it
+        raise GenerationFailed(f"NovelAI request failed: {exc} — it may still have been charged.", cost) from exc
+    finally:
+        generation.finished(rate_limited=rate_limited)
+
+
+def _generate_images(settings: Settings, args: dict) -> Written:
+    work_id = _str(args, "work_id", required=True)
+    asked_to_pay = _flag(args, "paid")
+    doc = service.load_work(settings, work_id)
+    blocks, combo_name = _recipe(settings, doc, args)
+    params = _recipe_params(doc, args, blocks)
+    client = _client(settings)
+    with generation.slot():
+        cfg = store.load_config(settings)
+        if not (cfg.enabled and cfg.permissions.generate):  # switched off since this call was let in
+            raise Refused("“Generate images” is turned off in Settings → Agent access.", "switched off meanwhile")
+        opus = _has_opus(client)  # read now: the account may have changed since the last generation
+        cost = _cost_of(params, opus)
+        if cost and (why := generation.refusal(cost, asked_to_pay, cfg, opus)):
+            raise Refused(*why)
+        pngs = _send(settings, client, params, cost)
+
+    components = [Component(**b.model_dump(exclude={"frozen"})) for b in blocks]
+    recipe = {**params.model_dump(exclude={"prompt", "negative_prompt"}), "dedupe": False}
+    made: list[Image] = []
+
+    def change(work: WorkDoc) -> list[dict]:
+        snaps = [Snapshot(id=_new_id("snap"), hash="|".join(f"{c.polarity}:{c.text}" for c in components),
+                          components=components, assembled_positive=params.prompt,
+                          assembled_negative=params.negative_prompt, params={**recipe, "seed": params.seed + k})
+                 for k in range(len(pngs))]  # NovelAI makes sample k from seed + k
+        made[:] = [Image(id=_new_id("img"), snapshot_id=s.id, role="gallery", ar=params.width / params.height,
+                         image_b64=base64.b64encode(png).decode("ascii")) for s, png in zip(snaps, pngs)]
+        work.snapshots += snaps
+        work.images += made  # in no grid yet: they show in the gallery's Quick access
+        work.preview_image_id = work.preview_image_id or made[0].id
+        return [{"op": "images_added", "images": made, "snapshots": snaps}]
+
+    try:
+        doc, _ = _edit_work(settings, work_id, change)
+    except (ToolError, HTTPException, OSError) as exc:  # deleted meanwhile, a vault move, a full disk, …
+        where = _rescue(settings, pngs)
+        reason = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        raise GenerationFailed(f"Generated, but saving into the work failed ({reason}) — the images were saved to "
+                               f"{where} instead.", cost) from exc
+    detail = f"in {_title(doc)}" + (f" from “{combo_name}”" if combo_name else "")
+    if cost:
+        detail += f" · {params.width}×{params.height}, {params.steps} steps"
+    result = {"work_id": doc.id, "images": [{"id": im.id, "seed": params.seed + k} for k, im in enumerate(made)],
+              "params": _shown_params(params), "anlas": cost, "spent_today": store.spent_today(store.load_config(settings))}
+    return Written(result, f"Generated {_plural(len(made), 'image')}", detail, work_id=doc.id, cost=cost)
+
+
+_GEN_FIELDS = {
+    "model": {"type": "string", "description": "a model id from get_catalog; default: the work's"},
+    "width": {"type": "integer", "minimum": 64, "maximum": 2048}, "height": {"type": "integer", "minimum": 64, "maximum": 2048},
+    "steps": {"type": "integer", "minimum": 1, "maximum": 50}, "scale": {"type": "number", "minimum": 0, "maximum": 10},
+    "sampler": {"type": "string"},
+    "n_samples": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1,
+                  "description": "images in this one generation; only the first can be free"},
+    "quality_toggle": {"type": "boolean"}, "uc_preset": {"type": "integer", "minimum": 0, "maximum": 7},
+}
+
+
 _BLOCK_FIELDS = {
     "category": {"type": "string", "description": "category slug or display name (list_categories); default Custom"},
     "name": {"type": "string", "maxLength": _MAX_NAME},
@@ -684,6 +873,25 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          {"type": "object", "properties": {"work_id": {"type": "string"}, "combination_id": {"type": "string"}},
           "required": ["work_id", "combination_id"]},
          "works_delete", _delete_combination),
+    # generation
+    Tool("estimate_cost", "Estimate a generation's cost",
+         "The Anlas a generation would cost with these settings (default: the work's), whether it is free, and the "
+         "user's limits for paid agent generations.",
+         {"type": "object", "properties": {"work_id": {"type": "string"}, **_GEN_FIELDS}}, "read", _estimate_cost),
+    Tool("generate_images", "Generate images",
+         "Generate with NovelAI from a combination of the work (combination_id) or from blocks, with the work's "
+         "generation settings unless overridden — one image unless n_samples says more; the work's “unique tags” "
+         "option is not applied. The images land in the work's gallery (Quick access) with their recipe. Free "
+         "generations (Opus: up to 1024×1024 px, 28 steps, one image) always run; a paid one runs only when the user "
+         "agreed to spend Anlas on it — then pass paid: true — and allows paid ones in Settings, within their limits. "
+         "One generation at a time, a few seconds apart: for a series, call again for each.",
+         {"type": "object", "properties": {
+             "work_id": {"type": "string"}, "combination_id": {"type": "string"}, "blocks": _COMBO_BLOCKS,
+             "seed": {"type": "integer", "minimum": 0, "maximum": 4_294_967_295}, **_GEN_FIELDS,
+             "paid": {"type": "boolean", "default": False,
+                      "description": "spend Anlas — only when the user asked for a paid (higher-quality) generation"}},
+          "required": ["work_id"]},
+         "generate", _generate_images),
 ]}
 
 

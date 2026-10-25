@@ -293,4 +293,21 @@ describe('combinations', () => {
     const doc = canvasToWork([], viewport, params, { id: 'w1', title: 'T' })
     expect(workToCanvas(doc).nodes).toEqual([])
   })
+
+  it('gives a gallery image added outside the canvas (an agent’s) a node in Quick access, kept on re-save', () => {
+    const doc = canvasToWork([...anchors(), library], viewport, params, { id: 'w1', title: 'T' })
+    doc.snapshots.push({ id: 'snap-a', hash: 'positive:moon', components: [], assembled_positive: 'moon', assembled_negative: '',
+      params: { width: 832, height: 1216, seed: 7 } })
+    doc.images.push({ id: 'img-agent', snapshot_id: 'snap-a', role: 'gallery', ar: 832 / 1216, file: 'images/img-agent.png',
+      created_at: '2026-10-25T10:00:00.000+00:00', group: null, favorite: false, tags: [], description: '' })
+    const node = workToCanvas(doc).nodes.find((n) => n.id === 'img-agent')!
+    expect(node).toMatchObject({ type: 'image', parentNode: GALLERY })
+    expect((node.data as any).url).toBe('/api/vault/works/w1/images/img-agent')
+    expect((node.data as any).snapshot.positive).toBe('moon')
+    const gallery = workToCanvas(doc).nodes.find((n) => n.id === GALLERY)!.data as any
+    expect(gallery.blocks.flatMap((b: any) => b.imageIds ?? [])).not.toContain('img-agent') // in no grid
+    const again = canvasToWork(workToCanvas(doc).nodes, viewport, params, { id: 'w1', title: 'T' })
+    expect(again.images.map((im) => [im.id, im.role])).toContainEqual(['img-agent', 'gallery'])
+    expect(again.snapshots.find((s) => s.id === again.images.find((im) => im.id === 'img-agent')!.snapshot_id)!.params.seed).toBe(7)
+  })
 })

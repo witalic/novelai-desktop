@@ -176,27 +176,37 @@ export function workToDrafts(doc: WorkDoc): GenResult[] {
   })
 }
 
+// An image node's live data, hydrated from its domain record (WorkDoc.images) and its recipe.
+function imageData(workId: string, id: string, im: PersistedImage | undefined, snap: PersistedSnapshot | undefined): ImageNodeData {
+  // The persisted ar (v2) wins; params-derived is the v1 fallback. Never re-derive from the rounded node size —
+  // that drifts across save/scale cycles.
+  const p = (snap?.params || {}) as { width?: number; height?: number }
+  return {
+    url: im?.file ? `/api/vault/works/${workId}/images/${id}` : '', file: im?.file || '',
+    snapshot: restoreSnapshot(snap), // restored into the node so a later re-save preserves it (round-trip fix)
+    ar: im?.ar ?? (p.width && p.height ? p.width / p.height : undefined), created_at: im?.created_at || '',
+    tags: im?.tags || [], favorite: !!im?.favorite, group: im?.group ?? null, description: im?.description || '',
+  }
+}
+
+// A gallery image added outside the canvas (an agent's generation) has no node yet: it gets one in the gallery
+// zone, in no grid — so it shows in Quick access. Unsized: gallery images render inside the gallery widget, and
+// moving one out onto the canvas sizes it then.
+export function galleryImageNode(workId: string, im: PersistedImage, snap?: PersistedSnapshot): CanvasNode {
+  return {
+    id: im.id, type: 'image', parentNode: GALLERY, position: { x: 0, y: 0 }, zIndex: 3,
+    data: imageData(workId, im.id, im, snap),
+  } as CanvasNode
+}
+
 export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Viewport } {
   const imageById = new Map((doc.images || []).map((im) => [im.id, im]))
   const snapById = new Map((doc.snapshots || []).map((s) => [s.id, s]))
+  const snapOf = (im?: PersistedImage) => (im?.snapshot_id ? snapById.get(im.snapshot_id) : undefined)
   const nodes = (doc.canvas?.nodes || []).map((n): CanvasNode => {
     if (n.type === 'image') {
       const im = imageById.get(n.id)
-      const snap = im?.snapshot_id ? snapById.get(im.snapshot_id) : undefined
-      const url = im?.file ? `/api/vault/works/${doc.id}/images/${n.id}` : ''
-      // Restore the snapshot into the node so a later re-save preserves it (round-trip fix).
-      const snapshot = restoreSnapshot(snap)
-      // The persisted ar (v2) wins; params-derived is the v1 fallback. Never re-derive from the
-      // rounded node size — that drifts across save/scale cycles.
-      const p = (snap?.params || {}) as { width?: number; height?: number }
-      const ar = im?.ar ?? (p.width && p.height ? p.width / p.height : undefined)
-      return {
-        ...n,
-        data: {
-          url, file: im?.file || '', snapshot, ar, created_at: im?.created_at || '',
-          tags: im?.tags || [], favorite: !!im?.favorite, group: im?.group ?? null, description: im?.description || '',
-        },
-      }
+      return { ...n, data: imageData(doc.id, n.id, im, snapOf(im)) }
     }
     if (n.type === 'block') {
       // A block always opens collapsed (expanded is transient). Drop any persisted height so it
@@ -225,6 +235,10 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
     }
     return { ...n, data: { ...n.data } } as CanvasNode
   })
+  const placed = new Set(nodes.map((n) => n.id))
+  for (const im of doc.images || []) {
+    if (im.role === 'gallery' && !placed.has(im.id)) nodes.push(galleryImageNode(doc.id, im, snapOf(im)))
+  }
   // A work saved before the Combinations widget existed gets its zone, under its Library zone.
   const library = nodes.find((n) => n.id === LIBRARY)
   if (library && !nodes.some((n) => n.id === COMBOS)) nodes.push(combosZoneNode(library))

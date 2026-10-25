@@ -319,16 +319,22 @@ export interface AgentPermissions {
   read: boolean
   blocks_write: boolean; blocks_delete: boolean
   works_write: boolean; combos_write: boolean; works_delete: boolean
+  generate: boolean
 }
-export interface AgentConfig { enabled: boolean; permissions: AgentPermissions }
-// One feed row; repeated reads of one kind within a minute share a row (`count`).
-export interface AgentActivity { at: string; action: string; detail: string; outcome: 'ok' | 'denied' | 'error'; count: number }
+// Paid agent generations: off unless allowed here, and then only within both limits (free ones always run).
+export interface AgentSpending { paid: boolean; max_per_request: number; daily_budget: number }
+export interface AgentConfig { enabled: boolean; permissions: AgentPermissions; spending: AgentSpending }
+// One feed row; repeated reads of one kind within a minute share a row (`count`). `cost`: a generation's Anlas
+// (0 = free), null for everything else.
+export interface AgentActivity {
+  at: string; action: string; detail: string; outcome: 'ok' | 'denied' | 'error'; count: number; cost: number | null
+}
 // `address` is where agents connect — the app picks the port (8790 unless that's taken; `note` says so).
 export interface AgentStatus {
   config: AgentConfig; running: boolean; address: string; note: string | null; error: string | null; connected: number
-  token_hint: string | null; activity: AgentActivity[]
+  token_hint: string | null; spent_today: number; activity: AgentActivity[]
 }
-export interface AgentPatch { enabled?: boolean; permissions?: Partial<AgentPermissions> }
+export interface AgentPatch { enabled?: boolean; permissions?: Partial<AgentPermissions>; spending?: Partial<AgentSpending> }
 
 export async function getAgent(): Promise<AgentStatus> {
   return jsonOrThrow(await fetch('/api/agent'), 'Failed to read agent access')

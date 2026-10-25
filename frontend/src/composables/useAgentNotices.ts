@@ -5,9 +5,10 @@
 import { onUnmounted } from 'vue'
 
 export interface AgentNotice {
-  kind: 'library' | 'work' // what changed: Library blocks, or the work `work_id`
+  kind: 'library' | 'work' | 'failed' // what changed: Library blocks, the work `work_id` — or a generation failed
   work_id: string | null
   message: string // what the agent did, as the activity feed words it
+  cost: number | null // a generation's Anlas (0 = free); null for everything else
 }
 type Listener = (notice: AgentNotice) => void
 
