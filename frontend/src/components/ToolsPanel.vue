@@ -30,7 +30,6 @@ const emit = defineEmits<{
   'keep-many': [string[]] // materialise these drafts onto the canvas, in order
   'remove-many': [string[]] // drop these drafts from the stack
   view: [string] // open the image viewer over the stack at this draft
-  navigate: [string]
 }>()
 
 // Stack thumbnails, same crispness lesson as the canvas (rules/ui-design.md): the <img> is laid

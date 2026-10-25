@@ -25,7 +25,7 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")  # newest first; 
 # locks) never takes the shared pool the app's own requests — saves included — run on.
 _THREADS = anyio.CapacityLimiter(4)
 
-PERMISSION_LABELS = {  # as the switches read in Settings → Agent access
+PERMISSION_LABELS = {  # as the switches read in Settings → Agents
     "read": "Browse the Library and works",
     "blocks_write": "Create and edit blocks",
     "blocks_delete": "Delete blocks",
@@ -39,7 +39,7 @@ INSTRUCTIONS = (
     "novelai-desktop is the user's NovelAI image studio. The Library holds reusable prompt blocks "
     "(category + name + tag text, positive or negative); works hold generated images, their recipes and saved "
     "block combinations (ready block sets for the generation station). What you may do is set by the user in "
-    "Settings → Agent access — a refused call names the permission that is off. Whatever you change shows up in "
+    "Settings → Agents — a refused call names the permission that is off. Whatever you change shows up in "
     "the open app at once, and the user sees a log of it. Generating costs the user's Anlas unless it is free: "
     "check estimate_cost, and never pass paid: true without the user's say-so."
 )
@@ -75,6 +75,13 @@ def _describe(tool: tools.Tool) -> dict:
         annotations["openWorldHint"] = True  # reaches NovelAI (and may spend Anlas)
     return {"name": tool.name, "title": tool.title, "description": tool.description, "inputSchema": tool.schema,
             "annotations": annotations}
+
+
+_KINDS: dict[str, activity.Kind] = {"read": "read", "generate": "generate"}  # every other permission writes
+
+
+def _kind(tool: tools.Tool) -> activity.Kind:
+    return _KINDS.get(tool.permission, "write")
 
 
 def _summary(args: dict) -> str:
@@ -127,19 +134,20 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
     if not isinstance(args, dict):
         return _error(msg_id, -32602, "arguments must be an object.")
 
+    kind = _kind(tool)
     if not getattr(ctx.config.permissions, tool.permission):
         label = PERMISSION_LABELS[tool.permission]
-        activity.record(tool.title, f"“{label}” is off", "denied")
+        activity.record(tool.title, f"“{label}” is off", "denied", kind=kind)
         return _result(msg_id, _text(
-            f"Refused: “{label}” is turned off in Settings → Agent access. Ask the user to allow it.", error=True))
+            f"Refused: “{label}” is turned off in Settings → Agents. Ask the user to allow it.", error=True))
 
     try:
         out = await anyio.to_thread.run_sync(tools.run, tool, ctx.settings, args, limiter=_THREADS)
     except errors.Refused as exc:  # over the user's limits — shown like a switched-off permission
-        activity.record(tool.title, exc.detail, "denied")
+        activity.record(tool.title, exc.detail, "denied", kind=kind)
         return _result(msg_id, _text(f"Refused: {exc}", error=True))
     except errors.GenerationFailed as exc:  # the request went out: the prompt left the machine, Anlas may be gone
-        activity.record(tool.title, str(exc), "error", cost=exc.cost or None)
+        activity.record(tool.title, str(exc), "error", kind=kind, cost=exc.cost or None)
         changes.publish({"kind": "failed", "work_id": None, "cost": exc.cost or None,
                          "message": f"Agent generation failed — {exc}"})
         return _result(msg_id, _text(str(exc), error=True))
@@ -147,11 +155,11 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
         return _result(msg_id, _text(str(exc), error=True))
     except Exception:  # noqa: BLE001 — an agent call must never take the listener down
         log.exception("Agent tool %s failed", tool.name)
-        activity.record(tool.title, "see the app log", "error")
+        activity.record(tool.title, "see the app log", "error", kind=kind)
         return _result(msg_id, _text("Internal error — see the app log.", error=True))
 
     if isinstance(out, tools.Written):
-        activity.record(out.action, out.detail, "ok", cost=out.cost)
+        activity.record(out.action, out.detail, "ok", kind=kind, cost=out.cost)
         price = "" if out.cost is None else " · free" if out.cost == 0 else f" · ◆ {out.cost}"
         changes.publish({"kind": "work" if out.work_id else "library", "work_id": out.work_id, "cost": out.cost,
                          "message": f"Agent {out.action[0].lower()}{out.action[1:]} — {out.detail}{price}"})

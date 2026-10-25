@@ -13,12 +13,13 @@ import { imageMeta } from '../canvas/imageMeta'
 import { newId } from '../vault/ids'
 import { workToDrafts } from '../vault/serialize'
 import type { PanelParams, PresetParams, Preset, GenResult, WorkDoc, SnapshotData } from '../types'
+import type { NavTarget } from '../App.vue'
 
 const props = defineProps<{
   openWorkId?: string | null
   applyPreset?: { id: string; params: PresetParams; nonce: number } | null
 }>()
-const emit = defineEmits<{ navigate: [string]; 'open-library': [{ category: string; tags: string[] }] }>()
+const emit = defineEmits<{ navigate: [NavTarget]; 'open-library': [{ category: string; tags: string[] }] }>()
 const { push } = useToast()
 const account = useAccount()
 
@@ -207,7 +208,7 @@ function onReloadWork() { if (loadedWork.value) loadWorkIntoView(loadedWork.valu
       @new-work="onNewWork" @reload-work="onReloadWork" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
       @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
-      @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @view="viewStack" @navigate="emit('navigate', $event)" />
+      @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @view="viewStack" />
     <PresetEditor v-if="presetDraft" :model="presetDraft" @save="onPresetDraftSave" @close="presetDraft = null" />
   </div>
 </template>

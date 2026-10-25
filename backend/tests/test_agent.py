@@ -47,6 +47,7 @@ def settings(tmp_path):
 def _fresh_state(monkeypatch):
     monkeypatch.setattr(activity, "_entries", deque(maxlen=activity.MAX_ENTRIES))
     monkeypatch.setattr(activity, "_sessions", {})
+    monkeypatch.setattr(activity, "_seq", 0)
     monkeypatch.setattr(changes, "_log", OrderedDict())
     monkeypatch.setattr(changes, "_subscribers", set())
     monkeypatch.setattr(listener, "_lock", asyncio.Lock())  # each test runs on its own event loop
@@ -215,6 +216,18 @@ async def test_reads_are_logged_and_folded(settings):
     assert [(r["action"], r["count"]) for r in rows] == [("View an image", 1), ("Search Library blocks", 2)]
     assert rows[0]["detail"] == "work id “work-1”, image id “img-1”"
     assert rows[1]["detail"] == "query “yae”"
+    assert {r["kind"] for r in rows} == {"read"}
+    assert rows[0]["seq"] > rows[1]["seq"] == 2  # the fold counted as news: seq 1 became 2
+
+
+async def test_activity_rows_say_what_kind_of_call_they_were(settings):
+    seed(settings)
+    async with mcp_client(settings) as c:
+        await call_json(c, "create_work", {"title": "Autumn"})
+        await call(c, "delete_blocks", {"ids": ["block-raiden"]})  # off by default
+        await call(c, "search_blocks", {"query": "raiden"})
+    assert [(r["kind"], r["outcome"]) for r in activity.recent()] == [("read", "ok"), ("write", "denied"),
+                                                                      ("write", "ok")]
 
 
 async def test_agent_mistakes_come_back_as_tool_errors(settings):
@@ -506,7 +519,7 @@ async def test_a_free_generation_lands_in_quick_access_with_its_recipe(mock_nove
     assert snap.params["seed"] == out["images"][0]["seed"] and snap.params["width"] == 832
     assert [c.text for c in snap.components] == ["raiden shogun", "blurry"]
     assert notice["message"] == "Agent generated 1 image — in “Halloween” from “Raiden” · free" and notice["cost"] == 0
-    assert activity.recent()[0]["cost"] == 0
+    assert (activity.recent()[0]["cost"], activity.recent()[0]["kind"]) == (0, "generate")
     ops = changes.edits_since("work-1", base, doc.updated_at)
     assert ops[-1]["op"] == "images_added" and ops[-1]["images"][0]["id"] == im.id
 
@@ -714,6 +727,18 @@ async def test_settings_api_starts_serves_and_stops_the_listener(api, ports):
 
     off_again = (await api.patch("/api/agent", json={"enabled": False})).json()
     assert off_again["running"] is False
+
+
+async def test_the_activity_log_can_be_cleared(api, settings):
+    seed(settings)
+    async with mcp_client(settings) as c:
+        await call(c, "list_works", {})
+    shown = (await api.get("/api/agent")).json()["activity"]
+    assert [(r["action"], r["kind"], r["seq"]) for r in shown] == [("List works", "read", 1)]
+    assert (await api.delete("/api/agent/activity")).json()["activity"] == []
+    async with mcp_client(settings) as c:
+        await call(c, "list_works", {})
+    assert activity.recent()[0]["seq"] == 2  # counting on — nothing after a Clear looks older than it is
 
 
 async def test_a_taken_port_moves_the_listener_to_the_next_one(api, ports):

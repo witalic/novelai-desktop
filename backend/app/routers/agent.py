@@ -1,4 +1,4 @@
-"""Settings → Agent access: the MCP listener's config, live status, token and activity (``app.agent``) — and
+"""Settings → Agents: the MCP listener's config, live status, token and activity (``app.agent``) — and
 what agents change, for the rest of the app: a stream of notices and, per work, the edits to catch up on.
 
 The agent token is a local credential the user pastes into their agent's config. It is handed out in full only
@@ -29,7 +29,9 @@ _KEEPALIVE_S = 15
 
 
 class AgentActivity(BaseModel):
+    seq: int  # rises with every new row or fold — what arrived since the user last looked
     at: str
+    kind: activity.Kind
     action: str
     detail: str
     outcome: Literal["ok", "denied", "error"]
@@ -63,12 +65,15 @@ class WorkChanges(BaseModel):
 def _status(settings: Settings) -> AgentStatus:
     running = listener.running
     cfg = store.load_config(settings)
+    # The app polls this while agents can act: the running listener holds the token, so the keychain (a real OS
+    # call, maybe a prompt on macOS) is only asked while access is off.
+    hint = listener.token[-4:] if listener.token else keychain.agent_token_hint()
     return AgentStatus(
         config=cfg, running=running, spent_today=store.spent_today(cfg),
         address=f"http://127.0.0.1:{listener.port if running else PORTS[0]}/mcp",
         note=listener.note if running else None, error=listener.error,
         connected=activity.connected() if running else 0,
-        token_hint=keychain.agent_token_hint(), activity=[AgentActivity(**a) for a in activity.recent()],
+        token_hint=hint, activity=[AgentActivity(**a) for a in activity.recent()],
     )
 
 
@@ -85,6 +90,12 @@ async def patch_agent(body: AgentPatch, settings: Settings = Depends(get_setting
         raise HTTPException(status_code=400, detail=exc.errors()[0]["msg"]) from exc
     await listener.apply(settings, cfg)
     return await run_in_threadpool(_status, settings)
+
+
+@router.delete("/activity", response_model=AgentStatus)
+def clear_activity(settings: Settings = Depends(get_settings)) -> AgentStatus:
+    activity.clear()
+    return _status(settings)
 
 
 @router.get("/token")

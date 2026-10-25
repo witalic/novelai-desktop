@@ -79,7 +79,7 @@ def refusal(cost: int, asked_to_pay: bool, cfg: AgentConfig, opus: bool) -> tupl
         return (f"This generation costs about {cost} Anlas. {free}. Ask the user first — only if they agree to spend "
                 "Anlas on it, call again with paid: true.", f"◆ {cost} — paid not requested")
     if not s.paid:
-        return ("Paid generations are off in Settings → Agent access (Anlas for agent generations); only the user "
+        return ("Paid generations are off in Settings → Agents (Anlas limits); only the user "
                 "can turn them on.", f"◆ {cost} — paid generations are off")
     if cost > s.max_per_request:
         return (f"About {cost} Anlas is over the per-generation limit the user set (◆ {s.max_per_request}).",

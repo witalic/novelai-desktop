@@ -57,6 +57,15 @@ async def test_mistyped_keys_and_vanished_active_vault(client):
     assert cfg["active"] == str(tmp / "default-vault")
 
 
+async def test_downloads_folder_must_be_an_existing_folder(client):
+    ac, tmp = client
+    for bad in ("downloads", str(tmp / "missing")):  # relative / not there
+        assert (await ac.patch("/api/settings", json={"download_dir": bad})).status_code == 400
+    folder = tmp / "pics"
+    folder.mkdir()
+    assert (await ac.patch("/api/settings", json={"download_dir": str(folder)})).json()["download_dir"] == str(folder)
+
+
 async def test_novelai_token_lifecycle(client, monkeypatch):
     ac, _ = client
     from app import keychain

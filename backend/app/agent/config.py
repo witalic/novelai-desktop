@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 
 class AgentPermissions(BaseModel):
-    """One switch per kind of action (Settings → Agent access), checked on every tool call. Everything but
+    """One switch per kind of action (Settings → Agents), checked on every tool call. Everything but
     deleting is on by default (owner decision)."""
 
     read: bool = True  # browse the Library and works

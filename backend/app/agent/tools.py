@@ -627,7 +627,7 @@ def _recipe_params(doc: WorkDoc, args: dict, blocks: list[ComboBlock]) -> Genera
 def _client(settings: Settings) -> generation.Client:
     client = get_client(settings)
     if client.is_mock and not settings.novelai.mock:  # no token: the app would only make placeholder images
-        raise ToolError("No NovelAI token is set in the app — ask the user to add it in Settings → NovelAI access.")
+        raise ToolError("No NovelAI token is set in the app — ask the user to add it in Settings → NovelAI.")
     return client
 
 
@@ -700,7 +700,7 @@ def _generate_images(settings: Settings, args: dict) -> Written:
     with generation.slot():
         cfg = store.load_config(settings)
         if not (cfg.enabled and cfg.permissions.generate):  # switched off since this call was let in
-            raise Refused("“Generate images” is turned off in Settings → Agent access.", "switched off meanwhile")
+            raise Refused("“Generate images” is turned off in Settings → Agents.", "switched off meanwhile")
         opus = _has_opus(client)  # read now: the account may have changed since the last generation
         cost = _cost_of(params, opus)
         if cost and (why := generation.refusal(cost, asked_to_pay, cfg, opus)):

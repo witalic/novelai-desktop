@@ -41,6 +41,7 @@ import { removeIdFromGrids } from '../vault/workOps'
 import BlockEditorModal from './BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
+import type { NavTarget } from '../App.vue'
 import type {
   GenResult, LibraryBlock, PanelParams, PersistedCombo, PersistedComboBlock, PersistedComponent, SnapshotData, WorkDoc,
 } from '../types'
@@ -57,7 +58,7 @@ const emit = defineEmits<{
   take: [string]
   cancel: []
   saved: [string]
-  navigate: [string]
+  navigate: [NavTarget]
   'open-library': [{ category: string; tags: string[] }] // widget footer → Library, pre-filtered
   'new-work': []
   'reload-work': [] // a concurrent edit (409) → the view re-fetches the full work (params + stack + canvas)
@@ -168,7 +169,7 @@ const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty,
   onBeforeUnload, refreshInterval, stopAutosave, resetBaseline, onAgentEdit } = useAutosave({
   nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
   combos: () => combos.value,
-  onNoVault: () => emit('navigate', 'settings'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
+  onNoVault: () => emit('navigate', 'settings/vaults'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
   agentChanges: agentWorkChanges, applyAgentOps,
 })
 // A concurrent edit (409) → the view re-fetches the FULL work (params + draft stack + canvas doc), not
@@ -1625,7 +1626,7 @@ function startName(data: any, e: MouseEvent) {
               @resize-start="(e) => onWidgetResizeStart(e.params)" @resize="(e) => onWidgetResize(id, e.params)" @resize-end="onWidgetResizeEnd(id)" />
             <PromptWidget :data="data" :selected="selected" :favorites="favorites" :revalidate="widgetRevalidate" :used-keys="usedBlockKeys"
               @open-library="emit('open-library', $event)"
-              @open-settings="emit('navigate', 'settings')"
+              @open-settings="emit('navigate', 'settings/vaults')"
               @use="useLibraryBlock" @new-block="newCompBlock" @toggle-favorite="toggleFavorite" />
           </template>
           <template v-else-if="data.role === 'combos'">

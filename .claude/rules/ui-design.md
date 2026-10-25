@@ -41,6 +41,9 @@ them.** When building or changing any UI, check this list first.
   what it holds).
 - **Consistent control heights in a row.** Search + dropdown + button on one line must share
   font-size and vertical padding, or they read as misaligned.
+- **Sub-navigation nests in the app sidebar.** A view with sections (Settings) lists them under its own
+  sidebar item — indented on a guide line, shown only while that view is open. Not a second nav column
+  beside the sidebar, and not one long page with the navigation dropped. Took three mockups to land.
 - **Collapse with `v-show`, not `v-if`.** `v-if` destroys DOM state (scroll position, open panels,
   input focus) on collapse; `v-show` preserves it.
 

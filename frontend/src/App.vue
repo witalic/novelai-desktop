@@ -12,21 +12,39 @@ import PresetsView from './views/PresetsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { useAccount } from './composables/useAccount'
 import { onAgentNotice } from './composables/useAgentNotices'
+import { useAgentStatus } from './composables/useAgentStatus'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
+import type { SettingsSection } from './settingsSections'
 import type { Preset, PresetParams } from './types'
 
 useTheme()
 export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
+// Where a view can send the user: another view, or straight to one section of Settings ('settings/vaults').
+export type NavTarget = ViewId | `settings/${SettingsSection}`
 const view = ref<ViewId>('generate')
 const views = { generate: GenerateView, works: WorksView, library: LibraryView, presets: PresetsView, settings: SettingsView }
 const { toasts, push } = useToast()
 const account = useAccount()
+const agent = useAgentStatus()
+
+// The open Settings section — kept while the user is elsewhere, so Settings reopens where they left it.
+const settingsSection = ref<SettingsSection>('general')
+function navigate(target: NavTarget) {
+  const [v, section] = target.split('/') as [ViewId, SettingsSection | undefined]
+  if (section) settingsSection.value = section
+  view.value = v
+}
+function openSection(section: SettingsSection) {
+  settingsSection.value = section
+  view.value = 'settings'
+}
 
 // Whatever an agent changes is said out loud (security.md: nothing happens silently). A busy agent's burst
 // updates the one toast on screen instead of stacking a column of them.
 let agentToast = { id: 0, more: 0 }
 onAgentNotice((n) => {
+  agent.load() // Agent activity and the sidebar badge catch up now rather than at the next poll
   if (n.cost) account.refresh() // a paid agent generation spent Anlas — the balance in the sidebar follows
   if (n.kind === 'failed') { push(n.message, 'err', 8000); return } // a failure gets its own, longer-lived toast
   const shown = toasts.value.find((t) => t.id === agentToast.id)
@@ -64,15 +82,15 @@ function openLibraryWithFilter(f: { category: string; tags: string[] }) {
 const viewBindings = computed(() =>
   view.value === 'generate'
     ? { openWorkId: activeWorkId.value,
-        applyPreset: applyPreset.value, onNavigate: (v: ViewId) => (view.value = v),
+        applyPreset: applyPreset.value, onNavigate: navigate,
         onOpenLibrary: openLibraryWithFilter }
     : view.value === 'works'
       ? { onOpen: openWork }
       : view.value === 'library'
         ? { filter: libraryFilter.value }
         : view.value === 'presets'
-          ? { onApply: onApplyPreset, onNavigate: (v: ViewId) => (view.value = v) }
-          : {},
+          ? { onApply: onApplyPreset, onNavigate: navigate }
+          : { section: settingsSection.value, onSection: openSection },
 )
 </script>
 
@@ -80,7 +98,7 @@ const viewBindings = computed(() =>
   <div class="app">
     <AppBar />
     <div class="shell">
-      <Sidebar :current="view" @navigate="view = $event" />
+      <Sidebar :current="view" :section="settingsSection" @navigate="view = $event" @section="openSection" />
       <KeepAlive>
         <component :is="views[view]" v-bind="viewBindings" />
       </KeepAlive>

@@ -324,10 +324,11 @@ export interface AgentPermissions {
 // Paid agent generations: off unless allowed here, and then only within both limits (free ones always run).
 export interface AgentSpending { paid: boolean; max_per_request: number; daily_budget: number }
 export interface AgentConfig { enabled: boolean; permissions: AgentPermissions; spending: AgentSpending }
-// One feed row; repeated reads of one kind within a minute share a row (`count`). `cost`: a generation's Anlas
-// (0 = free), null for everything else.
+// One feed row; repeated reads of one kind within a minute share a row (`count`). `seq` rises with every new row
+// or fold (what arrived since the user last looked). `cost`: a generation's Anlas (0 = free), null otherwise.
 export interface AgentActivity {
-  at: string; action: string; detail: string; outcome: 'ok' | 'denied' | 'error'; count: number; cost: number | null
+  seq: number; at: string; kind: 'read' | 'write' | 'generate'; action: string; detail: string
+  outcome: 'ok' | 'denied' | 'error'; count: number; cost: number | null
 }
 // `address` is where agents connect — the app picks the port (8790 unless that's taken; `note` says so).
 export interface AgentStatus {
@@ -354,6 +355,10 @@ export async function revealAgentToken(): Promise<string> {
 
 export async function regenerateAgentToken(): Promise<AgentStatus> {
   return jsonOrThrow(await fetch('/api/agent/token', { method: 'POST' }), 'Failed to regenerate the agent token')
+}
+
+export async function clearAgentActivity(): Promise<AgentStatus> {
+  return jsonOrThrow(await fetch('/api/agent/activity', { method: 'DELETE' }), 'Failed to clear the agent activity')
 }
 
 // What agents changed in a work since our copy was saved at `since` (its lock base): the operations to replay and

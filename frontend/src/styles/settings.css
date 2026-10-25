@@ -1,0 +1,49 @@
+/* The building blocks every Settings section shares (cards, setting rows, buttons, switches). Scoped to the
+   Settings view's root (.stg) so the class names can't reach any other view. */
+.stg .card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.stg .card-hd{display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid var(--border);font-weight:600}
+.stg .card-ft{display:flex;align-items:center;gap:8px;padding:10px 18px;border-top:1px solid var(--border)}
+.stg .sp{margin-left:auto}
+.stg .setting{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 18px}
+.stg .setting + .setting{border-top:1px solid var(--border)}
+.stg .setting.col{flex-direction:column;align-items:stretch;gap:12px}
+.stg .txt{min-width:0}
+.stg .txt .name{font-weight:500}
+.stg .txt .desc{font-size:12px;color:var(--text-dim);margin-top:2px}
+.stg .hint{font-size:11.5px;font-weight:400;color:var(--text-faint)}
+.stg .hint b{color:var(--text-dim)}
+.stg .err{font-size:12px;font-weight:600;color:var(--danger)}
+.stg .note{font-size:12px;color:var(--warn-fg)}
+.stg .empty{padding:16px 18px;font-size:12.5px;color:var(--text-faint)}
+.stg .row{display:flex;align-items:stretch;gap:8px;min-width:0} /* an input and its buttons share one height */
+
+.stg .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:var(--text);background:var(--surface-2);
+  border:1px solid var(--border);border-radius:var(--radius);padding:7px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.stg .tin{flex:1;min-width:0;font:inherit;font-size:13px;color:var(--text);background:var(--surface-2);border:1px solid var(--border);
+  border-radius:var(--radius);padding:7px 10px;outline:none}
+.stg .tin:focus{border-color:var(--accent)}
+
+.stg .gbtn{flex-shrink:0;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);
+  font-size:12.5px;font-weight:600;padding:6px 12px;cursor:pointer;white-space:nowrap}
+.stg .gbtn:hover:not(:disabled){color:var(--text);border-color:var(--border-strong)}
+.stg .gbtn:disabled{opacity:.5;cursor:default}
+.stg .pbtn{flex-shrink:0;border:0;background:var(--accent);color:var(--on-accent);border-radius:var(--radius);font-size:12.5px;
+  font-weight:600;padding:7px 14px;cursor:pointer}
+.stg .pbtn:disabled{opacity:.5;cursor:default}
+.stg .link{border:0;background:transparent;color:var(--accent);font-size:12.5px;font-weight:600;cursor:pointer;padding:0}
+.stg .link:hover{text-decoration:underline}
+
+.stg .seg{display:flex;flex-shrink:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.stg .seg button{border:0;background:transparent;color:var(--text-dim);font:inherit;font-size:12px;font-weight:600;padding:8px 12px;
+  cursor:pointer;white-space:nowrap}
+.stg .seg button + button{border-left:1px solid var(--border)}
+.stg .seg button.active{background:var(--accent);color:var(--on-accent)}
+
+.stg .switch{flex-shrink:0;width:36px;height:20px;border-radius:20px;border:1px solid var(--border-strong);background:var(--surface-3);
+  position:relative;cursor:pointer;padding:0;transition:background .15s,border-color .15s}
+.stg .switch .knob{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--text-faint);
+  transition:left .15s,background .15s}
+.stg .switch.on{background:var(--accent);border-color:var(--accent)}
+.stg .switch.on .knob{left:18px;background:var(--on-accent)}
+.stg .switch.dng.on{background:var(--danger);border-color:var(--danger)}
+.stg .switch:disabled{opacity:.5;cursor:default}

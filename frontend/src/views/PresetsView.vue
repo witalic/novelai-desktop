@@ -12,8 +12,9 @@ import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { newId } from '../vault/ids'
 import type { Preset, PresetParams } from '../types'
+import type { NavTarget } from '../App.vue'
 
-const emit = defineEmits<{ apply: [Preset]; navigate: [string] }>()
+const emit = defineEmits<{ apply: [Preset]; navigate: [NavTarget] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
 
@@ -98,7 +99,7 @@ async function onSave(payload: { id: string | null; name: string; params: Preset
     <div v-if="noVault" class="empty">
       <div class="emoji">◈</div>
       <p>No vault folder chosen yet. Pick one in <b>Settings</b> to save your own presets — the built-in starters live here regardless.</p>
-      <button class="cta" @click="emit('navigate', 'settings')">Open Settings</button>
+      <button class="cta" @click="emit('navigate', 'settings/vaults')">Open Settings</button>
     </div>
 
     <div v-else class="pbody">
