@@ -5,10 +5,13 @@ Images are written BEFORE the manifest so a saved ``work.json`` never references
 """
 import base64
 import json
+import logging
 from pathlib import Path
 
 from app.vault import layout, migrate
 from app.vault.models import WorkDoc
+
+log = logging.getLogger(__name__)
 
 
 def read_work(work_dir: Path) -> WorkDoc:
@@ -42,17 +45,26 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
 
 def _gc_orphans(work_dir: Path, keep: set[str]) -> None:
     """Drop image files, sidecars, and thumbnails for images no longer in the work (e.g. removed on the
-    canvas) so a human-readable vault doesn't accumulate orphans on every re-save."""
+    canvas) so a human-readable vault doesn't accumulate orphans on every re-save. Only the app's own files:
+    what the OS drops in (Explorer's Thumbs.db, desktop.ini) stays, and one another program holds open is
+    left for the next save — the save itself has landed."""
     images_dir = work_dir / "images"
     if images_dir.is_dir():
         for f in images_dir.iterdir():
-            if f.stem not in keep:  # both <id>.png and <id>.json share the stem
-                f.unlink(missing_ok=True)
+            if f.suffix in (".png", ".json") and f.stem not in keep:  # both <id>.png and <id>.json share the stem
+                _unlink_quietly(f)
     thumbs = work_dir / ".thumbs"
     if thumbs.is_dir():
         for f in thumbs.iterdir():
-            if f.name.split("@", 1)[0] not in keep:  # <id>@<width>.png
-                f.unlink(missing_ok=True)
+            if f.suffix == ".png" and f.name.split("@", 1)[0] not in keep:  # <id>@<width>.png
+                _unlink_quietly(f)
+
+
+def _unlink_quietly(f: Path) -> None:
+    try:
+        f.unlink(missing_ok=True)
+    except OSError as exc:
+        log.info("Left %s for a later save: %s", f.name, exc)
 
 
 def write_thumbnail(work_dir: Path, doc: WorkDoc) -> None:

@@ -351,6 +351,56 @@ async def test_delete_work_removes_dir_and_index(client):
     assert (await ac.get("/api/vault/works")).json()["total"] == 0
 
 
+def _held_open(monkeypatch, *names: str) -> None:
+    """These files are open in another program (Explorer's Thumbs.db on a share): Windows refuses to delete them."""
+    real = os.unlink
+
+    def unlink(path, *a, **kw):
+        if os.path.basename(path) in names:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+
+
+async def test_a_file_another_program_holds_never_half_deletes_a_work(client, monkeypatch, caplog):
+    ac, vault = client
+    await ac.put("/api/vault/works", json=_work("w1"))
+    wdir = next((vault / "works").glob("*/work.json")).parent
+    (wdir / "Thumbs.db").write_bytes(b"explorer")
+    _held_open(monkeypatch, "Thumbs.db")
+    assert (await ac.delete("/api/vault/works/w1")).status_code == 200  # the work is gone…
+    assert (await ac.get("/api/vault/works")).json()["total"] == 0
+    assert sorted(p.name for p in wdir.iterdir()) == ["Thumbs.db"]  # …only the held file stays, and it is logged
+    assert "Thumbs.db" in caplog.text
+    (vault / ".index.sqlite").unlink()  # a rebuild doesn't bring it back: no manifest, no work
+    assert (await ac.get("/api/vault/works")).json()["total"] == 0
+
+
+async def test_a_held_manifest_refuses_the_delete_with_nothing_lost(client, monkeypatch):
+    ac, vault = client
+    await ac.put("/api/vault/works", json=_work("w1"))
+    _held_open(monkeypatch, "work.json")
+    res = await ac.delete("/api/vault/works/w1")
+    assert res.status_code == 409 and "in use by another program" in res.json()["detail"]
+    assert (await ac.get("/api/vault/works/w1")).json()["images"][0]["id"] == "img-w1"  # whole and listed
+
+
+async def test_a_resave_leaves_os_files_and_held_orphans_alone(client, monkeypatch):
+    ac, vault = client
+    work = _work("w1")
+    work["images"].append({"id": "img-extra", "snapshot_id": "s-w1", "favorite": False, "tags": [],
+                           "image_b64": _png_b64()})
+    await ac.put("/api/vault/works", json=work)
+    imgs = next((vault / "works").glob("*/images"))
+    (imgs / "Thumbs.db").write_bytes(b"explorer")
+    (imgs / "desktop.ini").write_text("[.ShellClassInfo]")
+    _held_open(monkeypatch, "img-extra.png")  # open in a viewer
+    work["images"] = [work["images"][0]]
+    assert (await ac.put("/api/vault/works", json=work)).status_code == 200  # the save lands regardless
+    assert sorted(p.name for p in imgs.iterdir()) == ["Thumbs.db", "desktop.ini", "img-extra.png", "img-w1.json", "img-w1.png"]
+
+
 async def test_resave_gcs_removed_image_files(client):
     ac, vault = client
     work = _work("w1")

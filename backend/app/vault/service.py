@@ -5,6 +5,7 @@ Files on disk are authoritative; the SQLite index is opened per call and rebuilt
 import json
 import logging
 import shutil
+import sys
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -142,7 +143,11 @@ def load_work(settings: Settings, work_id: str) -> WorkDoc:
 
 
 def delete_work(settings: Settings, work_id: str) -> dict:
-    """Remove a work: its index rows and its on-disk folder (images, sidecars, preview, thumbnails)."""
+    """Remove a work: its index rows and its on-disk folder (images, sidecars, preview, thumbnails).
+
+    The manifest goes first: without it the folder is no work, not even to an index rebuild. So a file another program
+    holds open (Explorer's Thumbs.db on a network share) can only leave litter behind — never a work that lost its
+    images but comes back."""
     if not layout.valid_id(work_id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
     _guard_no_move()
@@ -153,13 +158,35 @@ def delete_work(settings: Settings, work_id: str) -> dict:
             dir_name = index.find_work_dir(conn, work_id)
             if not dir_name:
                 raise HTTPException(status_code=404, detail="Work not found.")
+            work_dir = layout.safe_join(vault / "works", dir_name)
+            try:
+                (work_dir / "work.json").unlink(missing_ok=True)
+            except OSError as exc:  # nothing is gone yet
+                raise HTTPException(status_code=409, detail="The work's files are in use by another program — "
+                                                            "close it and try again.") from exc
             index.remove_work(conn, work_id)
         finally:
             conn.close()
-        work_dir = layout.safe_join(vault / "works", dir_name)
         if work_dir.is_dir():
-            shutil.rmtree(work_dir)
+            _remove_dir(work_dir)
     return {"deleted": work_id}
+
+
+def _remove_dir(path: Path) -> None:
+    """Delete a folder as far as it goes: what another program holds open stays behind (logged), the rest is removed."""
+    held: list[str] = []
+
+    def skip(_func: object, name: str, _exc: object) -> None:
+        if not Path(name).is_dir():  # a folder that stays because of what is in it isn't news
+            held.append(Path(name).name)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=skip)
+    else:
+        shutil.rmtree(path, onerror=lambda func, name, info: skip(func, name, info))
+    if held:
+        log.warning("Deleted %s, but %d file(s) in use by another program stay behind: %s",
+                    path.name, len(held), ", ".join(held[:5]))
 
 
 def list_works(settings: Settings, page: int, per_page: int,
