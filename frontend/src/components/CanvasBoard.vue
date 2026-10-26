@@ -9,7 +9,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
 import { agentWorkChanges, getVaultConfig, listCategories, resolveBlocks } from '../api'
 import { onAgentNotice } from '../composables/useAgentNotices'
-import { planAgentOps, type AgentOp } from '../vault/agentOps'
+import { applyGalleryOps, planAgentOps, type AgentOp } from '../vault/agentOps'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
@@ -21,7 +21,7 @@ import { useImagePreview } from '../composables/useImagePreview'
 import { useImageDownload } from '../composables/useImageDownload'
 import { anlasCost } from '../presets/cost'
 import { useAutosave } from '../composables/useAutosave'
-import { galleryImageNode, workToCanvas, COMBOS, GALLERY, LIBRARY, STATION } from '../vault/serialize'
+import { anchorNodes, galleryImageNode, healAnchors, workToCanvas, COMBOS, GALLERY, LIBRARY, STATION } from '../vault/serialize'
 import {
   DEFAULT_LAYOUT, MIN_SIZE, boundsOf, fitRect, snapMove, snapResize, type Rect, type Snap, type WidgetKey,
 } from '../canvas/widgetGrid'
@@ -165,7 +165,7 @@ const combos = ref<PersistedCombo[]>([])
 
 // Vault autosave (dirty flag, flush, save state). Owns the state + logic; the lifecycle (window listeners,
 // the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
-const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
+const { title, cover, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
   onBeforeUnload, refreshInterval, stopAutosave, resetBaseline, onAgentEdit } = useAutosave({
   nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
   combos: () => combos.value,
@@ -176,8 +176,8 @@ const { title, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty,
 // just the canvas nodes, so the next save doesn't write stale params/stack over the fresh version (H3/#4).
 function reloadWork() { emit('reload-work') }
 // An agent's edits of this work, replayed over the live canvas (vault/agentOps): its title, combinations and
-// image metadata change; images it generated join the gallery's Quick access; gallery images it deleted leave
-// their albums. Everything else stays as it is.
+// image metadata change; images it generated join the gallery's Quick access; its gallery layout and cover land;
+// gallery images it deleted leave their albums. Everything else stays as it is.
 function applyAgentOps(ops: AgentOp[]) {
   const edits = planAgentOps(ops, combos.value)
   if (edits.title !== undefined) title.value = edits.title
@@ -192,6 +192,10 @@ function applyAgentOps(ops: AgentOp[]) {
     const n = findNode(id)
     if (n?.type === 'image') n.data = { ...n.data, ...set }
   }
+  const inGallery = (id: string) => findNode(id)?.parentNode === GALLERY
+  const zone = findNode(GALLERY)
+  if (zone && edits.gallery.length) applyGalleryOps((zone.data.blocks ??= []), edits.gallery, inGallery)
+  if (edits.cover && inGallery(edits.cover)) cover.value = edits.cover
   const gone = edits.deleted.filter((id) => findNode(id))
   for (const id of gone) removeImageFromGridAlbums(id)
   if (gone.length) removeNodes(gone)
@@ -529,6 +533,15 @@ const galleryImages = computed(() =>
   nodes.value.filter((n) => n.type === 'image' && n.parentNode === GALLERY)
     .sort((a, b) => String(a.data?.created_at || '').localeCompare(String(b.data?.created_at || ''))),
 )
+// The cover the work saves with (canvasToWork): the chosen one while it is a gallery image, else the first.
+const shownCover = computed(() => {
+  const inGallery = nodes.value.filter((n) => n.type === 'image' && n.parentNode === GALLERY)
+  return (inGallery.find((n) => n.id === cover.value) ?? inGallery[0])?.id ?? null
+})
+// A chosen cover that leaves the gallery (deleted, moved out onto the canvas) is no longer the choice: brought back,
+// it doesn't take over again from the first gallery image.
+watch(() => !!cover.value && !nodes.value.some((n) => n.id === cover.value && n.type === 'image' && n.parentNode === GALLERY),
+  (gone) => { if (gone) cover.value = null })
 function toggleImageFavorite(id: string) {
   const n = findNode(id)
   if (n && n.type === 'image') n.data.favorite = !n.data.favorite // mutation → tracked + autosaved
@@ -723,18 +736,8 @@ const layoutStyle = (r: Rect) => ({ width: `${r.w}px`, height: `${r.h}px` })
 const rectOf = (n: any): Rect => { const { w, h } = dims(n); return { x: n.position.x, y: n.position.y, w, h } }
 const widgetNodes = () => nodes.value.filter((n) => n.id in WIDGET_KEY)
 
-// The anchor zones only — the skeleton every work starts from, in the default layout.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function zoneNodes(): any[] {
-  const L = DEFAULT_LAYOUT
-  const at = (r: Rect) => ({ position: { x: r.x, y: r.y }, style: layoutStyle(r), zIndex: 0 })
-  return [
-    { id: LIBRARY, type: 'zone', data: { role: 'library' }, ...at(L.library) },
-    { id: STATION, type: 'station', data: { ratio: 0.3, axis: 'h', genFirst: true }, ...at(L.station) },
-    { id: GALLERY, type: 'zone', data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }] }, ...at(L.gallery) },
-    { id: COMBOS, type: 'zone', data: { role: 'combos' }, ...at(L.combos) },
-  ]
-}
+// The anchor zones only — the skeleton every work starts from, in the default layout (serialize anchorNodes).
+const zoneNodes = () => anchorNodes() as unknown as FlowNode[]
 // Frame the widgets in whatever window the canvas has (not a fixed zoom).
 function fitWidgets() {
   const el = flowRef.value
@@ -795,6 +798,7 @@ async function newWork() {
   workId.value = newId('work')
   baseUpdatedAt.value = '' // a fresh work has no stored copy → no optimistic-lock base
   title.value = ''
+  cover.value = null
   combos.value = []
   setNodes(zoneNodes())
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries
@@ -1200,6 +1204,7 @@ function onGalleryImageMenu(p: { event: MouseEvent; id: string }) {
     { label: 'Preview', icon: '⤢', onClick: () => viewGallery(p.id) },
     { label: n.data.favorite ? 'Unfavorite' : 'Favorite', icon: '★', onClick: () => toggleImageFavorite(p.id) },
   ]
+  if (shownCover.value !== p.id) items.push({ label: 'Set as cover', icon: '▣', onClick: () => { cover.value = p.id } })
   if (recipe.length) {
     items.push({ label: 'Restore recipe to the station', icon: '↺', onClick: () => restoreRecipe(p.id) })
     items.push({ label: 'Save recipe as combination…', icon: '◈', onClick: () => saveRecipe(p.id) })
@@ -1242,10 +1247,12 @@ function viewGallery(startId: string) {
     source,
     items: () => ids().map((id) => findNode(id)).filter((n) => n?.type === 'image' && n.data.url).map((n) => {
       const params = (n!.data.snapshot as SnapshotData | undefined)?.params as { width?: number; height?: number; seed?: number } | undefined
-      return { id: n!.id, url: n!.data.url as string, favorite: !!n!.data.favorite, meta: imageMeta(params, n!.data.created_at) }
+      return { id: n!.id, url: n!.data.url as string, favorite: !!n!.data.favorite, cover: n!.id === shownCover.value,
+        meta: imageMeta(params, n!.data.created_at) }
     }),
     actions: [
       { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', run: (it) => toggleImageFavorite(it.id) },
+      { label: 'Set as cover', icon: '▣', enabled: (it) => !it.cover, run: (it) => { cover.value = it.id } },
       { label: 'Restore recipe', icon: '↺', closes: true, enabled: (it) => imageComponents(it.id).length > 0, run: (it) => restoreRecipe(it.id) },
       { label: 'Save recipe as combination…', icon: '◈', closes: true, enabled: (it) => imageComponents(it.id).length > 0,
         run: (it) => saveRecipe(it.id) },
@@ -1289,7 +1296,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 // Mark the work dirty on any change to the canvas / params / drafts / title / combinations (see useAutosave).
-watch([nodes, () => props.params, () => props.drafts, title, combos], markDirty, { deep: true })
+watch([nodes, () => props.params, () => props.drafts, title, cover, combos], markDirty, { deep: true })
 
 // Re-read whether a vault is configured. Under KeepAlive onMounted runs once, so a vault added in Settings
 // mid-session would otherwise leave `vaultReady` false forever → autosave silently dead (H7).
@@ -1327,9 +1334,9 @@ onDeactivated(() => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function loadDoc(doc: any) {
   const { nodes: ns, viewport: vp } = workToCanvas(doc)
-  // A work made outside the canvas (an agent's create_work) has no layout yet → the default widgets, fitted.
-  const unlaid = !ns.some((n) => ANCHORS.has(n.id))
-  if (unlaid) ns.unshift(...zoneNodes())
+  // A work made outside the canvas (an agent's) has no layout yet, or just its gallery zone → the default widgets,
+  // fitted to the window.
+  const unlaid = healAnchors(ns)
   setNodes(ns as unknown as FlowNode[]) // persisted nodes are plain data; Vue Flow hydrates the runtime fields
   shownSrc.value = {} // drop the previous work's entries, then seed this work's images
   for (const n of ns) if (n.type === 'image') seedSrc(n.id)
@@ -1343,6 +1350,7 @@ function loadDoc(doc: any) {
   workId.value = doc.id
   baseUpdatedAt.value = doc.updated_at || '' // optimistic-lock base for the next save (H3)
   title.value = doc.title || ''
+  cover.value = doc.preview_image_id ?? null
   resetBaseline('saved') // the loaded state is the baseline — not dirty
 }
 
@@ -1640,7 +1648,7 @@ function startName(data: any, e: MouseEvent) {
           <template v-else>
             <NodeResizer :min-width="MIN_SIZE.gallery.w" :min-height="MIN_SIZE.gallery.h" :is-visible="selected" color="var(--accent)"
               @resize-start="(e) => onWidgetResizeStart(e.params)" @resize="(e) => onWidgetResize(id, e.params)" @resize-end="onWidgetResizeEnd(id)" />
-            <GalleryStack :data="data" :images="galleryImages" :selected="selected" @favorite="toggleImageFavorite" @preview="viewGallery" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" @image-menu="onGalleryImageMenu" />
+            <GalleryStack :data="data" :images="galleryImages" :cover="shownCover" :selected="selected" @favorite="toggleImageFavorite" @preview="viewGallery" @to-quick="(id) => onGalleryQuickDrop({ imageId: id })" @delete-img="onGalleryDeleteImg" @clear-quick="onGalleryClearQuick" @download="downloadUrls" @drop-on-grid="onGalleryGridDrop" @drop-on-quick="onGalleryQuickDrop" @image-menu="onGalleryImageMenu" />
           </template>
         </template>
 

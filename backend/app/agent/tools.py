@@ -7,6 +7,7 @@ Results are plain JSON-able values; ``ImageResult`` becomes an MCP image block, 
 ``errors`` classes, reported back as tool errors, not crashes.
 """
 import base64
+import copy
 import io
 import json
 import re
@@ -15,6 +16,7 @@ import threading
 import time
 import uuid
 import zipfile
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,7 +31,7 @@ from PIL import ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel, ValidationError
 
 from app import appconfig
-from app.agent import changes, generation, store
+from app.agent import changes, gallery, generation, store
 from app.agent.errors import GenerationFailed, Refused, ToolError
 from app.novelai import GenerateParams, get_client
 from app.novelai.augment import augment
@@ -233,13 +235,34 @@ def _get_work(settings: Settings, args: dict) -> dict:
     }
 
 
+def _made_from(doc: WorkDoc) -> Callable[[Snapshot | None], list[dict]]:
+    """The work's combinations an image was made from: those whose prompt blocks — polarity and text, in order — are
+    the image's. A combination edited since no longer matches the images it made before."""
+    def key(blocks: list) -> tuple:
+        return tuple((b.polarity, b.text.strip()) for b in blocks if b.text.strip())
+
+    combos = [(c, key([b for b in c.blocks if not b.frozen])) for c in doc.combos]
+
+    def of(snap: Snapshot | None) -> list[dict]:
+        if snap is None:
+            return []
+        made = key(snap.components)
+        return [{"id": c.id, "name": c.name} for c, k in combos if k and k == made]
+
+    return of
+
+
 def _list_images(settings: Settings, args: dict) -> dict:
     doc = service.load_work(settings, _str(args, "work_id", required=True))
     tags, favorite, with_prompt = _tags(args), _flag(args, "favorite"), _flag(args, "include_prompt")
+    combo_id = _str(args, "combination_id")
+    if combo_id:
+        _find_combo(doc, combo_id)
     page = _int(args, "page", 1, 1, 100_000)
     per_page = (_int(args, "per_page", 10, 1, MAX_PROMPTS_PAGE) if with_prompt
                 else _int(args, "per_page", 50, 1, MAX_IMAGES_PAGE))
     snaps = {s.id: s for s in doc.snapshots}
+    made_from = _made_from(doc)
 
     def block_tags(im: Image) -> list[str]:
         """Tags the image has from the blocks it was made of — the gallery and search_images match these too."""
@@ -247,14 +270,18 @@ def _list_images(settings: Settings, args: dict) -> dict:
         own = set(im.tags)
         return list(dict.fromkeys(t for c in snap.components for t in c.tags if t not in own)) if snap else []
 
+    def combos_of(im: Image) -> list[dict]:
+        return made_from(snaps.get(im.snapshot_id or ""))
+
     shown = sorted((im for im in doc.images if im.role == "gallery" and (im.favorite or not favorite)
-                    and set(tags) <= {*im.tags, *block_tags(im)}),
+                    and set(tags) <= {*im.tags, *block_tags(im)}
+                    and (not combo_id or any(c["id"] == combo_id for c in combos_of(im)))),
                    key=lambda im: (im.created_at, im.id), reverse=True)
 
     def item(im: Image) -> dict:
         snap = snaps.get(im.snapshot_id or "")
         out = {"id": im.id, "created_at": im.created_at, "favorite": im.favorite, "tags": im.tags,
-               "block_tags": block_tags(im), "description": im.description,
+               "block_tags": block_tags(im), "combinations": combos_of(im), "description": im.description,
                "params": _recipe_of(snap.params) if snap else None}
         if with_prompt and snap:
             out["prompt"] = {"positive": snap.assembled_positive, "negative": snap.assembled_negative}
@@ -564,7 +591,8 @@ def _title(doc: WorkDoc) -> str:
 
 def _create_work(settings: Settings, args: dict) -> Written:
     title = _str(args, "title", required=True, max_len=_MAX_NAME)
-    doc = WorkDoc(id=_new_id("work"), title=title)  # no canvas yet — the app lays out a new work's widgets on open
+    doc = WorkDoc(id=_new_id("work"), title=title)
+    gallery.blocks(doc)  # just the gallery zone, to arrange — the app lays the other widgets out around it on open
     service.save_work(settings, doc)
     return Written({"id": doc.id, "title": doc.title}, "Created a work", _title(doc), work_id=doc.id)
 
@@ -586,11 +614,11 @@ def _update_images(settings: Settings, args: dict) -> Written | dict:
     items = _items(args, "images", MAX_PAGE)
 
     def change(doc: WorkDoc) -> list[dict]:
-        gallery = {im.id: im for im in doc.images if im.role == "gallery"}
+        in_gallery = {im.id: im for im in doc.images if im.role == "gallery"}
         ops = []
         for raw in items:
             image_id = _str(raw, "id", required=True)
-            im = gallery.get(image_id)
+            im = in_gallery.get(image_id)
             if im is None:
                 raise ToolError(f"No gallery image “{image_id}” in this work.")
             fields: dict = {}
@@ -636,8 +664,8 @@ def _delete_images(settings: Settings, args: dict) -> Written | dict:
     gone: list[str] = []
 
     def change(doc: WorkDoc) -> list[dict]:
-        gallery = {im.id for im in doc.images if im.role == "gallery"}
-        gone[:] = [i for i in dict.fromkeys(ids) if i in gallery]
+        in_gallery = {im.id for im in doc.images if im.role == "gallery"}
+        gone[:] = [i for i in dict.fromkeys(ids) if i in in_gallery]
         if not gone:
             return []
         _purge_images(doc, set(gone))
@@ -648,6 +676,279 @@ def _delete_images(settings: Settings, args: dict) -> Written | dict:
     if not ops:
         return result
     return Written(result, f"Deleted {_plural(len(gone), 'image')}", f"from {_title(doc)}", work_id=doc.id)
+
+
+# ---- the gallery layout (app/agent/gallery): sections, headings, albums, Quick access, the cover ----
+_GALLERY_TYPES = ("section", "heading", "text", "divider", "grid", "meta")
+_GALLERY_FIELDS: dict[str, set[str]] = {  # what each block type takes
+    "section": {"title", "collapsed"}, "heading": {"text", "level"}, "text": {"text"}, "divider": set(),
+    "grid": {"cols", "collapsed", "image_ids"}, "meta": {"grid"},
+}
+_META_FIELDS = [  # a new Metadata block, as the app makes one (GalleryStack newBlock): summaries of its images
+    {"key": "Tags", "kind": "chips", "auto": "tags"}, {"key": "Date", "kind": "text", "auto": "date"},
+    {"key": "Model", "kind": "mono", "auto": "model"}, {"key": "Seed", "kind": "mono", "auto": "seed"},
+]
+_MAX_GALLERY_OPS = 100
+_MAX_GALLERY_BLOCKS = 300
+
+
+def _gallery_view(doc: WorkDoc) -> dict:
+    shown = sorted((im for im in doc.images if im.role == "gallery"), key=lambda im: (im.created_at, im.id),
+                   reverse=True)
+    live = {im.id for im in shown}
+    stack = gallery.stack(doc)
+    grid_ids = {b.get("id") for b in gallery.grids(stack)}
+    placed: set[str] = set()
+    out: list[dict] = []
+    section = None
+    for b in stack:
+        kind = b.get("type")
+        item: dict = {"id": b.get("id"), "type": kind}
+        if kind == "section":
+            section = b.get("id")
+            item.update(title=b.get("title", ""), collapsed=bool(b.get("collapsed")))
+        else:
+            if section:
+                item["section"] = section
+            if kind == "heading":
+                item.update(text=b.get("text", ""), level=b.get("level", 2))
+            elif kind == "text":
+                item["text"] = b.get("text", "")
+            elif kind == "grid":
+                ids = [i for i in b["imageIds"] if i in live] if isinstance(b.get("imageIds"), list) else []
+                placed.update(ids)
+                item.update(cols=b.get("cols", 3), collapsed=bool(b.get("collapsed")), image_ids=ids)
+            elif kind == "meta":  # a deleted grid's summary falls back to the whole gallery, as in the app
+                item["grid"] = b.get("gridId") if b.get("gridId") in grid_ids else None
+        out.append(item)
+    return {"work_id": doc.id, "cover_image_id": doc.preview_image_id, "image_count": len(live), "blocks": out,
+            "quick_access": [im.id for im in shown if im.id not in placed]}
+
+
+def _get_gallery(settings: Settings, args: dict) -> dict:
+    return _gallery_view(service.load_work(settings, _str(args, "work_id", required=True)))
+
+
+def _level(args: dict) -> int:
+    v = args.get("level", 2)
+    if type(v) is not int or v not in (1, 2):
+        raise ToolError("'level' must be 1 or 2.")
+    return v
+
+
+class _Arrange:
+    """One edit_gallery call on a loaded work. Each of the agent's ops is checked against the layout the ops before it
+    left, then applied as the operations the open app replays (``gallery.apply``) — collected in ``ops``."""
+
+    def __init__(self, doc: WorkDoc) -> None:
+        self.doc = doc
+        self.in_gallery = {im.id for im in doc.images if im.role == "gallery"}
+        self.refs: dict[str, str] = {}  # an add's 'ref' → the new block's id
+        self.ops: list[dict] = []
+        self.created: list[dict] = []
+        self.counts: Counter[str] = Counter()
+
+    def _run(self, op: dict) -> None:
+        gallery.apply(self.doc, op)
+        self.ops.append(op)
+
+    @staticmethod
+    def _only(raw: dict, allowed: set[str], what: str) -> None:
+        if extra := sorted(set(raw) - allowed - {"op"}):
+            raise ToolError(f"'{extra[0]}' doesn't apply to {what}.")
+
+    def _block(self, raw: dict, key: str = "block") -> dict:
+        name = _str(raw, key, required=True)
+        bid = self.refs.get(name, name)
+        found = next((b for b in gallery.blocks(self.doc) if b.get("id") == bid), None)
+        if found is None:
+            raise ToolError(f"No gallery block “{name}” — get_gallery lists them.")
+        return found
+
+    def _grid(self, raw: dict) -> dict:
+        found = self._block(raw, "grid")
+        if found.get("type") != "grid":
+            raise ToolError(f"“{raw['grid']}” is a {found.get('type')}, not a grid.")
+        return found
+
+    def _images(self, raw: dict) -> list[str]:
+        ids = list(dict.fromkeys(_strs(raw, "image_ids", max_items=MAX_PAGE)))
+        if not ids:
+            raise ToolError("'image_ids' must name at least one image.")
+        if missing := next((i for i in ids if i not in self.in_gallery), None):
+            raise ToolError(f"No gallery image “{missing}” in this work.")
+        return ids
+
+    def _landing(self, raw: dict, moving: list[dict], section: bool) -> tuple[list[dict], int]:
+        """Where a block goes: before or after a block, else at the end — as the blocks staying put and the index
+        among them. Placed after a section, a section goes after the blocks under it: sections don't nest."""
+        if "before" in raw and "after" in raw:
+            raise ToolError("Give 'before' or 'after', not both.")
+        skip = {id(b) for b in moving}
+        rest = [b for b in gallery.blocks(self.doc) if id(b) not in skip]
+        key = "before" if "before" in raw else "after" if "after" in raw else None
+        if key is None:
+            return rest, len(rest)
+        target = self._block(raw, key)
+        if id(target) in skip:
+            raise ToolError(f"'{key}' names the block being moved{' or one under it' if section else ''}.")
+        at = next(i for i, b in enumerate(rest) if b is target)
+        if key == "before":
+            return rest, at
+        return rest, gallery.span(rest, at) if section else at + 1
+
+    def add(self, raw: dict) -> None:
+        kind = raw.get("type")
+        if kind not in _GALLERY_TYPES:
+            raise ToolError(f"'type' must be one of: {', '.join(_GALLERY_TYPES)}.")
+        self._only(raw, _GALLERY_FIELDS[kind] | {"type", "ref", "before", "after"}, f"a {kind}")
+        block: dict = {"id": _new_id("gb"), "type": kind}
+        images: list[str] = []
+        if kind == "section":
+            block.update(title=_str(raw, "title", required=True, max_len=_MAX_NAME), collapsed=_flag(raw, "collapsed"))
+        elif kind == "heading":
+            block.update(text=_str(raw, "text", required=True, max_len=_MAX_NAME), level=_level(raw))
+        elif kind == "text":
+            block["text"] = _str(raw, "text", required=True, max_len=_MAX_TEXT)
+        elif kind == "grid":
+            block.update(imageIds=[], cols=_int(raw, "cols", 3, 2, 8))
+            if _flag(raw, "collapsed"):
+                block["collapsed"] = True
+            if "image_ids" in raw:
+                images = self._images(raw)
+        elif kind == "meta":
+            block["fields"] = copy.deepcopy(_META_FIELDS)
+            if raw.get("grid") is not None:
+                block["gridId"] = self._grid(raw)["id"]
+        ref = _str(raw, "ref", max_len=100)
+        if ref and (ref in self.refs or any(b.get("id") == ref for b in gallery.blocks(self.doc))):
+            raise ToolError(f"The ref “{ref}” is taken already.")
+        rest, at = self._landing(raw, [], kind == "section")
+        before = next((b["id"] for b in rest[at:] if b.get("id")), None)
+        self._run({"op": "gallery_add", "block": block, "before": before})
+        if ref:
+            self.refs[ref] = block["id"]
+        self.created.append({"id": block["id"], "type": kind, **({"ref": ref} if ref else {})})
+        self.counts["added"] += 1
+        if images:
+            self._run({"op": "gallery_place", "grid": block["id"], "image_ids": images, "order": images})
+            self.counts["placed"] += len(images)
+
+    def update(self, raw: dict) -> None:
+        found = self._block(raw)
+        kind = found.get("type")
+        if kind == "grid" and "image_ids" in raw:
+            raise ToolError("Images go into a grid with place.")
+        self._only(raw, (_GALLERY_FIELDS.get(kind, set()) - {"image_ids"}) | {"block"}, f"a {kind}")
+        fields: dict = {}
+        if "title" in raw:
+            fields["title"] = _str(raw, "title", required=True, max_len=_MAX_NAME)
+        if "text" in raw:
+            fields["text"] = _str(raw, "text", required=True, max_len=_MAX_NAME if kind == "heading" else _MAX_TEXT)
+        if "level" in raw:
+            fields["level"] = _level(raw)
+        if "cols" in raw:
+            fields["cols"] = _int(raw, "cols", 3, 2, 8)
+        if "collapsed" in raw:
+            fields["collapsed"] = _flag(raw, "collapsed")
+        if "grid" in raw:  # null: summarise the whole gallery again
+            fields["gridId"] = self._grid(raw)["id"] if raw["grid"] is not None else None
+        if not fields:
+            raise ToolError("Nothing to update — give the fields to change.")
+        self._run({"op": "gallery_set", "id": found["id"], "set": fields})
+        self.counts["updated"] += 1
+
+    def move(self, raw: dict) -> None:
+        self._only(raw, {"block", "before", "after"}, "move")
+        found = self._block(raw)
+        stack = gallery.blocks(self.doc)
+        at = next(i for i, b in enumerate(stack) if b is found)
+        moving = stack[at:gallery.span(stack, at)]  # a section takes the blocks under it along
+        section = found.get("type") == "section"
+        rest, at = self._landing(raw, moving, section)
+        if section and at < len(rest) and rest[at].get("type") != "section" and any(
+                b.get("type") == "section" for b in rest[:at]):
+            raise ToolError("A section moves before or after another section, not in among its blocks.")
+        order = [b["id"] for b in [*rest[:at], *moving, *rest[at:]] if b.get("id")]
+        self._run({"op": "gallery_order", "order": order})
+        self.counts["moved"] += 1
+
+    def remove(self, raw: dict) -> None:
+        self._only(raw, {"block"}, "remove")
+        self._run({"op": "gallery_remove", "id": self._block(raw)["id"]})
+        self.counts["removed"] += 1
+
+    def place(self, raw: dict) -> None:
+        self._only(raw, {"image_ids", "grid", "index"}, "place")
+        images = self._images(raw)
+        grid = self._grid(raw)
+        moving = set(images)
+        rest = [i for i in grid["imageIds"] if i in self.in_gallery and i not in moving]  # as the app shows the album
+        at = _int(raw, "index", len(rest), 0, 100_000)
+        self._run({"op": "gallery_place", "grid": grid["id"], "image_ids": images,
+                   "order": [*rest[:at], *images, *rest[at:]]})
+        self.counts["placed"] += len(images)
+
+    def unplace(self, raw: dict) -> None:
+        self._only(raw, {"image_ids"}, "unplace")
+        images = self._images(raw)
+        self._run({"op": "gallery_unplace", "image_ids": images})
+        self.counts["unplaced"] += len(images)
+
+    def cover(self, raw: dict) -> None:
+        self._only(raw, {"image_id"}, "cover")
+        image_id = _str(raw, "image_id", required=True)
+        if image_id not in self.in_gallery:
+            raise ToolError(f"No gallery image “{image_id}” in this work.")
+        self._run({"op": "cover", "image_id": image_id})
+        self.counts["cover"] = 1
+
+    def summary(self) -> str:
+        c = self.counts
+        parts = [f"{_plural(c[k], 'block')} {k}" for k in ("added", "updated", "moved", "removed") if c[k]]
+        if c["placed"]:
+            parts.append(f"{_plural(c['placed'], 'image')} placed")
+        if c["unplaced"]:
+            parts.append(f"{_plural(c['unplaced'], 'image')} to Quick access")
+        if c["cover"]:
+            parts.append("cover set")
+        return ", ".join(parts)
+
+
+_ARRANGE: dict[str, Callable[[_Arrange, dict], None]] = {
+    "add": _Arrange.add, "update": _Arrange.update, "move": _Arrange.move, "remove": _Arrange.remove,
+    "place": _Arrange.place, "unplace": _Arrange.unplace, "cover": _Arrange.cover,
+}
+
+
+def _edit_gallery(settings: Settings, args: dict) -> Written | dict:
+    raw_ops = _items(args, "ops", _MAX_GALLERY_OPS)
+    done: list[_Arrange] = []
+
+    def change(doc: WorkDoc) -> list[dict]:
+        was = json.dumps([gallery.stack(doc), doc.preview_image_id])
+        had = len(gallery.stack(doc))
+        edit = _Arrange(doc)
+        done[:] = [edit]
+        for n, raw in enumerate(raw_ops, 1):
+            op = raw.get("op")
+            step = _ARRANGE.get(op) if isinstance(op, str) else None
+            try:
+                if step is None:
+                    raise ToolError(f"'op' must be one of: {', '.join(_ARRANGE)}.")
+                step(edit, raw)
+            except ToolError as exc:
+                raise ToolError(f"Nothing changed — op {n} ({op}): {exc}") from None
+        if len(gallery.stack(doc)) > max(_MAX_GALLERY_BLOCKS, had):  # one the user grew bigger can still shrink
+            raise ToolError(f"Nothing changed — a gallery holds at most {_MAX_GALLERY_BLOCKS} blocks.")
+        return edit.ops if json.dumps([gallery.stack(doc), doc.preview_image_id]) != was else []
+
+    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    edit = done[0]
+    result = {"created": edit.created, "gallery": _gallery_view(doc)}
+    if not ops:
+        return result
+    return Written(result, "Arranged the gallery", f"of {_title(doc)} · {edit.summary()}", work_id=doc.id)
 
 
 # ---- combinations ----
@@ -963,6 +1264,7 @@ _GEN_FIELDS = {
                                  "fields given here over both; its image count is not used"},
 }
 _TAG_FILTER = {"type": "array", "items": {"type": "string"}, "maxItems": _MAX_TAGS, "description": "all of these"}
+_GALLERY_REF = {"type": "string", "description": "a gallery block's id (get_gallery), or a ref given earlier in this call"}
 
 
 _BLOCK_FIELDS = {
@@ -1011,15 +1313,18 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
     Tool("get_work", "Get a work",
          "One work's overview: title, its generation settings (the station's), cover image, saved block "
          "combinations (names — list_combinations has their blocks), starred Library blocks and how many gallery "
-         "images it has. The images themselves: list_images. Canvas layout is not included.",
+         "images it has. The images themselves: list_images; how the gallery arranges them: get_gallery.",
          {"type": "object", "properties": {"work_id": {"type": "string"}}, "required": ["work_id"]},
          "read", _get_work),
     Tool("list_images", "List a work's images",
          "A work's gallery images, newest first, paged: metadata and the full recipe (model, size, steps, seed, "
-         "sampler, quality tags, UC preset, …) of each. Tags match the image's own and those of the blocks it was "
-         "made from (block_tags). include_prompt adds the prompt and its blocks — pages are smaller then.",
+         "sampler, quality tags, UC preset, …) of each, and the combinations of the work it was made from (those "
+         "whose blocks are its prompt's — a combination edited since no longer matches). Tags match the image's own "
+         "and those of the blocks it was made from (block_tags). include_prompt adds the prompt and its blocks — "
+         "pages are smaller then.",
          {"type": "object", "properties": {
              "work_id": {"type": "string"}, "tags": _TAG_FILTER, "favorite": {"type": "boolean", "default": False},
+             "combination_id": {"type": "string", "description": "only images made from this combination"},
              "include_prompt": {"type": "boolean", "default": False},
              "page": _PAGING["page"],
              "per_page": {"type": "integer", "minimum": 1, "maximum": MAX_IMAGES_PAGE,
@@ -1057,6 +1362,13 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
                       "description": "each image's width in px"}},
           "required": ["work_id"]},
          "read", _contact_sheet),
+    Tool("get_gallery", "Get a work's gallery layout",
+         "How a work's gallery arranges its images, as the app shows it: the block stack in order — sections (a "
+         "section holds the blocks under it, up to the next one), headings, text, dividers, metadata summaries and "
+         "image grids (albums: their images in order, a column count) — then Quick access (gallery images in no grid, "
+         "newest first) and the cover image (the work's picture in the Works list).",
+         {"type": "object", "properties": {"work_id": {"type": "string"}}, "required": ["work_id"]},
+         "read", _get_gallery),
     Tool("get_catalog", "Model catalog",
          "NovelAI models, samplers, noise schedules, UC presets and resolution presets the app knows.",
          {"type": "object", "properties": {}}, "read", _get_catalog),
@@ -1124,6 +1436,39 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
                  "required": ["id"]}}},
           "required": ["work_id", "images"]},
          "works_write", _update_images),
+    Tool("edit_gallery", "Arrange a work's gallery",
+         "Arrange a work's gallery (get_gallery shows it). The ops run in order; if one fails, nothing changes. A "
+         "block is named by its id, or by the 'ref' an earlier add of this call gave it. Ops:\n"
+         "- add {type, ref?, before|after?}: section {title, collapsed?}, heading {text, level 1|2}, text {text}, "
+         "divider, grid {cols 2–8 (default 3), image_ids?, collapsed?}, meta {grid?: summarise that grid — default the "
+         "whole gallery}; at the end unless placed. Blocks after a section belong to it, up to the next one — so a "
+         "section added among another's blocks takes the ones after it; after a section, a section lands past its "
+         "blocks.\n"
+         "- update {block, …}: title, text, level, cols, collapsed or grid (null: the whole gallery) — as its type has.\n"
+         "- move {block, before|after?}: a section moves with the blocks under it, before or after another section "
+         "(after one: past its blocks).\n"
+         "- remove {block}: a grid's images go back to Quick access; a section's blocks join the one above.\n"
+         "- place {image_ids, grid, index?}: into that grid, out of any other or Quick access, at that position among "
+         "its other images (default: the end) — also how to reorder a grid.\n"
+         "- unplace {image_ids}: back to Quick access.\n"
+         "- cover {image_id}: the work's cover.\n"
+         "Returns the new blocks' ids and the gallery as get_gallery shows it.",
+         {"type": "object", "properties": {"work_id": {"type": "string"}, "ops": {
+             "type": "array", "minItems": 1, "maxItems": _MAX_GALLERY_OPS, "items": {"type": "object", "properties": {
+                 "op": {"type": "string", "enum": list(_ARRANGE)},
+                 "type": {"type": "string", "enum": list(_GALLERY_TYPES)},
+                 "block": _GALLERY_REF, "before": _GALLERY_REF, "after": _GALLERY_REF,
+                 "ref": {"type": "string", "maxLength": 100,
+                         "description": "add: a name for the new block that later ops of this call can use"},
+                 "title": {"type": "string", "maxLength": _MAX_NAME}, "text": {"type": "string", "maxLength": _MAX_TEXT},
+                 "level": {"type": "integer", "enum": [1, 2]}, "cols": {"type": "integer", "minimum": 2, "maximum": 8},
+                 "collapsed": {"type": "boolean"},
+                 "grid": {"type": ["string", "null"], "description": "a grid's id or ref"},
+                 "image_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_PAGE},
+                 "index": {"type": "integer", "minimum": 0}, "image_id": {"type": "string"}},
+                 "required": ["op"]}}},
+          "required": ["work_id", "ops"]},
+         "works_write", _edit_gallery),
     Tool("delete_images", "Delete images", "Remove gallery images from a work for good (files included).",
          {"type": "object", "properties": {"work_id": {"type": "string"}, "image_ids": {
              "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_PAGE}},

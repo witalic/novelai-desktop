@@ -176,7 +176,8 @@ const { downloadUrls } = useImageDownload()
 function downloadAll() { downloadUrls(galleryImages.value.map((im) => im.data.url || '').filter(Boolean)) }
 
 // ---- the image viewer over the clicked image's set: its grid, or Quick access. View mode only pages and
-// downloads; Edit adds favourite + delete (no station here, so no recipe actions). ----
+// downloads; Edit adds favourite, the cover and delete (no station here, so no recipe actions). ----
+function setCover(id: string) { if (doc.value) doc.value.preview_image_id = id } // deep watch autosaves
 function viewImage(startId: string) {
   const at = grids().findIndex((g) => g.imageIds.includes(startId))
   const grid = at >= 0 ? grids()[at] : undefined
@@ -189,11 +190,12 @@ function viewImage(startId: string) {
   openViewer({
     source: grid ? `Grid ${at + 1}` : 'Quick access',
     items: () => ids().map((id) => galleryImages.value.find((im) => im.id === id)).filter((im) => !!im).map((im) => ({
-      id: im!.id, url: im!.data.url || '', favorite: !!im!.data.favorite,
+      id: im!.id, url: im!.data.url || '', favorite: !!im!.data.favorite, cover: im!.id === doc.value?.preview_image_id,
       meta: imageMeta(im!.data.snapshot?.params as { width?: number; height?: number; seed?: number } | undefined, im!.data.created_at),
     })),
     actions: mode.value === 'view' ? [download] : [
       { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', run: (it) => onFavorite(it.id) },
+      { label: 'Set as cover', icon: '▣', enabled: (it) => !it.cover, run: (it) => setCover(it.id) },
       download,
       { label: 'Delete', icon: '🗑', key: 'Delete', danger: true, run: (it) => onDeleteImg(it.id) },
     ],
@@ -226,7 +228,8 @@ function viewImage(startId: string) {
 
     <div v-if="loading" class="wstate">Loading work…</div>
     <div v-else-if="doc" class="wbody">
-      <GalleryStack v-if="galleryData" :data="galleryData" :images="galleryImages" :readonly="mode === 'view'" embedded
+      <GalleryStack v-if="galleryData" :data="galleryData" :images="galleryImages" :cover="doc.preview_image_id"
+        :readonly="mode === 'view'" embedded
         @favorite="onFavorite" @preview="viewImage" @to-quick="onToQuick" @delete-img="onDeleteImg"
         @clear-quick="onClearQuick" @download="downloadUrls" @drop-on-grid="onDropOnGrid" @drop-on-quick="onDropOnQuick" />
       <div v-else class="placeholder">This work has no gallery zone.</div>

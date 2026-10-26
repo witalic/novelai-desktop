@@ -9,12 +9,44 @@ import type {
   PersistedSnapshot, PersistedStackItem, SnapshotData, Viewport, WorkDoc,
 } from '../types'
 import { cloneCombos } from './combos'
-import { DEFAULT_LAYOUT, GAP } from '../canvas/widgetGrid'
+import { newId } from './ids'
+import { DEFAULT_LAYOUT, GAP, type Rect } from '../canvas/widgetGrid'
 
 export const STATION = 'station'
 export const LIBRARY = 'library'
 export const GALLERY = 'gallery'
 export const COMBOS = 'combos'
+
+// The four widgets every work's canvas holds, in the default layout — the skeleton a new work starts from.
+export function anchorNodes(): CanvasNode[] {
+  const L = DEFAULT_LAYOUT
+  const at = (r: Rect) => ({ position: { x: r.x, y: r.y }, style: { width: `${r.w}px`, height: `${r.h}px` }, zIndex: 0 })
+  return [
+    { id: LIBRARY, type: 'zone', data: { role: 'library' }, ...at(L.library) },
+    { id: STATION, type: 'station', data: { ratio: 0.3, axis: 'h', genFirst: true }, ...at(L.station) },
+    { id: GALLERY, type: 'zone', data: { role: 'gallery', blocks: [{ id: newId('gb'), type: 'grid', imageIds: [], cols: 3 }] }, ...at(L.gallery) },
+    { id: COMBOS, type: 'zone', data: { role: 'combos' }, ...at(L.combos) },
+  ]
+}
+
+// A work laid out outside the canvas — an agent's holds just its gallery zone, unplaced (backend app/agent/gallery),
+// or nothing at all. The widgets it lacks join in the default layout, an unplaced one takes its default place, and
+// what each holds stays. A missing gallery comes empty, as the backend makes one, so the agent and the app see the
+// same layout. True when it did either: the layout is new, so the host frames it.
+export function healAnchors(nodes: CanvasNode[]): boolean {
+  const missing: CanvasNode[] = []
+  let placed = false
+  for (const skeleton of anchorNodes()) {
+    const have = nodes.find((n) => n.id === skeleton.id)
+    if (!have) missing.push(skeleton.id === GALLERY ? { ...skeleton, data: { role: 'gallery', blocks: [] } } as CanvasNode : skeleton)
+    else if (!have.position) {
+      Object.assign(have, { position: skeleton.position, style: skeleton.style, zIndex: skeleton.zIndex })
+      placed = true
+    }
+  }
+  nodes.unshift(...missing) // anchors first: they parent the content nodes
+  return placed || missing.length > 0
+}
 
 // The Combinations widget's zone for a work saved before it existed (see workToCanvas): right under its
 // Library zone, one module gap below, same width, the default height.
@@ -85,9 +117,10 @@ function splitImage(url: string, file: string) {
   return { file: isData ? '' : (file || ''), image_b64: isData ? url.replace(/^data:[^,]+,/, '') : null }
 }
 
+// `meta.cover` is the work's chosen cover image (its picture in the Works list).
 export function canvasToWork(
   nodes: LiveNode[], viewport: Viewport, params: Partial<PanelParams>,
-  meta: { id: string; title: string }, drafts: GenResult[] = [], favorites: string[] = [],
+  meta: { id: string; title: string; cover?: string | null }, drafts: GenResult[] = [], favorites: string[] = [],
   combos: PersistedCombo[] = [],
 ): WorkDoc {
   const station = nodes.find((n) => n.id === STATION)
@@ -98,8 +131,8 @@ export function canvasToWork(
   // The whole canvas persists: anchors + every block/image node, in or out of a zone.
   const allBlocks = nodes.filter((n) => n.type === 'block')
   const allImages = nodes.filter((n) => n.type === 'image')
-  const anchorNodes = [station, library, gallery, combosZone].filter((n): n is LiveNode => !!n)
-  const canvasNodes = [...anchorNodes, ...allBlocks, ...allImages].map(slim)
+  const anchors = [station, library, gallery, combosZone].filter((n): n is LiveNode => !!n)
+  const canvasNodes = [...anchors, ...allBlocks, ...allImages].map(slim)
 
   // Work-level snapshots (the reproducible recipe: prompt composition + params), deduped and shared by
   // gallery images and the draft stack; each references one via snapshot_id. The dedup key includes the
@@ -140,6 +173,11 @@ export function canvasToWork(
     ...splitImage(d.url || '', d.file || ''), created_at: d.created_at || '',
   }))
 
+  // Scratch is working material — a work previews (and counts) only by its gallery images: the chosen cover while it
+  // is one, else the first.
+  const inGallery = images.filter((im) => im.role === 'gallery')
+  const cover = inGallery.find((im) => im.id === meta.cover) ?? inGallery[0]
+
   return {
     schema_version: 7, id: meta.id, title: meta.title, params, // bump together with models.py + migrate.py
     canvas: { viewport, nodes: canvasNodes },
@@ -147,8 +185,7 @@ export function canvasToWork(
     images, stack,
     favorites: [...new Set(favorites)], // per-work quick-access set (Library block ids), deduped
     combos: cloneCombos(combos), // saved block sets — a copy, so later edits never reach this document
-    // Scratch is working material — a work previews (and counts) only by its gallery images.
-    preview_image_id: images.find((im) => im.role === 'gallery')?.id ?? null,
+    preview_image_id: cover?.id ?? null,
   }
 }
 
@@ -219,11 +256,11 @@ export function workToCanvas(doc: WorkDoc): { nodes: CanvasNode[]; viewport: Vie
     if (n.type === 'zone' && (n.data as { role?: string })?.role === 'gallery') {
       // Heal a gallery zone that never got a block stack (backend migration is authoritative, but a
       // hand-edited work might skip it): seed one album grid owning every gallery image, oldest→newest.
-      // Deterministic seed id → stable round-trip.
+      // Deterministic seed id → stable round-trip. An emptied stack stays empty — that is a layout too.
       const d = { ...(n.data as Record<string, unknown>) }
       const galleryIds = (doc.images || []).filter((im) => im.role === 'gallery')
         .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))).map((im) => im.id)
-      if (!Array.isArray(d.blocks) || !d.blocks.length) {
+      if (!Array.isArray(d.blocks)) {
         d.blocks = [{ id: 'gb-seed', type: 'grid', imageIds: galleryIds, cols: 3 }]
       } else {
         // Prune image ids that no longer exist (deleted/moved-to-scratch) so counts don't drift (M8).

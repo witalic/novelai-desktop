@@ -15,6 +15,7 @@ interface GalleryImage { id: string; data: Partial<ImageNodeData> }
 const props = defineProps<{
   data: ZoneNode['data'] // holds `blocks` — mutated in place (host tracks + persists)
   images: GalleryImage[] // the work's gallery-role images
+  cover?: string | null // the work's cover image — marked on its thumbnail
   title?: string
   selected?: boolean // host selection → accent border (matches the other canvas widgets)
   readonly?: boolean // View mode: hide add/edit/delete/drag affordances (Phase 2 Works view)
@@ -506,6 +507,7 @@ function onOutDrop(targetId: string) {
                     <button class="thb del" title="Delete image from the work" @pointerdown.stop @click.stop="emit('deleteImg', im.id)">🗑</button>
                   </div>
                   <button class="star nodrag" title="Toggle favourite" @pointerdown.stop @click.stop="emit('favorite', im.id)">★</button>
+                  <span v-if="cover === im.id" class="cover" title="The work's cover — its picture in the Works list">Cover</span>
                   <div v-if="gridHidden(b) && i === b.cols - 1" class="gmore">+{{ gridHidden(b) }}</div>
                 </div>
               </div>
@@ -584,6 +586,7 @@ function onOutDrop(targetId: string) {
             <button class="thb del" title="Delete image from the work" @pointerdown.stop @click.stop="emit('deleteImg', im.id)">🗑</button>
           </div>
           <button class="star nodrag" title="Toggle favourite" @pointerdown.stop @click.stop="emit('favorite', im.id)">★</button>
+          <span v-if="cover === im.id" class="cover" title="The work's cover — its picture in the Works list">Cover</span>
         </div>
       </div>
       <div v-else class="qphint">Unsorted images land here — kept generations and anything dropped outside a grid. Drag them into a grid to organise.</div>
@@ -797,6 +800,10 @@ function onOutDrop(targetId: string) {
   font-size:10px;line-height:1;cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center}
 .gthumb .thb.del:hover{background:var(--danger)}
 .gthumb .thb.toq:hover,.gthumb .thb.dl:hover{background:var(--accent)}
+/* the work's cover: a text pill, always shown, in the corner the hover bar and the star leave free */
+.gthumb .cover{position:absolute;left:5px;bottom:5px;font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;
+  color:#fff;background:rgba(0,0,0,.62);border:1px solid rgba(255,255,255,.28);border-radius:9px;padding:0 6px;line-height:15px;
+  pointer-events:none}
 
 .ghint{font-size:12px;color:var(--text-faint);text-align:center;padding:26px 16px;line-height:1.5;
   border:1px dashed var(--border-strong);border-radius:8px;background:color-mix(in srgb,var(--surface-1) 55%,transparent)}

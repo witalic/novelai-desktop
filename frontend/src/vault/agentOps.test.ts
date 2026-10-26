@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyAgentOpsToDoc, catchUpQueue, planAgentOps, type AgentOp } from './agentOps'
-import type { PersistedCombo, WorkDoc } from '../types'
+import { applyAgentOpsToDoc, applyGalleryOps, catchUpQueue, planAgentOps, type AgentOp, type GalleryOp } from './agentOps'
+import { gridsOf } from './workOps'
+import type { GalleryBlock, PersistedCombo, WorkDoc } from '../types'
 
 const combo = (id: string, name: string): PersistedCombo => ({
   id, name, origin: 'user',
@@ -107,5 +108,92 @@ describe('applyAgentOpsToDoc', () => {
     expect(doc.snapshots.map((s) => s.id)).toEqual(['snap-g'])
     expect(doc.preview_image_id).toBe('img-g')
     expect(planAgentOps([...ops, { op: 'images_deleted', ids: ['img-g'] }], []).added).toEqual([]) // made, then deleted
+  })
+
+  it('gives a work without a gallery zone one, arranges it and sets the cover', () => {
+    const doc = {
+      id: 'w', title: 'T', combos: [], snapshots: [], preview_image_id: 'a', canvas: { nodes: [] },
+      images: [{ id: 'a', role: 'gallery' }, { id: 'b', role: 'gallery' }, { id: 's', role: 'scratch' }],
+    } as unknown as WorkDoc
+    const ops: AgentOp[] = [
+      { op: 'gallery_add', block: { id: 'g', type: 'grid', imageIds: [], cols: 3 }, before: null },
+      { op: 'gallery_place', grid: 'g', image_ids: ['b', 's'], order: ['b', 's'] }, // a scratch image never joins
+      { op: 'cover', image_id: 'b' },
+    ]
+    applyAgentOpsToDoc(doc, ops)
+    applyAgentOpsToDoc(doc, ops)
+    expect(doc.canvas.nodes).toEqual([
+      { id: 'gallery', type: 'zone', data: { role: 'gallery', blocks: [{ id: 'g', type: 'grid', imageIds: ['b'], cols: 3 }] } }])
+    expect(doc.preview_image_id).toBe('b')
+    applyAgentOpsToDoc(doc, [{ op: 'cover', image_id: 'a' }, { op: 'images_deleted', ids: ['a'] }])
+    expect(doc.preview_image_id).toBe('b') // a cover deleted in the same catch-up moves on, as on the backend
+  })
+})
+
+describe('applyGalleryOps', () => {
+  const stack = (): GalleryBlock[] => [
+    { id: 'h-1', type: 'heading', text: 'Intro', level: 1 },
+    { id: 's-1', type: 'section', title: 'Picks', collapsed: false },
+    { id: 'g-1', type: 'grid', imageIds: ['a', 'b'], cols: 4 },
+    { id: 's-2', type: 'section', title: 'Rest', collapsed: true },
+    { id: 'd-1', type: 'divider' },
+  ]
+  const inGallery = (id: string) => ['a', 'b', 'c', 'd'].includes(id)
+  // An arrangement as the backend logs it (app/agent/gallery.py — same operations, same rules).
+  const ops: GalleryOp[] = [
+    { op: 'gallery_add', block: { id: 'night', type: 'section', title: 'Night', collapsed: false }, before: 's-2' },
+    { op: 'gallery_add', block: { id: 'album', type: 'grid', imageIds: [], cols: 3 }, before: 's-2' },
+    { op: 'gallery_place', grid: 'album', image_ids: ['d', 'c'], order: ['d', 'c'] },
+    { op: 'gallery_place', grid: 'album', image_ids: ['b'], order: ['d', 'b', 'c'] }, // out of g-1, between d and c
+    { op: 'gallery_set', id: 'g-1', set: { cols: 2, collapsed: true } },
+    { op: 'gallery_order', order: ['h-1', 's-2', 'd-1', 's-1', 'g-1', 'night', 'album'] }, // Rest and its divider up
+    { op: 'gallery_remove', id: 'h-1' },
+  ]
+
+  it('lands an agent’s arrangement — once, however often replayed', () => {
+    const blocks = stack()
+    applyGalleryOps(blocks, ops, inGallery)
+    applyGalleryOps(blocks, ops, inGallery)
+    expect(blocks.map((b) => b.id)).toEqual(['s-2', 'd-1', 's-1', 'g-1', 'night', 'album'])
+    expect(gridsOf(blocks).map((g) => [g.id, g.imageIds])).toEqual([['g-1', ['a']], ['album', ['d', 'b', 'c']]])
+    expect(blocks[3]).toMatchObject({ cols: 2, collapsed: true })
+    expect(ops[1]).toMatchObject({ block: { imageIds: [] } }) // the operation itself is never changed
+  })
+
+  it('keeps the user’s unsaved layout edits around the agent’s', () => {
+    const blocks = stack()
+    blocks.splice(0, 1, { id: 'mine', type: 'text', text: 'my note' }) // the heading replaced meanwhile
+    blocks.splice(3, 2) // and Rest deleted, with its divider
+    applyGalleryOps(blocks, ops, (id) => id !== 'd') // and image d moved out onto the canvas
+    expect(blocks.map((b) => b.id)).toEqual(['mine', 's-1', 'g-1', 'night', 'album'])
+    expect(gridsOf(blocks).map((g) => [g.id, g.imageIds])).toEqual([['g-1', ['a']], ['album', ['b', 'c']]])
+  })
+
+  it('a batch whose later op moves an earlier one’s neighbour still replays to the same order', () => {
+    const grid = (ids: string[]): GalleryBlock[] => [{ id: 'g', type: 'grid', imageIds: ids, cols: 3 }]
+    const batch: GalleryOp[] = [
+      { op: 'gallery_place', grid: 'g', image_ids: ['a'], order: ['a', 'b', 'c'] }, // a first, next to b…
+      { op: 'gallery_place', grid: 'g', image_ids: ['b'], order: ['a', 'c', 'b'] }, // …then b to the end
+    ]
+    const blocks = grid(['b', 'c'])
+    for (let n = 0; n < 3; n++) {
+      applyGalleryOps(blocks, batch, inGallery)
+      expect(gridsOf(blocks)[0].imageIds).toEqual(['a', 'c', 'b'])
+    }
+    const mine = grid(['b', 'x', 'c']) // x: the user's own, unsaved — it keeps its slot
+    applyGalleryOps(mine, batch, (id) => id !== 'zz')
+    expect(gridsOf(mine)[0].imageIds).toEqual(['a', 'x', 'c', 'b'])
+  })
+
+  it('skips what is gone and clears a field set to null', () => {
+    const blocks: GalleryBlock[] = [...stack(), { id: 'm-1', type: 'meta', fields: [], gridId: 'g-1' }]
+    applyGalleryOps(blocks, [
+      { op: 'gallery_place', grid: 'gone', image_ids: ['a'], order: ['a'] }, // a deleted grid: a stays where it is
+      { op: 'gallery_set', id: 'gone', set: { title: 'x' } },
+      { op: 'gallery_unplace', image_ids: ['b'] },
+      { op: 'gallery_set', id: 'm-1', set: { gridId: null } }, // summarise the whole gallery again
+    ], inGallery)
+    expect(gridsOf(blocks)[0].imageIds).toEqual(['a'])
+    expect(blocks.find((b) => b.id === 'm-1')).toEqual({ id: 'm-1', type: 'meta', fields: [] })
   })
 })

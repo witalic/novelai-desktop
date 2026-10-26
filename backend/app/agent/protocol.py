@@ -29,7 +29,7 @@ PERMISSION_LABELS = {  # as the switches read in Settings → Agents
     "read": "Browse the Library and works",
     "blocks_write": "Create and edit blocks",
     "blocks_delete": "Delete blocks",
-    "works_write": "Create works, edit titles and image metadata",
+    "works_write": "Create and edit works",
     "combos_write": "Create and edit combinations",
     "works_delete": "Delete images and combinations",
     "generate": "Generate images",
@@ -37,8 +37,9 @@ PERMISSION_LABELS = {  # as the switches read in Settings → Agents
 
 INSTRUCTIONS = (
     "novelai-desktop is the user's NovelAI image studio. The Library holds reusable prompt blocks "
-    "(category + name + tag text, positive or negative); works hold generated images, their recipes and saved "
-    "block combinations (ready block sets for the generation station). What you may do is set by the user in "
+    "(category + name + tag text, positive or negative); works hold generated images (with their recipes, arranged "
+    "in a gallery of sections and albums) and saved block combinations (ready block sets for the generation "
+    "station). What you may do is set by the user in "
     "Settings → Agents — a refused call names the permission that is off. Whatever you change shows up in "
     "the open app at once, and the user sees a log of it. Generating costs the user's Anlas unless it is free: "
     "check estimate_cost, and never pass paid: true without the user's say-so."

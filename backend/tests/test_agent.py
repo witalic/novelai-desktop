@@ -20,7 +20,7 @@ from PIL import Image as PILImage
 
 from app import appconfig, keychain
 from app import main as app_main
-from app.agent import activity, changes, generation, store
+from app.agent import activity, changes, gallery, generation, store
 from app.agent import server as agent_server
 from app.agent.config import AgentConfig, AgentPermissions, coerce
 from app.agent.server import _Config, build_app, listener
@@ -468,6 +468,158 @@ async def test_combinations_are_made_from_library_and_custom_blocks(settings):
     assert left.updated_at > left.created_at
 
 
+# ---- the gallery layout ----
+def seed_gallery(settings: Settings) -> WorkDoc:
+    """work-g as the app saved it: img-a … img-d (oldest first) in the gallery, one scratch image; a heading, then a
+    section "Picks" holding a grid of img-a and img-b (and a stale id) with a summary of it, then a collapsed section
+    "Rest" holding a divider. img-c and img-d are in no grid."""
+    png = base64.b64encode(solid_png(8, 12)).decode("ascii")
+    ids = ["img-a", "img-b", "img-c", "img-d"]
+    blocks = [
+        {"id": "h-1", "type": "heading", "text": "Intro", "level": 1},
+        {"id": "s-1", "type": "section", "title": "Picks", "collapsed": False},
+        {"id": "g-1", "type": "grid", "imageIds": ["img-a", "img-gone", "img-b"], "cols": 4},
+        {"id": "m-1", "type": "meta", "fields": [{"key": "Tags", "kind": "chips", "auto": "tags"}], "gridId": "g-1"},
+        {"id": "s-2", "type": "section", "title": "Rest", "collapsed": True},
+        {"id": "d-1", "type": "divider"},
+    ]
+    service.save_work(settings, WorkDoc(
+        id="work-g", title="G", preview_image_id="img-a",
+        images=[Image(id=i, image_b64=png, created_at=f"2026-10-0{k + 1}T00:00:00.000+00:00") for k, i in enumerate(ids)]
+        + [Image(id="img-s", role="scratch", image_b64=png)],
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}, "nodes": [
+            {"id": "gallery", "type": "zone", "position": {"x": 1600, "y": 40}, "data": {"role": "gallery", "blocks": blocks}},
+            *({"id": i, "type": "image", "parentNode": "gallery", "position": {"x": 0, "y": 0}, "data": {}} for i in ids),
+            {"id": "img-s", "type": "image", "position": {"x": 900, "y": 900}, "data": {}}]}))
+    return service.load_work(settings, "work-g")
+
+
+async def test_the_gallery_reads_as_the_app_shows_it(settings):
+    seed_gallery(settings)
+    async with mcp_client(settings) as c:
+        view = await call_json(c, "get_gallery", {"work_id": "work-g"})
+    assert (view["cover_image_id"], view["image_count"]) == ("img-a", 4)
+    assert view["blocks"] == [
+        {"id": "h-1", "type": "heading", "text": "Intro", "level": 1},
+        {"id": "s-1", "type": "section", "title": "Picks", "collapsed": False},
+        {"id": "g-1", "type": "grid", "section": "s-1", "cols": 4, "collapsed": False, "image_ids": ["img-a", "img-b"]},
+        {"id": "m-1", "type": "meta", "section": "s-1", "grid": "g-1"},
+        {"id": "s-2", "type": "section", "title": "Rest", "collapsed": True},
+        {"id": "d-1", "type": "divider", "section": "s-2"},
+    ]
+    assert view["quick_access"] == ["img-d", "img-c"]  # newest first; the scratch image is never in the gallery
+
+
+async def test_an_agent_arranges_the_gallery_and_the_app_replays_it(api, settings):
+    base = seed_gallery(settings)
+    async with mcp_client(settings) as c:
+        out = await call_json(c, "edit_gallery", {"work_id": "work-g", "ops": [
+            {"op": "add", "type": "section", "title": "Night", "ref": "night", "after": "s-1"},  # after Picks' blocks
+            {"op": "add", "type": "grid", "cols": 3, "ref": "album", "after": "night", "image_ids": ["img-d", "img-c"]},
+            {"op": "place", "image_ids": ["img-b"], "grid": "album", "index": 1},  # out of g-1, between d and c
+            {"op": "update", "block": "g-1", "cols": 2, "collapsed": True},
+            {"op": "move", "block": "s-2", "before": "s-1"},  # with the divider under it
+            {"op": "remove", "block": "h-1"},
+            {"op": "add", "type": "meta", "grid": "album", "after": "album"},
+            {"op": "cover", "image_id": "img-c"},
+        ]})
+        assert out["gallery"] == await call_json(c, "get_gallery", {"work_id": "work-g"})
+    night, album, meta = (x["id"] for x in out["created"])
+    assert [x.get("ref") for x in out["created"]] == ["night", "album", None]
+    view = out["gallery"]
+    assert [(b["id"], b.get("section")) for b in view["blocks"]] == [
+        ("s-2", None), ("d-1", "s-2"), ("s-1", None), ("g-1", "s-1"), ("m-1", "s-1"),
+        (night, None), (album, night), (meta, night)]
+    grids = {b["id"]: b for b in view["blocks"] if b["type"] == "grid"}
+    assert grids[album]["image_ids"] == ["img-d", "img-b", "img-c"]
+    assert (grids["g-1"]["cols"], grids["g-1"]["collapsed"], grids["g-1"]["image_ids"]) == (2, True, ["img-a"])
+    assert view["blocks"][-1]["grid"] == album
+    assert (view["quick_access"], view["cover_image_id"]) == ([], "img-c")
+    row = activity.recent()[1]  # under the get_gallery read
+    assert (row["kind"], row["action"]) == ("write", "Arranged the gallery")
+    assert row["detail"] == ("of “G” · 3 blocks added, 1 block updated, 1 block moved, 1 block removed, "
+                             "3 images placed, cover set")
+
+    # the open app catches up by replaying the same operations over its copy — to the same layout, however often
+    stored = service.load_work(settings, "work-g")
+    res = (await api.get("/api/agent/works/work-g/changes", params={"since": base.updated_at})).json()
+    assert res["at"] == stored.updated_at
+    replayed = base.model_copy(deep=True)
+    for op in res["ops"] * 2:
+        gallery.apply(replayed, op)
+    assert (gallery.stack(replayed), replayed.preview_image_id) == (gallery.stack(stored), "img-c")
+    assert stored.canvas["nodes"][0]["position"] == {"x": 1600, "y": 40}  # the layout around the gallery stays
+
+
+async def test_a_gallery_batch_replays_to_the_same_layout_however_often(settings):
+    base = seed_gallery(settings)
+    async with mcp_client(settings) as c:
+        out = await call_json(c, "edit_gallery", {"work_id": "work-g", "ops": [
+            {"op": "place", "image_ids": ["img-c"], "grid": "g-1", "index": 0},
+            {"op": "place", "image_ids": ["img-a"], "grid": "g-1"},  # the image the first one landed next to moves on
+            {"op": "move", "block": "s-2", "before": "s-1"},
+            {"op": "move", "block": "h-1", "after": "d-1"},  # …and so does the block the first move landed after
+        ]})
+    stored = service.load_work(settings, "work-g")
+    assert next(b for b in out["gallery"]["blocks"] if b["id"] == "g-1")["image_ids"] == ["img-c", "img-b", "img-a"]
+    assert [b["id"] for b in out["gallery"]["blocks"]] == ["s-2", "d-1", "h-1", "s-1", "g-1", "m-1"]
+    ops = changes.edits_since("work-g", base.updated_at, stored.updated_at)
+    for times in (1, 2, 3):
+        replayed = base.model_copy(deep=True)
+        for op in ops * times:
+            gallery.apply(replayed, op)
+        assert gallery.stack(replayed) == gallery.stack(stored), times
+
+
+async def test_a_bad_gallery_op_changes_nothing_and_says_which(settings):
+    before = seed_gallery(settings)
+    cases = [
+        ([{"op": "add", "type": "grid", "ref": "x"}, {"op": "place", "image_ids": ["img-s"], "grid": "x"}],
+         "op 2 (place): No gallery image “img-s”"),
+        ([{"op": "place", "image_ids": ["img-c"], "grid": "s-1"}], "“s-1” is a section, not a grid"),
+        ([{"op": "update", "block": "s-1", "cols": 3}], "'cols' doesn't apply to a section"),
+        ([{"op": "move", "block": "s-1", "after": "g-1"}], "'after' names the block being moved or one under it"),
+        ([{"op": "move", "block": "s-2", "after": "g-1"}], "not in among its blocks"),  # would split Picks
+        ([{"op": "update", "block": "g-1", "image_ids": ["img-c"]}], "Images go into a grid with place"),
+        ([{"op": "update", "block": "s-1", "title": " "}], "'title' is required"),
+        ([{"op": "add", "type": "grid", "ref": "g-1"}], "The ref “g-1” is taken"),
+        ([{"op": "remove", "block": "nope"}], "No gallery block “nope”"),
+        ([{"op": "add", "type": "heading", "text": "x", "level": 3}], "'level' must be 1 or 2"),
+        ([{"op": "add", "type": "divider", "before": "s-1", "after": "s-2"}], "not both"),
+        ([{"op": "update", "block": "d-1"}], "Nothing to update"),
+        ([{"op": "shuffle"}], "'op' must be one of"),
+        ([{"op": "cover", "image_id": "img-s"}], "No gallery image “img-s”"),
+    ]
+    async with mcp_client(settings) as c:
+        for ops, message in cases:
+            res = await call(c, "edit_gallery", {"work_id": "work-g", "ops": ops})
+            text = res["content"][0]["text"]
+            assert res["isError"] and text.startswith("Nothing changed — ") and message in text, (ops, text)
+        # already so: no save, nothing for the app to replay — it reads as a read
+        same = await call_json(c, "edit_gallery", {"work_id": "work-g", "ops": [
+            {"op": "unplace", "image_ids": ["img-c"]}, {"op": "cover", "image_id": "img-a"}]})
+    assert same["created"] == [] and same["gallery"]["quick_access"] == ["img-d", "img-c"]
+    after = service.load_work(settings, "work-g")
+    assert (after.updated_at, after.canvas) == (before.updated_at, before.canvas)
+    assert "work-g" not in changes._log
+    assert [(r["kind"], r["action"]) for r in activity.recent()] == [("read", "Arrange a work's gallery")]
+
+
+async def test_a_work_made_outside_the_app_gets_a_gallery_to_arrange(settings):
+    seed(settings)  # work-1 has no canvas at all — as the works agents made before
+    async with mcp_client(settings) as c:
+        made = await call_json(c, "create_work", {"title": "Fresh"})
+        assert (await call_json(c, "get_gallery", {"work_id": made["id"]}))["blocks"] == []
+        assert (await call_json(c, "get_gallery", {"work_id": "work-1"}))["quick_access"] == ["img-1"]
+        await call_json(c, "edit_gallery", {"work_id": "work-1", "ops": [{"op": "add", "type": "grid", "image_ids": ["img-1"]}]})
+    # just the gallery zone, unplaced — the app lays the other widgets out around it when it opens the work
+    assert service.load_work(settings, made["id"]).canvas["nodes"] == [
+        {"id": "gallery", "type": "zone", "data": {"role": "gallery", "blocks": []}}]
+    [zone] = service.load_work(settings, "work-1").canvas["nodes"]
+    assert (zone["id"], "position" in zone) == ("gallery", False)
+    assert zone["data"]["blocks"][0]["imageIds"] == ["img-1"]
+
+
 async def test_the_open_app_replays_agent_edits_instead_of_reloading(api, settings):
     seed(settings)
     base = service.load_work(settings, "work-1").updated_at
@@ -604,6 +756,32 @@ async def test_a_free_generation_lands_in_quick_access_with_its_recipe(mock_nove
     assert (activity.recent()[0]["cost"], activity.recent()[0]["kind"]) == (0, "generate")
     ops = changes.edits_since("work-1", base, doc.updated_at)
     assert ops[-1]["op"] == "images_added" and ops[-1]["images"][0]["id"] == im.id
+
+
+async def test_images_say_which_combination_made_them(mock_novelai):
+    settings = mock_novelai
+    seed(settings)
+    size = {"width": 832, "height": 1216, "steps": 28}
+    async with mcp_client(settings) as c:
+        night = await call_json(c, "create_combination", {"work_id": "work-1", "name": "Night", "blocks": [
+            {"block_id": "block-raiden"}, {"text": "night sky"}, {"text": "draft idea", "frozen": True}]})
+        made = await call_json(c, "generate_images", {"work_id": "work-1", "combination_id": night["id"], **size})
+        # the same prompt blocks given by hand make that combination's image too
+        by_hand = await call_json(c, "generate_images", {"work_id": "work-1", **size, "blocks": [
+            {"block_id": "block-raiden"}, {"text": "night sky"}]})
+        page = await call_json(c, "list_images", {"work_id": "work-1"})
+        made_from = {im["id"]: im["combinations"] for im in page["items"]}
+        mine = {made["images"][0]["id"], by_hand["images"][0]["id"]}
+        assert {made_from[i][0]["id"] for i in mine} == {night["id"]} and made_from["img-1"] == []
+        assert made_from[made["images"][0]["id"]] == [{"id": night["id"], "name": "Night"}]
+        only = await call_json(c, "list_images", {"work_id": "work-1", "combination_id": night["id"]})
+        assert {im["id"] for im in only["items"]} == mine
+        # edited since, the combination no longer is what made them
+        await call_json(c, "update_combination", {"work_id": "work-1", "combination_id": night["id"],
+                                                  "blocks": [{"text": "dusk"}]})
+        assert (await call_json(c, "list_images", {"work_id": "work-1", "combination_id": night["id"]}))["total"] == 0
+        unknown = await call(c, "list_images", {"work_id": "work-1", "combination_id": "combo-x"})
+        assert unknown["isError"] and "No combination" in unknown["content"][0]["text"]
 
 
 async def test_a_preset_drives_the_generation_and_unique_tags_apply_as_at_the_station(mock_novelai):

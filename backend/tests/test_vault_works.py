@@ -306,11 +306,17 @@ async def test_rebuild_skips_a_corrupt_work(client):
 
 async def test_list_image_preview(client):
     ac, _ = client
-    await ac.put("/api/vault/works", json=_work())
+    work = _work()
+    await ac.put("/api/vault/works", json=work)
     page = (await ac.get("/api/vault/works")).json()
-    assert page["total"] == 1 and page["items"][0]["preview_url"]
+    assert page["total"] == 1 and page["items"][0]["preview_url"] == "/api/vault/works/w1/preview?v=img-w1"
     assert (await ac.get("/api/vault/works/w1/images/img-w1")).status_code == 200
-    assert (await ac.get("/api/vault/works/w1/preview")).status_code == 200
+    assert (await ac.get(page["items"][0]["preview_url"])).status_code == 200
+    # a new cover is a new URL, so the Works card never shows a cached old one
+    work["images"].append({"id": "img-2", "snapshot_id": "s-w1", "image_b64": _png_b64()})
+    work["preview_image_id"] = "img-2"
+    await ac.put("/api/vault/works", json=work)
+    assert (await ac.get("/api/vault/works")).json()["items"][0]["preview_url"] == "/api/vault/works/w1/preview?v=img-2"
 
 
 async def test_gallery_tag_and_favorite_filters(client):

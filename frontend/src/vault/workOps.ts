@@ -7,11 +7,11 @@ export function gridsOf(blocks: GalleryBlock[] | undefined): GalleryGridBlock[] 
   return (blocks || []).filter((b): b is GalleryGridBlock => b.type === 'grid')
 }
 
-/** Remove an image id from every grid album it appears in (a gallery image belongs to at most one grid). */
+/** Remove an image id from every grid album it appears in (a gallery image belongs to at most one grid — every
+ *  occurrence goes, should a malformed work hold it twice). */
 export function removeIdFromGrids(blocks: GalleryBlock[] | undefined, id: string): void {
   for (const g of gridsOf(blocks)) {
-    const i = g.imageIds.indexOf(id)
-    if (i >= 0) g.imageIds.splice(i, 1)
+    for (let i = g.imageIds.length - 1; i >= 0; i--) if (g.imageIds[i] === id) g.imageIds.splice(i, 1)
   }
 }
 

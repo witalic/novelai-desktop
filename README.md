@@ -36,11 +36,11 @@ worked* is hard to manage. This app stitches generation and storage into one cyc
 - **Block combinations** — save the station's block set as a named combination in the work, then
   replace or extend the station with it in one click.
 - **Agent access (MCP)** — let Claude Code or any MCP agent work with your vault: browse it, write
-  blocks and combinations, tag images, generate — under per-action switches and Anlas limits
-  ([below](#connecting-an-ai-agent-mcp)).
+  blocks and combinations, tag images, arrange galleries, generate — under per-action switches and
+  Anlas limits ([below](#connecting-an-ai-agent-mcp)).
 - **Structured gallery** — each work's images organise into a composable stack of typed blocks
   (sections · headings · notes · image grids/albums · metadata) with an outline and a Quick-access
-  bin, instead of a loose pile.
+  bin, instead of a loose pile. *Set as cover* picks the image the work shows in the Works list.
 - **Works browser** — search, sort, and delete works; open any work in a full-page **view** or
   **edit** mode that reuses the same gallery stack, with autosave.
 - **Server-side thumbnails** (`?w=`, disk-cached) with crisp rendering at any zoom, and off-viewport
@@ -164,10 +164,10 @@ while the app is open. It is **off by default**.
 
 | Switch | Tools |
 |---|---|
-| Browse the Library and works | `search_blocks` `get_blocks` `list_categories` `list_tags` `list_works` `get_work` `list_images` `search_images` `get_image` (whole or a close-up crop) `contact_sheet` `list_combinations` `list_presets` `get_catalog` `get_account` `count_tokens` `estimate_cost` |
+| Browse the Library and works | `search_blocks` `get_blocks` `list_categories` `list_tags` `list_works` `get_work` `list_images` (with the combination each image was made from) `search_images` `get_image` (whole or a close-up crop) `contact_sheet` `get_gallery` `list_combinations` `list_presets` `get_catalog` `get_account` `count_tokens` `estimate_cost` |
 | Create and edit blocks | `create_blocks` (the Library import's rules — duplicates are skipped, a new category name makes the category) `update_block` |
 | Delete blocks *(off)* | `delete_blocks` |
-| Create works, edit titles and image metadata | `create_work` `rename_work` `update_images` |
+| Create and edit works | `create_work` `rename_work` `update_images` `edit_gallery` (sections, headings, text, albums, Quick access, the cover) |
 | Create and edit combinations | `create_combination` `update_combination` |
 | Delete images and combinations *(off)* | `delete_images` `delete_combination` |
 | Generate images | `generate_images` (from a combination or blocks, with the work's settings or a preset's; the prompt is built as the station builds it, *unique tags* included) |

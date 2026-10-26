@@ -201,7 +201,8 @@ def list_works(settings: Settings, page: int, per_page: int,
         WorkListItem(
             id=r["id"], title=r["title"] or "Untitled", updated_at=r["updated_at"] or "",
             image_count=r["image_count"] or 0,
-            preview_url=f"/api/vault/works/{r['id']}/preview" if r["preview_image_id"] else None,
+            # Versioned by the cover: cached while it stays, fetched anew once it changes.
+            preview_url=f"/api/vault/works/{r['id']}/preview?v={r['preview_image_id']}" if r["preview_image_id"] else None,
         )
         for r in rows
     ]

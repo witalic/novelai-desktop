@@ -109,6 +109,7 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
         <span class="vsrc">{{ set.source }}</span>
         <span v-if="items.length > 1" class="vcnt">{{ index + 1 }} / {{ items.length }}</span>
         <span v-if="item.favorite" class="vfav" title="Favourite">★</span>
+        <span v-if="item.cover" class="vcover" title="The work's cover — its picture in the Works list">Cover</span>
         <span v-if="item.meta" class="vmeta">{{ item.meta }}</span>
         <span class="sp"></span>
         <button class="vx" title="Close (Esc)" @click="close">✕</button>
@@ -144,6 +145,8 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
   border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:1px 8px}
 .vcnt{font-weight:700;font-variant-numeric:tabular-nums}
 .vfav{color:var(--star)}
+.vcover{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#fff;background:rgba(255,255,255,.14);
+  border:1px solid rgba(255,255,255,.32);border-radius:10px;padding:1px 8px}
 .vmeta{color:#738496;font-size:11.5px}
 .sp{flex:1}
 .vx{width:34px;height:34px;border-radius:50%;border:1px solid #454f59;background:#1d2125;color:#9fadbc;font-size:14px;cursor:pointer;

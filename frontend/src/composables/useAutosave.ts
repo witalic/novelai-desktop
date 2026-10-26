@@ -32,6 +32,7 @@ export function useAutosave({
 }: Deps) {
   const toast = useToast()
   const title = ref('')
+  const cover = ref<string | null>(null) // the chosen cover image (canvasToWork falls back to the first gallery image)
   const vaultReady = ref(false)
   const workId = ref(newId('work'))
   const baseUpdatedAt = ref('') // updated_at the canvas loaded — sent as the optimistic-lock base (H3)
@@ -55,7 +56,8 @@ export function useAutosave({
 
   // The WorkDoc both save paths (autosave + the close beacon) write — one builder so they can't drift.
   function buildDoc(): WorkDoc {
-    const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value }, drafts(), favorites(), combos())
+    const doc = canvasToWork(nodes.value, viewport.value, params(), { id: workId.value, title: title.value, cover: cover.value },
+      drafts(), favorites(), combos())
     doc.updated_at = baseUpdatedAt.value // optimistic-lock base — the server 409s if the stored copy is newer
     return doc
   }
@@ -71,7 +73,7 @@ export function useAutosave({
         ? { u: n.data?.url ? 1 : 0, f: !!n.data?.favorite, t: n.data?.tags, g: n.data?.group ?? null, ds: n.data?.description ?? '' }
         : n.data,
     }))
-    return JSON.stringify({ t: title.value, params: params(), nodes: sig, stack: drafts().map((d) => d.id), favs: favorites(), combos: combos() })
+    return JSON.stringify({ t: title.value, cv: cover.value, params: params(), nodes: sig, stack: drafts().map((d) => d.id), favs: favorites(), combos: combos() })
   }
 
   function markDirty() {
@@ -207,7 +209,7 @@ export function useAutosave({
   }
 
   return {
-    title, vaultReady, workId, baseUpdatedAt, saveState, savedAt,
+    title, cover, vaultReady, workId, baseUpdatedAt, saveState, savedAt,
     changeKey, markDirty, flush, flushIfDirty, manualSave, onBeforeUnload, refreshInterval, stopAutosave, resetBaseline,
     onAgentEdit,
   }

@@ -196,6 +196,20 @@ describe('useAutosave — combinations', () => {
   })
 })
 
+describe('useAutosave — the cover', () => {
+  it('a chosen cover is a change that saves, as the work’s preview', async () => {
+    const { nodes, a } = setup()
+    nodes.value = ['img-1', 'img-2'].map((id) => ({ id, type: 'image', parentNode: 'gallery', position: { x: 0, y: 0 }, style: {}, data: { url: 'u' } }))
+    a.resetBaseline('saved')
+    const before = a.changeKey()
+    a.cover.value = 'img-2'
+    expect(a.changeKey()).not.toBe(before)
+    a.markDirty()
+    await a.flush()
+    expect(saveWork.mock.calls[0][0].preview_image_id).toBe('img-2')
+  })
+})
+
 describe('useAutosave.changeKey — image domain fields (H1)', () => {
   function withImage(data: any) {
     const { nodes, a } = setup()

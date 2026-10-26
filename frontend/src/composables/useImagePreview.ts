@@ -10,6 +10,7 @@ export interface ViewerItem {
   url: string
   meta?: string // e.g. "832×1216 · seed 2840193 · 2 min ago"
   favorite?: boolean
+  cover?: boolean // the work's cover image (a chip in the top bar)
 }
 export interface ViewerAction {
   label: string | ((item: ViewerItem) => string)

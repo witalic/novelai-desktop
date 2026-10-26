@@ -23,7 +23,21 @@ Landing in blocks, one commit each:
    - A new category follows the Library's "New category": named as given, with the first free palette hue.
      The importer only slugifies the name instead.
    - `get_work` is now an overview, and `list_images` pages the gallery.
-2. **Gallery:** #1–#4, #11.
+2. **Gallery — done:** #1–#4, #11.
+   - `get_gallery` reads the layout; `edit_gallery` takes a batch of ops (add / update / move / remove a
+     block, place / unplace images, cover). The batch is all-or-nothing, and a new block can be named by a
+     `ref` later in the same call.
+   - Backend and app replay the same operations with the same rules (`agent/gallery.py`,
+     `vault/agentOps.ts` `applyGalleryOps`). Moves and placements carry the resulting order rather than a
+     neighbour, so a batch replayed again lands the same, and the user's own unsaved blocks or images keep
+     their slots.
+   - A section moves only before or after another section, never in among its blocks.
+   - The cover is now a saved choice: the app keeps it while the image is in the gallery, and the user has
+     *Set as cover* (`design/gallery-cover.html`).
+   - `create_work` writes an unplaced gallery zone; the app lays out the other widgets around it on first
+     open (`serialize.ts` `healAnchors`). An emptied gallery no longer re-seeds itself on reload.
+   - #11 is derived, not stored: an image belongs to the combinations whose prompt blocks are its own. A
+     combination edited since no longer matches.
 3. **Station params:** #8.
 4. **Housekeeping:** #18, #19, #20.
 

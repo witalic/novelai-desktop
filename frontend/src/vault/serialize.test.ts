@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { canvasToWork, combosZoneNode, workToCanvas, workToDrafts, COMBOS, GALLERY, LIBRARY, STATION } from './serialize'
-import type { PersistedCombo } from '../types'
+import {
+  anchorNodes, canvasToWork, combosZoneNode, healAnchors, workToCanvas, workToDrafts, COMBOS, GALLERY, LIBRARY, STATION,
+  type LiveNode,
+} from './serialize'
+import { DEFAULT_LAYOUT } from '../canvas/widgetGrid'
+import type { CanvasNode, PersistedCombo, WorkDoc } from '../types'
 
 /* serialize.ts is framework-free by design — these pin the canvas <-> WorkDoc contract:
  * geometry/parent/snapshot survive the round-trip, aspect ratio is recovered, snapshots dedup by
@@ -131,6 +135,16 @@ describe('canvasToWork', () => {
     expect(doc.preview_image_id).toBe('img-g')
   })
 
+  it('keeps the chosen cover while it is a gallery image, else previews by the first', () => {
+    const nodes: LiveNode[] = [...anchors(), galleryImage('img-1', 1), galleryImage('img-2', 2)]
+    const save = (ns: LiveNode[], cover: string | null) =>
+      canvasToWork(ns, viewport, params, { id: 'w1', title: '', cover }).preview_image_id
+    expect(save(nodes, 'img-2')).toBe('img-2')
+    expect(save(nodes.map((n) => (n.id === 'img-2' ? { ...n, parentNode: undefined } : n)), 'img-2')).toBe('img-1') // out onto the canvas
+    expect(save(nodes, 'img-gone')).toBe('img-1')
+    expect(save(nodes, null)).toBe('img-1')
+  })
+
   it('carries the per-work favorites set (deduped), defaulting to empty', () => {
     expect(canvasToWork([...anchors()], viewport, params, { id: 'w1', title: '' }).favorites).toEqual([])
     const doc = canvasToWork([...anchors()], viewport, params, { id: 'w1', title: '' }, [], ['b1', 'b2', 'b1'])
@@ -237,6 +251,43 @@ describe('structured gallery blocks', () => {
     const doc2 = canvasToWork(workToCanvas(doc).nodes, viewport, params, { id: 'w1', title: 'T' })
     const doc3 = canvasToWork(workToCanvas(doc2).nodes, viewport, params, { id: 'w1', title: 'T' })
     expect(doc3).toEqual(doc2)
+  })
+
+  it('keeps an emptied block stack empty — that is a layout too, not one to re-seed', () => {
+    const emptied = { id: GALLERY, type: 'zone', position: { x: 1108, y: 40 }, data: { role: 'gallery', blocks: [] } }
+    const doc = canvasToWork([emptied, galleryImage('img-1', 42)], viewport, params, { id: 'w1', title: 'T' })
+    expect((workToCanvas(doc).nodes.find((n) => n.id === GALLERY)!.data as any).blocks).toEqual([])
+  })
+})
+
+describe('healAnchors', () => {
+  it('lays out a work an agent made: the widgets join, its unplaced gallery takes its place and keeps its blocks', () => {
+    const blocks = [{ id: 'g', type: 'grid', imageIds: ['img-a'], cols: 3 }]
+    const doc = {
+      id: 'w', title: 'T', snapshots: [], combos: [], preview_image_id: 'img-a',
+      images: [{ id: 'img-a', role: 'gallery', file: 'images/img-a.png', created_at: '', tags: [], favorite: false }],
+      canvas: { nodes: [{ id: GALLERY, type: 'zone', data: { role: 'gallery', blocks } }] }, // as the backend writes it
+    } as unknown as WorkDoc
+    const { nodes } = workToCanvas(doc)
+    expect(healAnchors(nodes)).toBe(true)
+    expect(nodes.map((n) => n.id)).toEqual([LIBRARY, STATION, COMBOS, GALLERY, 'img-a']) // anchors before their content
+    const gallery = nodes.find((n) => n.id === GALLERY)!
+    const { x, y, w, h } = DEFAULT_LAYOUT.gallery
+    expect(gallery).toMatchObject({ position: { x, y }, style: { width: `${w}px`, height: `${h}px` }, zIndex: 0 })
+    expect((gallery.data as any).blocks).toEqual(blocks)
+    expect(healAnchors(nodes)).toBe(false) // laid out now
+  })
+
+  it('leaves a laid-out work alone and lays out an empty one', () => {
+    const laid = anchorNodes()
+    const before = JSON.stringify(laid)
+    expect(healAnchors(laid)).toBe(false)
+    expect(JSON.stringify(laid)).toBe(before)
+    const empty: CanvasNode[] = []
+    expect(healAnchors(empty)).toBe(true)
+    expect(empty.map((n) => n.id)).toEqual([LIBRARY, STATION, GALLERY, COMBOS])
+    // an empty gallery, as the backend makes one — the agent and the app see the same (no starter album)
+    expect((empty.find((n) => n.id === GALLERY)!.data as any).blocks).toEqual([])
   })
 })
 
