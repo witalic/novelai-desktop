@@ -28,6 +28,7 @@ const params = reactive<PanelParams>({
   sampler: 'k_euler_ancestral', seed: null, n_samples: 1, noise_schedule: 'karras',
   cfg_rescale: 0, quality_toggle: true, uc_preset: 4, dedupe: false,
 })
+let paramsOf: string | null = null // the opened work whose settings `params` holds (null: a new work's own)
 
 // ---- presets: the Tools panel's Preset strip picks/updates; the default seeds a fresh work ----
 const presets = ref<Preset[]>([])
@@ -58,11 +59,19 @@ watch(() => props.applyPreset?.nonce, () => {
 function onNewWork() {
   drafts.value = []
   loadedWork.value = null
+  paramsOf = null
   if (defaultParams.value) Object.assign(params, defaultParams.value)
 }
 
 // Preset strip: switch the active preset from the panel dropdown.
 function onPickPreset(p: Preset) { Object.assign(params, p.params); activePresetId.value = p.id }
+// An agent set the open work's station settings (update_work_params) — a preset it applied becomes the active one.
+// Only while they are still that work's: opening another one puts its settings here before the canvas switches over.
+function onAgentParams(p: { workId: string; set: Partial<PanelParams>; presetId?: string }) {
+  if (paramsOf && paramsOf !== p.workId) return
+  Object.assign(params, p.set)
+  if (p.presetId) activePresetId.value = p.presetId
+}
 // Update the active (user) preset with the live params.
 async function onUpdatePreset() {
   const p = presets.value.find((x) => x.id === activePresetId.value)
@@ -186,6 +195,7 @@ async function loadWorkIntoView(id: string) {
   try {
     const doc = await loadWork(id)
     Object.assign(params, (doc.params as Partial<PanelParams>) || {})
+    paramsOf = doc.id
     drafts.value = workToDrafts(doc)
     loadedWork.value = doc // the canvas watches this and rebuilds
   } catch (e) {
@@ -205,7 +215,7 @@ function onReloadWork() { if (loadedWork.value) loadWorkIntoView(loadedWork.valu
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
       :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate" @view-stack="viewStack"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
-      @new-work="onNewWork" @reload-work="onReloadWork" />
+      @new-work="onNewWork" @reload-work="onReloadWork" @agent-params="onAgentParams" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
       @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
       @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @view="viewStack" />

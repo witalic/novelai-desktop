@@ -63,6 +63,7 @@ const emit = defineEmits<{
   'new-work': []
   'reload-work': [] // a concurrent edit (409) → the view re-fetches the full work (params + stack + canvas)
   'view-stack': [string] // open the image viewer over the stack at this draft (the view owns the stack)
+  'agent-params': [{ workId: string; set: Partial<PanelParams>; presetId?: string }] // an agent set the station's settings (the view owns them)
 }>()
 
 const {
@@ -175,12 +176,13 @@ const { title, cover, vaultReady, workId, baseUpdatedAt, saveState, savedAt, mar
 // A concurrent edit (409) → the view re-fetches the FULL work (params + draft stack + canvas doc), not
 // just the canvas nodes, so the next save doesn't write stale params/stack over the fresh version (H3/#4).
 function reloadWork() { emit('reload-work') }
-// An agent's edits of this work, replayed over the live canvas (vault/agentOps): its title, combinations and
-// image metadata change; images it generated join the gallery's Quick access; its gallery layout and cover land;
-// gallery images it deleted leave their albums. Everything else stays as it is.
+// An agent's edits of this work, replayed over the live canvas (vault/agentOps): its title, station settings,
+// combinations and image metadata change; images it generated join the gallery's Quick access; its gallery layout
+// and cover land; gallery images it deleted leave their albums. Everything else stays as it is.
 function applyAgentOps(ops: AgentOp[]) {
   const edits = planAgentOps(ops, combos.value)
   if (edits.title !== undefined) title.value = edits.title
+  if (edits.params) emit('agent-params', { workId: workId.value, set: edits.params, presetId: edits.presetId }) // synchronous: lands in the replay
   combos.value = edits.combos
   for (const { image, snapshot } of edits.added) {
     if (findNode(image.id)) continue

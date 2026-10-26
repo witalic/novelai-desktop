@@ -2,7 +2,9 @@
  * unsaved edits of its own. Each operation sets what the agent set (the title, a combination, an image's metadata,
  * a gallery block, the cover) or removes what it removed; everything else in the copy stays as the user left it.
  * Replaying an edit twice changes nothing, so overlapping catch-ups are harmless. Pure → tested. */
-import type { CanvasNode, GalleryBlock, PersistedCombo, PersistedImage, PersistedSnapshot, WorkDoc } from '../types'
+import type {
+  CanvasNode, GalleryBlock, PanelParams, PersistedCombo, PersistedImage, PersistedSnapshot, WorkDoc,
+} from '../types'
 import { cloneCombos } from './combos'
 import { gridsOf, purgeImages, removeIdFromGrids } from './workOps'
 import { GALLERY } from './serialize'
@@ -29,10 +31,13 @@ export type AgentOp =
   | { op: 'images_deleted'; ids: string[] }
   | { op: 'images_added'; images: PersistedImage[]; snapshots: PersistedSnapshot[] } // generated, on disk already
   | { op: 'cover'; image_id: string }
+  | { op: 'params'; set: Partial<PanelParams>; preset_id?: string } // the station's settings — a preset's, if named
   | GalleryOp
 
 export interface AgentEdits {
   title?: string
+  params?: Partial<PanelParams> // the station settings to set (the rest stay as the copy has them)
+  presetId?: string // the preset those came from, the last one named
   combos: PersistedCombo[] // the copy's combinations with the agent's applied
   images: Map<string, ImageFields> // per image id, the metadata to set
   deleted: string[] // image ids to remove
@@ -99,9 +104,12 @@ export function planAgentOps(ops: AgentOp[], combos: PersistedCombo[]): AgentEdi
   const gallery: GalleryOp[] = []
   let title: string | undefined
   let cover: string | undefined
+  let params: Partial<PanelParams> | undefined
+  let presetId: string | undefined
   for (const o of ops) {
     if (o.op === 'title') title = o.title
     else if (o.op === 'cover') cover = o.image_id
+    else if (o.op === 'params') { params = { ...params, ...o.set }; presetId = o.preset_id ?? presetId }
     else if (isGalleryOp(o)) gallery.push(o)
     else if (o.op === 'combo') {
       const c = cloneCombos([o.combo])[0]
@@ -116,7 +124,7 @@ export function planAgentOps(ops: AgentOp[], combos: PersistedCombo[]): AgentEdi
       for (const im of o.images) added.set(im.id, { image: im, snapshot: snaps.get(im.snapshot_id ?? '') })
     }
   }
-  return { title, combos: next, images, deleted: [...deleted], added: [...added.values()], gallery, cover }
+  return { title, params, presetId, combos: next, images, deleted: [...deleted], added: [...added.values()], gallery, cover }
 }
 
 /** Catching up, one run at a time: a call during a run (another agent edit, a save's 409) makes it run once more
@@ -143,6 +151,7 @@ export function catchUpQueue(run: () => Promise<boolean>): () => Promise<boolean
 export function applyAgentOpsToDoc(doc: WorkDoc, ops: AgentOp[]): void {
   const edits = planAgentOps(ops, doc.combos || [])
   if (edits.title !== undefined) doc.title = edits.title
+  if (edits.params) doc.params = { ...doc.params, ...edits.params }
   doc.combos = edits.combos
   const have = new Set(doc.images.map((im) => im.id))
   for (const { image, snapshot } of edits.added) {

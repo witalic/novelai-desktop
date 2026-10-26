@@ -31,7 +31,7 @@ const PERMS: { group: string; items: { key: keyof AgentPermissions; name: string
   ] },
   { group: 'Works', items: [
     { key: 'works_write', name: 'Create and edit works',
-      desc: 'titles; image tags, descriptions and favorites; the gallery layout and cover' },
+      desc: 'titles; generation settings; image tags, descriptions and favorites; the gallery layout and cover' },
     { key: 'combos_write', name: 'Create and edit combinations', desc: 'ready block sets inside a work' },
     { key: 'works_delete', name: 'Delete images and combinations', desc: 'permanent', danger: true },
   ] },

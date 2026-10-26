@@ -167,7 +167,7 @@ while the app is open. It is **off by default**.
 | Browse the Library and works | `search_blocks` `get_blocks` `list_categories` `list_tags` `list_works` `get_work` `list_images` (with the combination each image was made from) `search_images` `get_image` (whole or a close-up crop) `contact_sheet` `get_gallery` `list_combinations` `list_presets` `get_catalog` `get_account` `count_tokens` `estimate_cost` |
 | Create and edit blocks | `create_blocks` (the Library import's rules — duplicates are skipped, a new category name makes the category) `update_block` |
 | Delete blocks *(off)* | `delete_blocks` |
-| Create and edit works | `create_work` `rename_work` `update_images` `edit_gallery` (sections, headings, text, albums, Quick access, the cover) |
+| Create and edit works | `create_work` `rename_work` `update_work_params` (the station's generation settings, or a preset) `update_images` `edit_gallery` (sections, headings, text, albums, Quick access, the cover) |
 | Create and edit combinations | `create_combination` `update_combination` |
 | Delete images and combinations *(off)* | `delete_images` `delete_combination` |
 | Generate images | `generate_images` (from a combination or blocks, with the work's settings or a preset's; the prompt is built as the station builds it, *unique tags* included) |

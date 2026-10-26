@@ -605,6 +605,54 @@ async def test_a_bad_gallery_op_changes_nothing_and_says_which(settings):
     assert [(r["kind"], r["action"]) for r in activity.recent()] == [("read", "Arrange a work's gallery")]
 
 
+async def test_an_agent_sets_the_station_and_the_app_replays_it(api, settings):
+    seed(settings)
+    doc = service.load_work(settings, "work-1")
+    doc.params = {"model": "nai-diffusion-5-full", "steps": 20, "seed": 77, "dedupe": False}
+    base = service.save_work(settings, doc)["updated_at"]
+    presets.save_preset(settings, PresetDoc(id="preset-portrait", name="Portrait", params=PresetParams(
+        steps=23, uc_preset=3, n_samples=2, dedupe=True)))
+    async with mcp_client(settings) as c:
+        out = await call_json(c, "update_work_params", {"work_id": "work-1", "preset_id": "preset-portrait", "steps": 24})
+        # the preset as the app applies it (image count too), the call's steps on top; the seed is the user's
+        assert {k: out["params"][k] for k in ("steps", "uc_preset", "n_samples", "dedupe", "seed")} == {
+            "steps": 24, "uc_preset": 3, "n_samples": 2, "dedupe": True, "seed": 77}
+        assert "steps" in out["changed"] and "model" not in out["changed"]  # only what differs is written
+        assert (await call_json(c, "update_work_params", {"work_id": "work-1", "steps": 24}))["changed"] == []
+        for args, message in [({"sampler": "k_nope"}, "No sampler “k_nope”"), ({"width": 830}, "multiples of 64"),
+                              ({"steps": 60}, "'steps'"), ({"model": "nai-x"}, "Unknown model"),
+                              ({"uc_preset": 9}, "'uc_preset'"), ({}, "Give the settings"),
+                              ({"steps": True}, "'steps'"), ({"width": "832"}, "'width'"),  # no lax coercion
+                              ({"preset_id": "preset-nope"}, "list_presets")]:
+            res = await call(c, "update_work_params", {"work_id": "work-1", **args})
+            assert res["isError"] and message in res["content"][0]["text"], (args, res)
+        cfg = await call_json(c, "update_work_params", {"work_id": "work-1", "cfg_rescale": 0.2, "quality_toggle": False})
+    stored = service.load_work(settings, "work-1")
+    assert (stored.params["steps"], stored.params["seed"], cfg["changed"]) == (24, 77, ["cfg_rescale", "quality_toggle"])
+    row = next(r for r in activity.recent() if r["kind"] == "write")
+    assert (row["action"], row["detail"]) == ("Changed the generation settings",
+                                              "of “Halloween” · cfg_rescale 0.2, quality_toggle off")  # values shown
+    preset_op, own_op = (await api.get("/api/agent/works/work-1/changes", params={"since": base})).json()["ops"]
+    # a preset lands whole in the open app, as its Apply does; a plain call only what changed — the seed never
+    assert (preset_op["preset_id"], preset_op["set"]["steps"], preset_op["set"]["model"]) == (
+        "preset-portrait", 24, "nai-diffusion-5-full")
+    assert own_op == {"op": "params", "set": {"cfg_rescale": 0.2, "quality_toggle": False}}
+    assert all("seed" not in op["set"] for op in (preset_op, own_op))
+
+
+async def test_a_value_the_station_keeps_from_another_model_stays_untouched(settings):
+    seed(settings)
+    doc = service.load_work(settings, "work-1")  # Furry Focus kept after switching to a model without it, as the app does
+    doc.params = {"model": "nai-diffusion-4-5-curated", "uc_preset": 7, "steps": 28}
+    service.save_work(settings, doc)
+    async with mcp_client(settings) as c:
+        assert (await call_json(c, "update_work_params", {"work_id": "work-1", "steps": 24}))["changed"] == ["steps"]
+        res = await call(c, "update_work_params", {"work_id": "work-1", "uc_preset": 7})  # but it can't be set anew
+        assert res["isError"] and "No UC preset 7" in res["content"][0]["text"]
+    assert service.load_work(settings, "work-1").params == {"model": "nai-diffusion-4-5-curated", "uc_preset": 7,
+                                                            "steps": 24}
+
+
 async def test_a_work_made_outside_the_app_gets_a_gallery_to_arrange(settings):
     seed(settings)  # work-1 has no canvas at all — as the works agents made before
     async with mcp_client(settings) as c:

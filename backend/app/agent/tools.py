@@ -1161,6 +1161,79 @@ def _estimate_cost(settings: Settings, args: dict) -> dict:
             "spent_today": store.spent_today(cfg), "refused_even_with_paid": refused[0] if refused else None}
 
 
+# The station's settings an agent may set — all but the seed (each generation picks its own unless the user fixes one).
+_STATION_KEYS = ("model", "width", "height", "steps", "scale", "sampler", "n_samples", "noise_schedule", "cfg_rescale",
+                 "quality_toggle", "uc_preset", "dedupe")
+
+
+def _station_check(values: dict, given: set[str]) -> dict:
+    """The station's settings, typed (strictly: no "832" for 832) — and the ones being set checked against what the
+    app offers for the model. What the station holds already stays as it is, as the app's own settings panel keeps a
+    value the model doesn't offer (marked unavailable) rather than dropping it."""
+    try:
+        p = GenerateParams.model_validate({"prompt": "-", **{k: values[k] for k in _GEN_PARAMS if k in values}},
+                                          strict=True)
+    except ValidationError as exc:
+        err = exc.errors()[0]
+        raise ToolError(f"Bad generation setting '{err['loc'][0]}': {err['msg']}.") from exc
+    catalog = get_catalog()
+    spec = next((m for m in catalog.models if m.id == p.model), None)
+    if "model" in given and spec is None:
+        raise ToolError(f"Unknown model “{p.model}” — get_catalog lists them.")
+    step = catalog.dim_limits.step
+    if any(k in given and getattr(p, k) % step for k in ("width", "height")):
+        raise ToolError(f"Width and height must be multiples of {step}.")
+    for key, label in (("steps", "steps"), ("scale", "a scale")):
+        span = getattr(spec, key) if spec else None
+        if key in given and span and not span.min <= getattr(p, key) <= span.max:
+            raise ToolError(f"{spec.label} takes {label} of {span.min:g}–{span.max:g}.")
+    samplers = spec.samplers if spec else [s.id for s in catalog.samplers]  # an unknown model: the app's whole list
+    if "sampler" in given and p.sampler not in samplers:
+        raise ToolError(f"No sampler “{p.sampler}” for this model — get_catalog lists them.")
+    if "noise_schedule" in given and p.noise_schedule not in {n.value for n in catalog.noise_schedules}:
+        raise ToolError(f"Unknown noise schedule “{p.noise_schedule}”.")
+    uc_presets = spec.uc_presets if spec else [u.value for u in catalog.uc_presets]
+    if "uc_preset" in given and p.uc_preset not in uc_presets:
+        raise ToolError(f"No UC preset {p.uc_preset} for this model — get_catalog lists them.")
+    return {**p.model_dump(include=set(_GEN_PARAMS)), "dedupe": _flag(values, "dedupe")}
+
+
+def _shown(value: object) -> str:
+    return ("on" if value else "off") if isinstance(value, bool) else str(value)
+
+
+def _update_work_params(settings: Settings, args: dict) -> Written | dict:
+    preset_id = _str(args, "preset_id")
+    preset = _preset(settings, args)
+    given = {k: args[k] for k in _STATION_KEYS if k in args}
+    if preset is None and not given:
+        raise ToolError("Give the settings to change, or a preset_id.")
+    new = {**(preset.model_dump() if preset else {}), **given}  # as the app applies a preset, the call's on top
+    changed: dict = {}
+
+    def change(doc: WorkDoc) -> list[dict]:
+        station = {k: doc.params[k] for k in _STATION_KEYS if k in doc.params}
+        checked = _station_check({**station, **new}, set(new))
+        changed.clear()
+        changed.update({k: checked[k] for k in new if doc.params.get(k) != checked[k]})
+        if not changed:
+            return []
+        doc.params.update(changed)
+        if preset is None:
+            return [{"op": "params", "set": dict(changed)}]
+        # A preset lands whole in the open app, as its Apply does — over the user's unsaved station edits too.
+        return [{"op": "params", "set": {k: checked[k] for k in new}, "preset_id": preset_id}]
+
+    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    result = {"work_id": doc.id, "params": _recipe_of(doc.params), "changed": list(changed)}
+    if not ops:
+        return result
+    names = presets.list_presets(settings) if preset else []
+    via = next((f" from “{p.name}”" for p in names if p.id == preset_id), "")
+    shown = ", ".join(f"{k} {_shown(v)}" for k, v in changed.items())  # values: some raise what Generate costs
+    return Written(result, "Changed the generation settings", f"of {_title(doc)}{via} · {shown}", work_id=doc.id)
+
+
 def _shown_params(params: GenerateParams) -> dict:
     return {k: getattr(params, k) for k in ("model", "width", "height", "steps", "n_samples")}
 
@@ -1469,6 +1542,19 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
                  "required": ["op"]}}},
           "required": ["work_id", "ops"]},
          "works_write", _edit_gallery),
+    Tool("update_work_params", "Set a work's generation settings",
+         "Set the generation settings a work keeps — the station's: what the user generates with when they open the "
+         "work, and what generate_images and estimate_cost start from. A preset (preset_id) applies as the app's "
+         "Apply does, image count included, and the fields given go on top. Checked against what the model offers "
+         "(get_catalog). The seed is not set here.",
+         {"type": "object", "properties": {
+             "work_id": {"type": "string"},
+             **{k: v for k, v in _GEN_FIELDS.items() if k in _STATION_KEYS},
+             "model": {"type": "string", "description": "a model id from get_catalog"},
+             "n_samples": {"type": "integer", "minimum": 1, "maximum": 4, "description": "images per generation"},
+             "preset_id": {"type": "string", "description": "a generation preset (list_presets) to apply"}},
+          "required": ["work_id"]},
+         "works_write", _update_work_params),
     Tool("delete_images", "Delete images", "Remove gallery images from a work for good (files included).",
          {"type": "object", "properties": {"work_id": {"type": "string"}, "image_ids": {
              "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_PAGE}},

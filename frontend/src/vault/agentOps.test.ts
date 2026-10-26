@@ -26,6 +26,16 @@ describe('planAgentOps', () => {
     expect(mine[1].name).toBe('Other') // the copy passed in is never mutated
   })
 
+  it('sets the station settings the agent set — the latest of each, and the preset it named last', () => {
+    const edits = planAgentOps([
+      { op: 'params', set: { steps: 23, uc_preset: 3 }, preset_id: 'preset-a' },
+      { op: 'params', set: { steps: 24 } },
+    ], mine)
+    expect(edits.params).toEqual({ steps: 24, uc_preset: 3 })
+    expect(edits.presetId).toBe('preset-a')
+    expect(planAgentOps([{ op: 'title', title: 'x' }], mine).params).toBeUndefined() // nothing to set: the station stays
+  })
+
   it('removes what the agent removed', () => {
     const edits = planAgentOps([
       { op: 'image', id: 'img-1', set: { favorite: true } },
@@ -82,13 +92,16 @@ describe('applyAgentOpsToDoc', () => {
         { id: 'img-1', type: 'image' }, { id: 'img-2', type: 'image' },
       ] },
     } as unknown as WorkDoc
+    doc.params = { steps: 20, seed: 77 }
     applyAgentOpsToDoc(doc, [
       { op: 'title', title: 'Renamed' },
+      { op: 'params', set: { steps: 24, n_samples: 2 } },
       { op: 'image', id: 'img-2', set: { description: 'moonlit' } },
       { op: 'images_deleted', ids: ['img-1'] },
       { op: 'combo_deleted', id: 'c-1' },
     ])
     expect(doc.title).toBe('Renamed')
+    expect(doc.params).toEqual({ steps: 24, seed: 77, n_samples: 2 }) // what the agent set; the seed stays
     expect(doc.combos).toEqual([])
     expect(doc.images.map((im) => [im.id, im.description])).toEqual([['img-2', 'moonlit']])
     expect(doc.preview_image_id).toBe('img-2')

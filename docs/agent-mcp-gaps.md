@@ -38,7 +38,14 @@ Landing in blocks, one commit each:
      open (`serialize.ts` `healAnchors`). An emptied gallery no longer re-seeds itself on reload.
    - #11 is derived, not stored: an image belongs to the combinations whose prompt blocks are its own. A
      combination edited since no longer matches.
-3. **Station params:** #8.
+3. **Station params — done:** #8.
+   - `update_work_params` sets the work's station settings: every field but the seed, or a preset (applied
+     as the app's Apply does, image count included) with fields on top. Values are typed strictly, and the
+     ones being set are checked against what the model offers; a value the station already keeps from
+     another model stays, as the app's settings panel keeps it. Only what differs is written, and the
+     activity row shows the new values.
+   - The open app takes them into its station (a named preset lands whole and becomes the active one); the
+     Works editor into its copy.
 4. **Housekeeping:** #18, #19, #20.
 
 ## What existed in v1.2 (before the blocks above)
