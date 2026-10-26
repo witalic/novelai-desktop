@@ -38,8 +38,9 @@ def set_active(body: VaultPath, settings: Settings = Depends(get_settings)) -> V
 
 
 @router.delete("/vaults", response_model=VaultConfig)
-def delete_vault(dir: str = Query(...), settings: Settings = Depends(get_settings)) -> VaultConfig:
-    return manager.delete_vault(settings, dir)
+def delete_vault(dir: str = Query(...), keep_files: bool = False,
+                 settings: Settings = Depends(get_settings)) -> VaultConfig:
+    return manager.delete_vault(settings, dir, keep_files)
 
 
 @router.post("/move", response_model=MoveStatus)

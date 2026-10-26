@@ -6,6 +6,7 @@ import { ApiError, getAppSettings, saveWork } from '../api'
 import { canvasToWork } from '../vault/serialize'
 import { newId } from '../vault/ids'
 import { useToast } from './useToast'
+import { useVault, vaultMayBeAway } from './useVault'
 import { catchUpQueue, type AgentOp } from '../vault/agentOps'
 import type { GenResult, PanelParams, PersistedCombo, WorkDoc } from '../types'
 
@@ -34,6 +35,7 @@ export function useAutosave({
   nodes, viewport, params, drafts, favorites, combos, onNoVault, onSaved, onConflict, onGone, agentChanges, applyAgentOps,
 }: Deps) {
   const toast = useToast()
+  const { unreachable: vaultAway } = useVault()
   const title = ref('')
   const cover = ref<string | null>(null) // the chosen cover image (canvasToWork falls back to the first gallery image)
   const vaultReady = ref(false)
@@ -130,6 +132,8 @@ export function useAutosave({
   async function doSave(conflicts = 0): Promise<boolean> {
     const key = changeKey()
     if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return true }
+    // The vault can't be reached: don't ship the whole work (images and all) just to hear so — it waits for it.
+    if (vaultAway.value) { dirty = true; saveState.value = 'dirty'; return false }
     saveState.value = 'saving'
     const wid = workId.value
     try {
@@ -158,6 +162,11 @@ export function useAutosave({
       if (e instanceof ApiError && e.status === 404 && onGone && conflicts < 5) { // gone from the vault while open
         onGone(wid) // what isn't saved stays, as a new work (no base: it can't be "gone" again) …
         return isMeaningful() ? doSave(conflicts + 1) : true // … and is saved as that
+      }
+      if (vaultMayBeAway(e)) { // the vault can't be reached: the save waits for it — the strip says why, no toast
+        dirty = true
+        saveState.value = 'dirty'
+        return false
       }
       dirty = true
       saveState.value = 'dirty'

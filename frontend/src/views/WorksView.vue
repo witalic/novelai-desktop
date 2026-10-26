@@ -4,10 +4,13 @@ import { ApiError, deleteWork, listWorks, type WorkSort } from '../api'
 import { announceWorkDeleted, onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import { useVault, vaultMayBeAway } from '../composables/useVault'
 import WorkEditor from './WorkEditor.vue'
 import type { WorkListItem } from '../types'
 
 const emit = defineEmits<{ open: [string] }>()
+const { unreachable: vaultAway, onBack: onVaultBack } = useVault()
+onUnmounted(onVaultBack(() => { if (!openWork.value) fetchPage() })) // back: the list fills again
 
 // The Works tab shows either the list or a single work's view/editor (full-bleed).
 const openWork = ref<{ id: string; mode: 'view' | 'edit' } | null>(null)
@@ -66,6 +69,9 @@ async function fetchPage(p = page.value) {
     // 409 = no vault folder chosen yet — a normal first-run state, not an error.
     if (e instanceof ApiError && e.status === 409) {
       noVault.value = true
+      items.value = []
+      total.value = 0
+    } else if (vaultMayBeAway(e)) { // the list says so (and the app's strip), no toast
       items.value = []
       total.value = 0
     } else {
@@ -139,7 +145,12 @@ onAgentNotice((n) => {
         <button class="dirbtn" :title="direction === 'asc' ? 'Ascending' : 'Descending'" @click.stop="toggleDir">{{ direction === 'asc' ? '↑' : '↓' }}</button>
       </div>
 
-      <div v-if="noVault" class="empty">
+      <div v-if="vaultAway" class="empty">
+        <div class="emoji away">⚠</div>
+        <p><b>Your works are in a vault that can't be reached.</b><br />They show up here again as soon as it's back.</p>
+      </div>
+
+      <div v-else-if="noVault" class="empty">
         <div class="emoji">▤</div>
         <p>No vault folder chosen yet. Pick one in <b>Settings</b> to start saving works to disk.</p>
       </div>
@@ -211,6 +222,8 @@ onAgentNotice((n) => {
 .linkbtn { border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; padding: 0; }
 .empty { max-width: 420px; margin: 12vh auto; text-align: center; color: var(--text-dim); }
 .empty .emoji { font-size: 34px; color: var(--text-faint); margin-bottom: 12px; }
+.empty .emoji.away { color: var(--warn-fg); }
+.empty b { color: var(--text); }
 .empty p { font-size: 13px; line-height: 1.6; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
 .card { text-align: left; padding: 0; background: var(--surface-1); border: 1px solid var(--border);

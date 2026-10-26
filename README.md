@@ -31,7 +31,9 @@ worked* is hard to manage. This app stitches generation and storage into one cyc
   output stack, and one-click save into the vault.
 - **Vault** — files on disk (a work is a folder with `work.json` + PNGs + thumbnails) over a
   rebuildable SQLite index: paginated work listing, delete with image garbage-collection, and
-  multiple vaults with safe folder moves.
+  multiple vaults with safe folder moves. A vault on a network share or a drive that drops away is
+  waited for, never swapped for another one: the app says so, keeps what you have open, and saves
+  once it's back.
 - **Prompt library** — categories, tags, and reusable prompt blocks you drop onto the canvas.
 - **Block combinations** — save the station's block set as a named combination in the work, then
   replace or extend the station with it in one click.

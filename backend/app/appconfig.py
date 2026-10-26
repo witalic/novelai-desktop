@@ -11,8 +11,13 @@ import logging
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
+
+from fastapi import HTTPException
 
 from app.agent import config as agentcfg
 from app.settings import Settings
@@ -77,10 +82,22 @@ def _dedupe(paths: list[str]) -> list[str]:
 
 
 def load(settings: Settings) -> dict:
-    try:
-        raw = json.loads((config_dir(settings) / _FILE).read_text("utf-8"))
-    except (OSError, json.JSONDecodeError):
-        raw = None  # missing or corrupt → all defaults
+    """The settings — all defaults only when there is no file yet (or it is corrupt). A file that exists but can't be
+    read right now (held by another program a moment) raises instead: taken for a first run, it would be written over
+    with defaults, the vault list and agent settings gone."""
+    path = config_dir(settings) / _FILE
+    with _lock:  # never mid-replace by one of our own writers
+        for attempt in range(3):
+            try:
+                raw = json.loads(path.read_text("utf-8"))
+                break
+            except (FileNotFoundError, json.JSONDecodeError):
+                raw = None  # first run, or corrupt → all defaults
+                break
+            except OSError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
     return _coerce(raw, settings)
 
 
@@ -115,8 +132,41 @@ def patch(settings: Settings, changes: dict) -> dict:
     return update(settings, apply)
 
 
+class VaultUnavailable(HTTPException):
+    """The active vault's folder can't be reached (a NAS asleep, the network down, a drive unplugged). Never a reason
+    to switch to another vault — the user decides that in Settings → Vaults; the app waits for it to come back."""
+
+    def __init__(self, folder: str) -> None:
+        super().__init__(status_code=503, detail=f"The vault folder {folder} can't be reached.")
+
+
+_PROBE_TIMEOUT_S = 2.0
+_PROBE_TTL_S = 2.0
+_probe_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vault-probe")
+_probes: dict[str, tuple[float, Future]] = {}
+_probe_lock = threading.Lock()
+
+
+def reachable(folder: Path) -> bool:
+    """Whether a vault folder answers. A share whose host is down can take far longer than a request should wait to say
+    so, holding one of the server's threads all the while — so this gives up after 2 s (unreachable), asks once for
+    everyone waiting on the same folder, and remembers the answer for 2 s (a gallery's thumbnails don't each ask)."""
+    key = str(folder)
+    now = time.monotonic()
+    with _probe_lock:
+        probe = _probes.get(key)
+        if probe is None or (probe[1].done() and now - probe[0] > _PROBE_TTL_S):
+            probe = (now, _probe_pool.submit(folder.is_dir))
+            _probes[key] = probe
+    try:
+        return bool(probe[1].result(timeout=_PROBE_TIMEOUT_S))
+    except (FutureTimeout, OSError):
+        return False
+
+
 def active_vault(settings: Settings) -> Path:
-    """Resolve the active vault, creating + registering the default on first run — never blocks."""
+    """Resolve the active vault, creating + registering the default on first run. A chosen one that can't be reached is
+    a VaultUnavailable — waited for, never replaced."""
     if settings.vault.dir:  # explicit env / test override wins
         target = Path(settings.vault.dir)
         if not vaultcfg.is_initialized(target):
@@ -124,12 +174,18 @@ def active_vault(settings: Settings) -> Path:
         return target
     data = load(settings)
     chosen = data.get("active_vault")
-    if chosen and Path(chosen).is_dir():
+    if chosen:
         target = Path(chosen)
+        if not reachable(target):
+            raise VaultUnavailable(chosen)
         if not vaultcfg.is_initialized(target):
+            # Every vault is marked when it's added. An unmarked folder with no works in it is not the vault but where
+            # it should be — an empty mount point of a share that isn't mounted — so it's waited for, not filled.
+            if not (target / "works").is_dir():
+                raise VaultUnavailable(chosen)
             vaultcfg.init_vault(target)
         return target
-    # first run (or the active folder vanished): fall back to the default and register it atomically
+    # first run: the default vault, registered atomically
     default = vaultcfg.proposed_default(settings)
     vaultcfg.init_vault(default)
 

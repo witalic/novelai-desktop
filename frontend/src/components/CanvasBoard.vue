@@ -9,6 +9,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
 import { agentWorkChanges, getVaultConfig, listCategories, resolveBlocks } from '../api'
 import { editedWork, onAgentNotice } from '../composables/useAgentNotices'
+import { useVault } from '../composables/useVault'
 import { applyGalleryOps, applyStarred, planAgentOps, type AgentOp } from '../vault/agentOps'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
@@ -207,6 +208,9 @@ function applyAgentOps(ops: AgentOp[]) {
 }
 // What agents change elsewhere: this work → catch up now; the Library → the prompt widget, the category palette
 // and the combinations' drift badges re-read it.
+// The vault can't be reached: saves wait (the chip and the app's strip say so); once it's back, what waited is saved.
+const { unreachable: vaultAway, onBack: onVaultBack } = useVault()
+onUnmounted(onVaultBack(() => { flushIfDirty() }))
 onAgentNotice((n) => {
   if (editedWork(n, workId.value)) onAgentEdit()
   if (n.kind === 'work_deleted' && n.work_id === workId.value) onWorkDeleted(n.work_id)
@@ -1340,9 +1344,21 @@ async function checkVault() {
 // keydown handler (Ctrl+S / Delete) is scoped to onActivated/onDeactivated: CanvasBoard stays mounted under
 // KeepAlive, so a global Delete would otherwise remove canvas nodes while another view is showing (H8).
 let disposeBeforeQuit: (() => void) | null = null
+// Closing the app: save first. What can't be saved (the vault can't be reached, a failed save) is never thrown away
+// unasked — the user decides, and the window stays unless they choose to lose it.
+async function quitting(hold: () => void): Promise<boolean> {
+  if ((await flush()) || !hasUnsaved()) return true
+  hold()
+  return confirm({
+    title: 'Quit without saving?', danger: true, confirmLabel: 'Quit and lose them',
+    message: vaultAway.value
+      ? "The vault can't be reached, so your latest changes aren't saved. Quit anyway and lose them? (Keep the app open and they're saved once the vault is back.)"
+      : "Your latest changes couldn't be saved. Quit anyway and lose them?",
+  })
+}
 onMounted(() => {
   window.addEventListener('beforeunload', onBeforeUnload)
-  disposeBeforeQuit = onBeforeQuit(async () => { await flush() }) // Electron waits for the full save before quitting
+  disposeBeforeQuit = onBeforeQuit(quitting) // Electron waits for the full save before quitting
 })
 onUnmounted(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)
@@ -1493,6 +1509,7 @@ function startName(data: any, e: MouseEvent) {
       <input class="projname" v-model="title" placeholder="Untitled project" />
       <div class="spacer"></div>
       <span v-if="error" class="chip err">{{ error }}</span>
+      <span v-if="vaultAway && saveState === 'dirty'" class="chip warn">● Not saved — vault unavailable</span>
       <button class="barbtn" @click="newWork"><span>＋</span> New work</button>
       <button class="savebtn" :class="saveState" :disabled="saveState === 'saving'" @click="manualSave"
         :title="saveState === 'saved' ? 'Up to date — click or ⌘/Ctrl-S to save now' : 'Save (⌘/Ctrl-S)'">
@@ -1764,7 +1781,7 @@ function startName(data: any, e: MouseEvent) {
 .chip{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;padding:4px 9px;border-radius:20px;background:var(--surface-2);border:1px solid var(--border);color:var(--text-dim)}
 .chip.err{color:#e2483d;border-color:color-mix(in srgb,#e2483d 40%,var(--border))}
 .chip.busy{border:0;background:transparent;padding:0}
-.chip.warn{color:#e8913a;border-color:color-mix(in srgb,#b65c02 45%,var(--border));background:color-mix(in srgb,#b65c02 14%,var(--surface-1))}
+.chip.warn{color:var(--warn-fg);border-color:color-mix(in srgb,var(--warn) 45%,var(--border));background:color-mix(in srgb,var(--warn) 14%,var(--surface-1))}
 /* Save button that also reflects state (idle/dirty → action, saving, saved → subtle confirmation) */
 .savebtn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);border-radius:var(--radius);padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer}
 .savebtn .ic{font-size:12px;line-height:1}

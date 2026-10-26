@@ -4,8 +4,6 @@ Files on disk are authoritative; the SQLite index is opened per call and rebuilt
 """
 import json
 import logging
-import shutil
-import sys
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -49,7 +47,7 @@ def _stamp_after(stored: str | None) -> str:
 
 
 def _vault(settings: Settings) -> Path:
-    # Never blocks: resolves the active vault, creating + registering the default on first run.
+    # The active vault (the default, created on first run); a 503 while it can't be reached — waited at most 2 s for.
     return appconfig.active_vault(settings)
 
 
@@ -169,26 +167,10 @@ def delete_work(settings: Settings, work_id: str) -> dict:
             index.remove_work(conn, work_id)
         finally:
             conn.close()
-        if work_dir.is_dir():
-            _remove_dir(work_dir)
+        if work_dir.is_dir() and (held := layout.remove_tree(work_dir)):
+            log.warning("Deleted %s, but %d file(s) in use by another program stay behind: %s",
+                        work_dir.name, len(held), ", ".join(held[:5]))
     return {"deleted": work_id}
-
-
-def _remove_dir(path: Path) -> None:
-    """Delete a folder as far as it goes: what another program holds open stays behind (logged), the rest is removed."""
-    held: list[str] = []
-
-    def skip(_func: object, name: str, _exc: object) -> None:
-        if not Path(name).is_dir():  # a folder that stays because of what is in it isn't news
-            held.append(Path(name).name)
-
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=skip)
-    else:
-        shutil.rmtree(path, onerror=lambda func, name, info: skip(func, name, info))
-    if held:
-        log.warning("Deleted %s, but %d file(s) in use by another program stay behind: %s",
-                    path.name, len(held), ", ".join(held[:5]))
 
 
 def list_works(settings: Settings, page: int, per_page: int,

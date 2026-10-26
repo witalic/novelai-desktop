@@ -16,6 +16,7 @@ class VaultInfo(BaseModel):
     dir: str
     initialized: bool
     writable: bool
+    reachable: bool  # the folder answers now (a vault on a share or a drive may not, for a while)
     active: bool
 
 

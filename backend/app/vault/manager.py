@@ -11,13 +11,19 @@ from fastapi import HTTPException
 from app import appconfig
 from app.settings import Settings
 from app.vault import config as vaultcfg
+from app.vault import layout
 from app.vault.models import AppSettings, MoveStatus, PatchSettings, VaultConfig, VaultInfo
 
 log = logging.getLogger(__name__)
 
 
 def get_config(settings: Settings) -> VaultConfig:
-    active_path = appconfig.active_vault(settings)  # ensures a default exists on first run
+    """The vault list — readable whether or not the active vault can be reached right now (its row says so), so the
+    user can always switch."""
+    try:
+        active_path = appconfig.active_vault(settings)  # ensures a default exists on first run
+    except appconfig.VaultUnavailable:
+        active_path = None
     data = appconfig.load(settings)
     vaults = list(data["vaults"])
     active = data["active_vault"]
@@ -25,11 +31,12 @@ def get_config(settings: Settings) -> VaultConfig:
         active = str(active_path)
         if active not in vaults:
             vaults = [active, *vaults]
-    infos = [
-        VaultInfo(dir=v, initialized=vaultcfg.is_initialized(Path(v)),
-                  writable=vaultcfg.writable(Path(v)), active=(v == active))
-        for v in vaults
-    ]
+    infos = []
+    for v in vaults:
+        reachable = appconfig.reachable(Path(v))  # asked once per folder (and the active one just was)
+        infos.append(VaultInfo(dir=v, initialized=reachable and vaultcfg.is_initialized(Path(v)),
+                               writable=reachable and vaultcfg.writable(Path(v)), reachable=reachable,
+                               active=(v == active)))
     return VaultConfig(active=active, vaults=infos, proposed_default=str(vaultcfg.proposed_default(settings)))
 
 
@@ -58,8 +65,9 @@ def set_active(settings: Settings, dir_str: str) -> VaultConfig:
     return get_config(settings)
 
 
-def delete_vault(settings: Settings, dir_str: str) -> VaultConfig:
-    """Physically delete the vault folder and drop it from the list (destructive — the UI warns)."""
+def delete_vault(settings: Settings, dir_str: str, keep_files: bool = False) -> VaultConfig:
+    """Physically delete the vault folder and drop it from the list (destructive — the UI warns). ``keep_files``: only
+    drop it from the list — a vault that can't be reached, which nothing here may then touch should it come back."""
     if _move["active"]:  # don't rmtree a vault while a move is copying/removing folders
         raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
     target = Path(dir_str).expanduser()
@@ -67,13 +75,14 @@ def delete_vault(settings: Settings, dir_str: str) -> VaultConfig:
     data = appconfig.load(settings)
     if ts not in data["vaults"]:
         raise HTTPException(status_code=404, detail="Vault is not in the list.")
-    if target.is_dir() and not vaultcfg.is_initialized(target):
-        raise HTTPException(status_code=400, detail="Refusing to delete a folder that isn't a vault.")
-    try:
-        if target.is_dir():
-            shutil.rmtree(target)
-    except OSError as exc:
-        raise HTTPException(status_code=400, detail=f"Could not delete the folder: {exc}") from exc
+    if not keep_files:
+        if target.is_dir() and not vaultcfg.is_initialized(target):
+            raise HTTPException(status_code=400, detail="Refusing to delete a folder that isn't a vault.")
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"Could not delete the folder: {exc}") from exc
 
     def drop(d: dict) -> None:
         d["vaults"] = [v for v in d["vaults"] if v != ts]
@@ -118,28 +127,52 @@ def start_move(settings: Settings, src_str: str, dst_str: str) -> MoveStatus:
     return move_status()
 
 
+def _carried(f: Path) -> bool:
+    """What a move copies: the vault's own files — not OS litter, writes still in flight (*.tmp), or the index (open on
+    and off as the app reads it; the copy rebuilds its own from the works)."""
+    return not (layout.is_os_litter(f) or f.suffix == ".tmp" or f.name.startswith(".index.sqlite"))
+
+
 def _run_move(settings: Settings, src: Path, dst: Path) -> None:
+    """Copy the vault, switch to the copy once it is whole, then remove the source. In that order: a source that can't
+    be fully removed (a file another program holds, as Explorer does Thumbs.db on a share) only leaves litter behind —
+    never a half-deleted vault still in use. A failed copy leaves the vault where it was and takes the partial copy
+    away again (the target was empty), so the move can simply be retried."""
+    relinked = False
+    existed = dst.exists()  # an empty folder the user picked stays, emptied again
     try:
-        _move["total"] = sum(1 for f in src.rglob("*") if f.is_file())
+        files = [f for f in src.rglob("*") if f.is_file() and _carried(f)]
+        _move["total"] = len(files)
         dst.mkdir(parents=True, exist_ok=True)
-        for f in src.rglob("*"):
+        for d in (d for d in src.rglob("*") if d.is_dir()):
+            (dst / d.relative_to(src)).mkdir(parents=True, exist_ok=True)
+        for f in files:
             target = dst / f.relative_to(src)
-            if f.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
                 shutil.copy2(f, target)
-                _move["done"] += 1
-        shutil.rmtree(src)
+            except FileNotFoundError:
+                if f.exists():
+                    raise
+                log.info("Skipped %s while moving the vault — it went away meanwhile", f.name)
+            _move["done"] += 1
 
         def relink(d: dict) -> None:
             d["vaults"] = list(dict.fromkeys([str(dst) if v == str(src) else v for v in d["vaults"]]))
             if d["active_vault"] == str(src):
                 d["active_vault"] = str(dst)
         appconfig.update(settings, relink)
+        relinked = True
+        if held := layout.remove_tree(src):
+            log.warning("Moved the vault to %s, but %d file(s) in use by another program stay in %s: %s",
+                        dst, len(held), src, ", ".join(held[:5]))
     except Exception as exc:  # noqa: BLE001 — surface any failure to the poller, don't crash the thread
         _move["error"] = str(exc)
         log.exception("Vault move failed")
+        if not relinked and dst.exists():
+            layout.remove_tree(dst)
+            if existed:
+                dst.mkdir(exist_ok=True)
     finally:
         _move["active"] = False
 

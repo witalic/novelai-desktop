@@ -6,11 +6,15 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('electronAPI', {
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   openPath: (target) => ipcRenderer.invoke('shell:openPath', target),
-  // On window close, main asks the renderer to flush unsaved work before the app exits. Returns a
-  // disposer so the caller can unregister on unmount — otherwise re-registrations stack listeners.
+  // On window close, main asks the renderer to flush unsaved work before the app exits. The handler answers
+  // whether to go on: false keeps the window (what couldn't be saved stays), and it calls `hold()` before
+  // asking the user, so main stops its stuck-renderer timeout. Returns a disposer so the caller can
+  // unregister on unmount — otherwise re-registrations stack listeners.
   onBeforeQuit: (handler) => {
     const listener = async () => {
-      try { await handler() } finally { ipcRenderer.send('app:quit-ready') }
+      let quit = true
+      try { quit = (await handler(() => ipcRenderer.send('app:quit-hold'))) !== false } catch { /* quit anyway */ }
+      ipcRenderer.send(quit ? 'app:quit-ready' : 'app:quit-cancel')
     }
     ipcRenderer.on('app:before-quit', listener)
     return () => ipcRenderer.removeListener('app:before-quit', listener)

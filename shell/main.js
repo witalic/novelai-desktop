@@ -70,16 +70,32 @@ function createWindow (apiOrigin) {
   win.on('maximize', sendMaximized)
   win.on('unmaximize', sendMaximized)
 
-  // Give the renderer a chance to flush unsaved work before the window closes.
+  // Give the renderer a chance to flush unsaved work before the window closes — and, when that fails, to ask the
+  // user (it may keep the window: quit-cancel). While it asks (quit-hold) the stuck-renderer timeout is off.
   let quitting = false
+  let asking = false
   win.on('close', (e) => {
     if (quitting) return
     e.preventDefault()
-    let done = false
-    const finish = () => { if (done) return; done = true; quitting = true; win.destroy() }
-    ipcMain.once('app:quit-ready', finish)
+    if (asking) return // closed again while the renderer is still deciding
+    asking = true
+    const onReady = () => settle(true)
+    const onCancel = () => settle(false)
+    const onHold = () => clearTimeout(timer)
+    const settle = (quit) => {
+      if (!asking) return
+      asking = false
+      clearTimeout(timer)
+      ipcMain.removeListener('app:quit-ready', onReady)
+      ipcMain.removeListener('app:quit-cancel', onCancel)
+      ipcMain.removeListener('app:quit-hold', onHold)
+      if (quit) { quitting = true; win.destroy() }
+    }
+    ipcMain.on('app:quit-ready', onReady)
+    ipcMain.on('app:quit-cancel', onCancel)
+    ipcMain.on('app:quit-hold', onHold)
+    const timer = setTimeout(() => settle(true), 10000) // a stuck renderer — generous so a large real save can finish
     win.webContents.send('app:before-quit')
-    setTimeout(finish, 10000) // safety fallback for a stuck renderer — generous so a large real save can finish
   })
 }
 

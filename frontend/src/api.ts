@@ -227,6 +227,7 @@ export interface VaultInfo {
   dir: string
   initialized: boolean
   writable: boolean
+  reachable: boolean // the folder answers now (a vault on a share or a drive may not, for a while)
   active: boolean
 }
 export interface VaultConfig {
@@ -272,9 +273,10 @@ export async function setActiveVault(dir: string): Promise<VaultConfig> {
   }), 'Failed to switch vault')
 }
 
-export async function deleteVault(dir: string): Promise<VaultConfig> {
-  return jsonOrThrow(await fetch(`/api/vault/vaults?dir=${encodeURIComponent(dir)}`, { method: 'DELETE' }),
-    'Failed to delete vault')
+// `keepFiles`: only drop it from the list (a vault that can't be reached) — its folder is never touched.
+export async function deleteVault(dir: string, keepFiles = false): Promise<VaultConfig> {
+  const q = `dir=${encodeURIComponent(dir)}${keepFiles ? '&keep_files=true' : ''}`
+  return jsonOrThrow(await fetch(`/api/vault/vaults?${q}`, { method: 'DELETE' }), 'Failed to delete vault')
 }
 
 export async function startMoveVault(src: string, dst: string): Promise<MoveStatus> {

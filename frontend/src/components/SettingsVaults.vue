@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /* Settings → Vaults: the vault folders on disk — add one, make one active, open, move or delete it. */
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   addVault, deleteVault, getVaultConfig, moveStatus, setActiveVault, startMoveVault, type VaultConfig,
 } from '../api'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
+import { useVault } from '../composables/useVault'
 import { browseFolder, openInFileManager } from '../electron'
 
 const { push } = useToast()
@@ -21,6 +22,9 @@ async function loadCfg() {
   try { cfg.value = await getVaultConfig() } catch (e) { push(e instanceof Error ? e.message : 'Failed to load vaults', 'err') }
 }
 onMounted(loadCfg)
+// The active vault went away or came back (the app's strip, Try again): the rows follow.
+const { unreachable, check } = useVault()
+watch(unreachable, loadCfg)
 onUnmounted(() => { if (movePoll) clearInterval(movePoll) })
 
 async function addFolder() {
@@ -28,14 +32,14 @@ async function addFolder() {
   const dir = await browseFolder('Choose a vault folder')
   if (!dir) return
   busy.value = true
-  try { cfg.value = await addVault(dir); push('Vault added and activated', 'ok') }
+  try { cfg.value = await addVault(dir); push('Vault added and activated', 'ok'); check() }
   catch (e) { push(e instanceof Error ? e.message : 'Could not add vault', 'err') }
   finally { busy.value = false }
 }
 async function switchTo(dir: string) {
   if (busy.value || moving.value) return
   busy.value = true
-  try { cfg.value = await setActiveVault(dir); push('Switched active vault', 'ok') }
+  try { cfg.value = await setActiveVault(dir); push('Switched active vault', 'ok'); check() } // the strip follows
   catch (e) { push(e instanceof Error ? e.message : 'Could not switch', 'err') }
   finally { busy.value = false }
 }
@@ -47,8 +51,22 @@ async function removeVault(dir: string) {
   })
   if (!ok) return
   busy.value = true
-  try { cfg.value = await deleteVault(dir); push('Vault deleted', 'ok') }
+  try { cfg.value = await deleteVault(dir); push('Vault deleted', 'ok'); check() } // the active one may have changed
   catch (e) { push(e instanceof Error ? e.message : 'Could not delete', 'err') }
+  finally { busy.value = false }
+}
+// A vault that can't be reached (a share that's gone for good) leaves the list — its folder isn't touched, even
+// should it come back.
+async function forgetVault(dir: string) {
+  const ok = await confirm({
+    title: 'Remove from the list',
+    message: `Remove this vault from the list? Its folder can't be reached and isn't touched — add it again any time.\n\n${dir}`,
+    confirmLabel: 'Remove from list',
+  })
+  if (!ok) return
+  busy.value = true
+  try { cfg.value = await deleteVault(dir, true); push('Removed from the list', 'ok'); check() }
+  catch (e) { push(e instanceof Error ? e.message : 'Could not remove', 'err') }
   finally { busy.value = false }
 }
 async function moveVaultRow(dir: string) {
@@ -97,13 +115,16 @@ async function moveVaultRow(dir: string) {
             <div class="vpath" :title="v.dir">{{ v.dir }}</div>
             <div class="vmeta">
               <span v-if="v.active" class="tag">Active</span>
-              <span v-if="!v.writable" class="warn">read-only</span>
+              <span v-if="!v.reachable" class="warn">Can't be reached</span>
+              <span v-else-if="!v.writable" class="warn">read-only</span>
             </div>
           </div>
-          <button v-if="!v.active" class="gbtn" :disabled="busy || moving" @click="switchTo(v.dir)">Make active</button>
+          <!-- a folder that can't be reached can't be switched to, copied or safely removed — until it's back -->
+          <button v-if="!v.active" class="gbtn" :disabled="busy || moving || !v.reachable" @click="switchTo(v.dir)">Make active</button>
           <button class="gbtn" :disabled="busy || moving" @click="openInFileManager(v.dir)">Open</button>
-          <button class="gbtn" :disabled="busy || moving" @click="moveVaultRow(v.dir)">Move…</button>
-          <button class="del" :disabled="busy || moving" title="Delete permanently" @click="removeVault(v.dir)">🗑</button>
+          <button class="gbtn" :disabled="busy || moving || !v.reachable" @click="moveVaultRow(v.dir)">Move…</button>
+          <button v-if="!v.reachable && !v.active" class="gbtn" :disabled="busy || moving" @click="forgetVault(v.dir)">Remove from list</button>
+          <button v-else class="del" :disabled="busy || moving || !v.reachable" title="Delete permanently" @click="removeVault(v.dir)">🗑</button>
         </div>
       </div>
 

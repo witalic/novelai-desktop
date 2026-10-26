@@ -11,16 +11,20 @@ export interface WindowControls {
 interface ElectronAPI {
   pickFolder(): Promise<string | null>
   openPath(target: string): Promise<boolean>
-  onBeforeQuit(handler: () => Promise<void> | void): () => void
+  onBeforeQuit(handler: QuitHandler): () => void
   windowControls: WindowControls
 }
 declare global {
   interface Window { electronAPI?: ElectronAPI }
 }
 
+// A flush-on-close handler: true (or nothing) lets the app quit, false keeps the window open. It calls `hold()` before
+// asking the user, so main's stuck-renderer timeout doesn't close the window under the question.
+export type QuitHandler = (hold: () => void) => Promise<boolean | void> | boolean | void
+
 // Register a flush-on-close handler (Electron only). Main waits for it before the app exits.
 // Returns a disposer to unregister on unmount (no-op outside Electron) so listeners never stack.
-export function onBeforeQuit(handler: () => Promise<void> | void): () => void {
+export function onBeforeQuit(handler: QuitHandler): () => void {
   return window.electronAPI?.onBeforeQuit(handler) ?? (() => {})
 }
 

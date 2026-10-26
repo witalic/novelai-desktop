@@ -1,10 +1,35 @@
-"""Path helpers — id validation, slugs, a traversal-safe join, and an atomic text write."""
+"""Path helpers — id validation, slugs, a traversal-safe join, an atomic text write, and a folder removal that a file
+another program holds can't stop halfway."""
 import os
 import re
+import shutil
+import sys
 import threading
 from pathlib import Path
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # \Z (not $) so a trailing newline can't sneak through
+# What the OS drops into folders it shows (Explorer's thumbnail cache and folder settings, Finder's) — never vault data.
+OS_LITTER = frozenset({"thumbs.db", "desktop.ini", ".ds_store"})
+
+
+def is_os_litter(path: Path) -> bool:
+    return path.name.lower() in OS_LITTER
+
+
+def remove_tree(path: Path) -> list[str]:
+    """Delete a folder as far as it goes: a file another program holds open (Explorer's Thumbs.db on a network share)
+    stays, and the rest is removed. Returns the names of the files left behind."""
+    held: list[str] = []
+
+    def skip(_func: object, name: str, _exc: object) -> None:
+        if not Path(name).is_dir():  # a folder that stays because of what is in it isn't news
+            held.append(Path(name).name)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=skip)
+    else:
+        shutil.rmtree(path, onerror=lambda func, name, info: skip(func, name, info))
+    return held
 
 
 def atomic_write_text(path: Path, text: str) -> None:

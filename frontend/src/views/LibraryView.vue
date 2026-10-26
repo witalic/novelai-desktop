@@ -3,6 +3,7 @@ import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted,
 import { ApiError, deleteBlock, deleteCategory, defaultCategories, listBlocks, listCategories, listTags, reorderCategories, resolveBlocks, restoreCategories, saveBlock, saveCategory } from '../api'
 import { onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
+import { useVault, vaultMayBeAway } from '../composables/useVault'
 import { useConfirm } from '../composables/useConfirm'
 import LibraryImport from '../components/LibraryImport.vue'
 import BlockEditorModal from '../components/BlockEditorModal.vue'
@@ -77,7 +78,7 @@ async function loadCategories() {
     noVault.value = false
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) noVault.value = true
-    else push(e instanceof Error ? e.message : 'Could not load categories', 'err')
+    else if (!vaultMayBeAway(e)) push(e instanceof Error ? e.message : 'Could not load categories', 'err')
   }
 }
 async function loadTags() {
@@ -106,7 +107,7 @@ async function loadPage(reset: boolean) {
   } catch (e) {
     if (req !== blocksReq) return
     if (e instanceof ApiError && e.status === 409) { noVault.value = true; blocks.value = []; total.value = 0 }
-    else push(e instanceof Error ? e.message : 'Could not load blocks', 'err')
+    else if (!vaultMayBeAway(e)) push(e instanceof Error ? e.message : 'Could not load blocks', 'err')
   } finally {
     if (req === blocksReq) loading.value = false
   }
@@ -118,6 +119,9 @@ async function refreshAll() {
 }
 // onActivated also fires on first mount under KeepAlive, so a separate setup-time call would double-load.
 onActivated(refreshAll)
+// The vault can't be reached: the page says so (and the app's strip); once it's back, it fills again.
+const { unreachable: vaultAway, onBack: onVaultBack } = useVault()
+onUnmounted(onVaultBack(() => { if (shown) refreshAll() }))
 // An agent changed the Library: refresh while it's on screen (coming back here refreshes anyway) — once per
 // burst of changes, keeping the selection (minus blocks the agent deleted).
 let shown = false
@@ -416,7 +420,12 @@ async function removeBlock(b: LibraryBlock) {
       <h1>Library</h1><span class="count">· {{ allCount }} blocks</span>
     </div>
 
-    <div v-if="noVault" class="empty">
+    <div v-if="vaultAway" class="empty">
+      <div class="emoji away">⚠</div>
+      <p><b>Your library is in a vault that can't be reached.</b><br />It shows up here again as soon as it's back.</p>
+    </div>
+
+    <div v-else-if="noVault" class="empty">
       <div class="emoji">❏</div>
       <p>No vault folder chosen yet. Pick one in <b>Settings</b> to start building your prompt library.</p>
     </div>
@@ -617,6 +626,8 @@ async function removeBlock(b: LibraryBlock) {
 
 .empty{max-width:420px;margin:12vh auto;text-align:center;color:var(--text-dim)}
 .empty .emoji{font-size:34px;color:var(--text-faint);margin-bottom:12px}
+.empty .emoji.away{color:var(--warn-fg)}
+.empty b{color:var(--text)}
 .empty p{font-size:13px;line-height:1.6}
 
 .lbody{flex:1;display:flex;min-height:0}

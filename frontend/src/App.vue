@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import ImagePreview from './components/ImagePreview.vue'
+import VaultStrip from './components/VaultStrip.vue'
 import GenerateView from './views/GenerateView.vue'
 import WorksView from './views/WorksView.vue'
 import LibraryView from './views/LibraryView.vue'
@@ -15,6 +16,7 @@ import { onAgentNotice } from './composables/useAgentNotices'
 import { useAgentStatus } from './composables/useAgentStatus'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
+import { useVault } from './composables/useVault'
 import type { SettingsSection } from './settingsSections'
 import type { Preset, PresetParams } from './types'
 
@@ -27,6 +29,7 @@ const views = { generate: GenerateView, works: WorksView, library: LibraryView, 
 const { toasts, push } = useToast()
 const account = useAccount()
 const agent = useAgentStatus()
+useVault().check() // a vault on a share may be away at start — say so from the first screen
 
 // The open Settings section — kept while the user is elsewhere, so Settings reopens where they left it.
 const settingsSection = ref<SettingsSection>('general')
@@ -98,6 +101,7 @@ const viewBindings = computed(() =>
 <template>
   <div class="app">
     <AppBar />
+    <VaultStrip :in-settings="view === 'settings' && settingsSection === 'vaults'" @settings="navigate('settings/vaults')" />
     <div class="shell">
       <Sidebar :current="view" :section="settingsSection" @navigate="view = $event" @section="openSection" />
       <KeepAlive>

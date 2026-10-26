@@ -3,9 +3,10 @@
  * switch (design/works-tab-mockup.html). The Gallery facet renders the shared GalleryStack over the
  * loaded WorkDoc (readonly in View); edits mutate the WorkDoc in place and autosave. The Composition
  * facet fills in next. */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { agentWorkChanges, ApiError, loadWork, saveWork } from '../api'
 import { editedWork, onAgentNotice } from '../composables/useAgentNotices'
+import { useVault, vaultMayBeAway } from '../composables/useVault'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePreview } from '../composables/useImagePreview'
@@ -125,6 +126,17 @@ async function flush() {
   try { await inflight } finally { inflight = null }
 }
 let conflicts = 0 // 409s in a row answered by catching up — a busy agent can land more edits in between
+// The vault couldn't be reached at the last save (the app's strip says so): the edit waits and is saved once it's back.
+let waiting = false
+onUnmounted(useVault().onBack(() => { if (waiting && doc.value) { waiting = false; markDirty() } }))
+// Back to the list — an edit still waiting for the vault is never dropped unasked.
+async function leave() {
+  if (waiting && !(await confirm({
+    title: 'Leave without saving?', danger: true, confirmLabel: 'Leave and lose them',
+    message: "The vault can't be reached, so your latest edits to this work aren't saved. Leave anyway and lose them? (Stay, and they're saved once the vault is back.)",
+  }))) return
+  emit('back')
+}
 async function saveOnce() {
   const d = doc.value
   if (!d) return
@@ -143,6 +155,7 @@ async function saveOnce() {
     if (e instanceof ApiError && e.status === 409 && conflicts < 5 && await catchUp()) { conflicts++; pending = true; return }
     conflicts = 0
     if (e instanceof ApiError && e.status === 404) { pending = false; push('This work is no longer in the vault.', 'err'); gone(); return }
+    if (vaultMayBeAway(e)) { pending = false; saveState.value = 'idle'; waiting = true; return } // saved once it's back
     if (e instanceof ApiError && e.status === 409) { pending = false; push('This work changed elsewhere — reloading.', 'err'); await load() }
     else { saveState.value = 'idle'; push(e instanceof Error ? e.message : 'Save failed', 'err') }
   }
@@ -219,7 +232,7 @@ function viewImage(startId: string) {
 <template>
   <div class="weditor">
     <div class="wbar">
-      <button class="back" title="Back to Works" @click="emit('back')">←</button>
+      <button class="back" title="Back to Works" @click="leave">←</button>
       <template v-if="doc">
         <input v-if="mode === 'edit'" class="wtin" :value="doc.title" placeholder="Untitled"
           @input="onTitleInput(($event.target as HTMLInputElement).value)" />

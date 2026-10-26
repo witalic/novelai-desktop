@@ -10,6 +10,7 @@ vi.mock('../api', () => ({
 vi.mock('./useToast', () => ({ useToast: () => ({ push: vi.fn() }) }))
 
 import { useAutosave } from './useAutosave'
+import { useVault } from './useVault'
 import { ApiError } from '../api' // resolves to the mock's ApiError — same class useAutosave checks against
 import type { PersistedCombo } from '../types'
 
@@ -234,6 +235,32 @@ describe('useAutosave — a work gone from the vault while open', () => {
     expect(await saving).toBe(true)
     expect(a.baseUpdatedAt.value).toBe('') // not the old work's stamp
     expect(onSaved).not.toHaveBeenCalled() // no repointing the new work's images at the old one's folder
+  })
+})
+
+describe('useAutosave — the vault can’t be reached', () => {
+  it('a 503 keeps the work dirty for later, without a toast on every attempt', async () => {
+    const { a } = setup()
+    saveWork.mockRejectedValueOnce(new ApiError(503, 'The vault folder X can’t be reached.'))
+    a.markDirty()
+    expect(await a.flush()).toBe(false) // not saved: New work / quit still ask
+    expect(a.saveState.value).toBe('dirty')
+    expect(await a.flush()).toBe(true) // the next attempt (the vault is back) saves it
+    expect(saveWork).toHaveBeenCalledTimes(2)
+  })
+
+  it('while the vault is known to be away, nothing is sent — not the whole work just to hear a 503', async () => {
+    const { a } = setup()
+    const away = useVault().unreachable
+    away.value = 'X:\\vault'
+    try {
+      a.markDirty()
+      expect(await a.flush()).toBe(false)
+      expect(saveWork).not.toHaveBeenCalled()
+      expect(a.saveState.value).toBe('dirty')
+    } finally {
+      away.value = null
+    }
   })
 })
 

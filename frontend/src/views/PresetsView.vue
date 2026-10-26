@@ -2,7 +2,7 @@
 /* Presets tab (design/presets-mockup.html): a flat list of generation-param presets — code-shipped
  * built-ins (read-only) + user presets. Apply loads a preset's params into Generate; favourite /
  * default / duplicate / delete manage them. The New/Edit form lands in a later block. */
-import { computed, onActivated, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { ApiError, deletePreset, listPresets, savePreset, setDefaultPreset, setPresetFavorite } from '../api'
 import { modelLabel, samplerLabel, useCatalog } from '../composables/useCatalog'
 import { filterPresets } from '../presets/list'
@@ -10,6 +10,7 @@ import { costPair } from '../presets/cost'
 import PresetEditor from '../components/PresetEditor.vue'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import { useVault, vaultMayBeAway } from '../composables/useVault'
 import { newId } from '../vault/ids'
 import type { Preset, PresetParams } from '../types'
 import type { NavTarget } from '../App.vue'
@@ -34,10 +35,17 @@ async function load() {
     noVault.value = false
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) { noVault.value = true; presets.value = [] }
+    else if (vaultMayBeAway(e)) presets.value = []
     else push(e instanceof Error ? e.message : 'Could not load presets', 'err')
   }
 }
 onActivated(load) // fires on first mount under KeepAlive too
+// The vault can't be reached: the page says so (and the app's strip); once it's back, it fills again.
+let shown = false
+onActivated(() => { shown = true })
+onDeactivated(() => { shown = false })
+const { unreachable: vaultAway, onBack: onVaultBack } = useVault()
+onUnmounted(onVaultBack(() => { if (shown) load() }))
 
 const groups = computed(() => filterPresets(presets.value, search.value))
 const total = computed(() => presets.value.length)
@@ -93,10 +101,15 @@ async function onSave(payload: { id: string | null; name: string; params: Preset
       <h1>Presets</h1><span class="count">· {{ total }} presets</span>
       <div class="spacer"></div>
       <input class="search" v-model="search" placeholder="Search presets…" />
-      <button v-if="!noVault" class="newbtn" @click="openNew"><span>＋</span> New preset</button>
+      <button v-if="!noVault && !vaultAway" class="newbtn" @click="openNew"><span>＋</span> New preset</button>
     </div>
 
-    <div v-if="noVault" class="empty">
+    <div v-if="vaultAway" class="empty">
+      <div class="emoji away">⚠</div>
+      <p><b>Your presets are in a vault that can't be reached.</b><br />They show up here again as soon as it's back.</p>
+    </div>
+
+    <div v-else-if="noVault" class="empty">
       <div class="emoji">◈</div>
       <p>No vault folder chosen yet. Pick one in <b>Settings</b> to save your own presets — the built-in starters live here regardless.</p>
       <button class="cta" @click="emit('navigate', 'settings/vaults')">Open Settings</button>
@@ -186,6 +199,8 @@ async function onSave(payload: { id: string | null; name: string; params: Preset
 
 .empty{max-width:440px;margin:12vh auto;text-align:center;color:var(--text-dim)}
 .empty .emoji{font-size:34px;margin-bottom:10px;color:var(--text-faint)}
+.empty .emoji.away{color:var(--warn-fg)}
+.empty b{color:var(--text)}
 .empty .cta{margin-top:14px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text);border-radius:var(--radius);font-weight:600;font-size:13px;padding:8px 14px;cursor:pointer}
 .empty .cta:hover{border-color:var(--accent);color:var(--accent)}
 
