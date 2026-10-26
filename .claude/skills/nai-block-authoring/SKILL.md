@@ -12,6 +12,11 @@ canvas, so each one must stand alone and stay focused.
 - ✅ One logical unit: `hot pink babydoll, sheer, lace, garter belt, thigh highs`
 - ❌ A whole scene in one block (character + outfit + pose + background) — split it into several blocks.
 - ❌ A single lone tag with nothing related to it — a block groups the tags that belong together.
+- ✅ An **art style is one concept**: its whole signature (shading, lighting treatment, rendering tags) is
+  ONE `style` block — never scattered across `scene-lighting` / `body-skin` / `style` pieces, which only
+  work together. A shorter `— short` variant may sit beside the `— full` one (`Nixeu — full` / `Nixeu — short`).
+- ❌ A subject or character trait inside a style block (`1girl`, `the girl`, `fair skin`, `long hair`) — a
+  style must fit any subject; skin tone, hair and the like belong to character / body blocks.
 
 Write the `text` itself with the **nai-prompt-writing** skill (visual content, correct weights, no
 narrative/duplication). Blocks are written for V5 — the app's default — but should stay usable on V4.5:
@@ -91,8 +96,9 @@ Rules:
 ## Naming: style-specific vs general
 
 A block is one of two kinds — name and tag it accordingly:
-- **Style-specific** — the block belongs to / defines one particular style (its anchor, its signature
-  rendering choices). Prefix the `name` with the style and tag it: `"Nixeu — skin rendering"`, tag `nixeu`.
+- **Style-specific** — the block belongs to / defines one particular style: the style block itself and its
+  companions (its negative, its quality variant). Prefix the `name` with the style and tag it:
+  `"Nixeu — full"`, `"Luminous — no flat shading"` (negative), tag `nixeu` / `luminous`.
 - **General / reusable across styles** — a standard, swappable option (a common lighting mood like *golden
   hour*, a generic material like *lace*, a generic body-state like *wet*, a generic effect). Give it a
   **neutral name** (`"Golden hour"`, `"Lace & sheer fabric"`) and **do NOT** add the style name or style tag.
@@ -100,6 +106,10 @@ A block is one of two kinds — name and tag it accordingly:
 When unsure: if a different style could reuse the block unchanged, it's general.
 
 ## Weights (block accent)
+
+This rule is for a **standalone** block, mixed with whatever else is on the canvas. Blocks saved together
+as a tuned group (a style kit, a character kit) keep the weights they were tested with instead — see
+**nai-block-groups**.
 
 Give every block ONE weighted **anchor** — its single defining tag — at `1.3::tag::`, and leave the
 supporting tags plain. The `1.3` accent makes the block's core intent land when it is mixed with many
@@ -136,7 +146,7 @@ Keep it to a handful of meaningful tags per block — enough to find and group i
 
 ## Checklist
 
-- [ ] One focused concept per block; big scenes split into several blocks.
+- [ ] One focused concept per block; big scenes split into several blocks; a style is ONE block, subject-free.
 - [ ] `text` follows nai-prompt-writing (visual content, no duplication); ONE `1.3::` anchor per block, rest plain.
 - [ ] Tags by default; a natural-language phrase only for relations/layout, comma-free, tagged `v5`.
 - [ ] No quality tags or stock UC list; a `Text:` block is its own block, named to go last.
