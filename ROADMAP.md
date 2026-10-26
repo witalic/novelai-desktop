@@ -142,6 +142,12 @@ it cost.
 > its own keychain token, a switch per kind of action. Generations are free (Opus) or paid only on the
 > user's say-so within a per-request cap and a daily budget. Transparency holds: every call, reads
 > included, is logged in Settings → Agent activity, and changes show live in the open app.
+> **Since (v1.3):** agents read large works page by page (recipes in full, contact sheets, close-up
+> crops, cross-work search), generate with the user's presets exactly as the station does (*unique
+> tags* included), arrange a work's gallery (sections, albums, Quick access, the cover), set its
+> station settings, star blocks, move or copy images between works, and — under the delete switch —
+> delete works (`docs/agent-mcp-gaps.md`). The app keeps up live and never loses the user's unsaved
+> edits to them.
 > **Remaining:** the in-app skills themselves (the `ai/` module, token streaming, the cost counter) and
 > the vision part.
 

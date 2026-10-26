@@ -11,7 +11,7 @@ integration for authoring prompts. Scope for now: **images only**.
 
 Image generation, the vault (works + Library blocks/categories + multi-vault manager + thumbnails),
 the Vue-Flow canvas composer, the structured gallery, the full Works browser (view/edit), and the
-Electron shell are **implemented and tested** (v1.0). **Agent access over MCP** (v1.2) lets an external
+Electron shell are **implemented and tested** (v1.0). **Agent access over MCP** (v1.2; galleries, station settings and housekeeping in v1.3) lets an external
 agent (Claude Code, …) work with the vault under per-action switches and Anlas limits; in-app Claude
 prompt-authoring is still deferred. The full phased plan is `ROADMAP.md`. **Phase 1 (recipe as a typed, versioned contract) closed 2026-07-10**;
 schema is now at **v7** (works hold saved block `combos`) with read-time migrations, a domain/layout/transient

@@ -5,6 +5,9 @@ could **not** do in a real session (building the "Makima" work: 6 pose/outfit va
 preset, 4 paid images each, the best 3 per variation curated into the gallery). Each gap names where
 the app already has the feature, so the MCP tool wraps an existing service instead of inventing one.
 
+**Status: closed — every gap taken landed in v1.3.0** (#17, the server-side series, was left out by
+decision). Kept as the record of what was asked and how it was decided.
+
 ## Decisions and progress
 
 Owner decisions (2026-10-25):
