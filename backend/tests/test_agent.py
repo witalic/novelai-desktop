@@ -4,6 +4,7 @@ driven through ASGITransport; a few tests bind real loopback ports to prove the 
 moves and stops."""
 import asyncio
 import base64
+import io
 import json
 import logging
 import socket
@@ -15,6 +16,7 @@ import httpx
 import keyring
 import pytest
 from fastapi import HTTPException
+from PIL import Image as PILImage
 
 from app import appconfig, keychain
 from app import main as app_main
@@ -30,7 +32,8 @@ from app.novelai.errors import NovelAIRateLimitError
 from app.settings import Settings, VaultSettings, get_settings
 from app.vault import service
 from app.vault import store as vault_store
-from app.vault.models import BlockDoc, Image, WorkDoc
+from app.vault import presets
+from app.vault.models import BlockDoc, Component, Image, PresetDoc, PresetParams, Snapshot, WorkDoc
 
 TOKEN = "test-agent-token"
 BASE = "http://127.0.0.1:8790"
@@ -189,21 +192,80 @@ async def test_search_and_get_blocks(settings):
         assert {"slug": "character", "name": "Character", "color": "#0c66e4", "blocks": 1} in cats
 
 
-async def test_get_work_lists_gallery_images_and_shows_one(settings):
+_RECIPE = {"model": "nai-diffusion-5-full", "width": 832, "height": 1216, "steps": 28, "scale": 5.0, "sampler": "k_euler",
+           "seed": 7, "n_samples": 1, "noise_schedule": "karras", "cfg_rescale": 0.2, "quality_toggle": False,
+           "uc_preset": 3, "dedupe": True}
+
+
+def seed_recipe_image(settings: Settings) -> None:
+    """A second gallery image in work-1, with the full recipe it was generated from — the newest one."""
+    doc = service.load_work(settings, "work-1")
+    doc.snapshots.append(Snapshot(
+        id="snap-2", hash="h", assembled_positive="raiden shogun", assembled_negative="lowres", params=_RECIPE,
+        components=[Component(source="library", block_id="block-raiden", version=1, name="Raiden", text="raiden shogun",
+                              tags=["genshin"])]))
+    doc.images.append(Image(id="img-2", snapshot_id="snap-2", image_b64=base64.b64encode(solid_png(256, 384)).decode(),
+                            tags=["night"], created_at="2099-01-01T00:00:00.000+00:00"))
+    service.save_work(settings, doc)
+
+
+async def test_get_work_is_an_overview_and_list_images_pages_the_gallery(settings):
     seed(settings)
+    seed_recipe_image(settings)
     async with mcp_client(settings) as c:
         works = await call_json(c, "list_works")
         assert works["items"][0]["title"] == "Halloween"
         work = await call_json(c, "get_work", {"work_id": "work-1"})
-        assert [im["id"] for im in work["images"]] == ["img-1"]  # the scratch image isn't listed
-        assert work["images"][0] == {"id": "img-1", "favorite": True, "tags": ["vampire"], "description": "first",
-                                     "group": None, "created_at": work["images"][0]["created_at"],
-                                     "prompt": None, "params": None}
-        assert "canvas" not in work
+        assert work["image_count"] == 2 and "images" not in work and "canvas" not in work  # the scratch one isn't counted
+        page = await call_json(c, "list_images", {"work_id": "work-1", "per_page": 1})
+        assert page["total"] == 2 and [im["id"] for im in page["items"]] == ["img-2"]  # newest first
+        assert page["items"][0]["params"] == _RECIPE  # the whole recipe, quality tags and UC preset included
+        assert "prompt" not in page["items"][0] and "group" not in page["items"][0]
+        full = await call_json(c, "list_images", {"work_id": "work-1", "tags": ["night"], "include_prompt": True})
+        assert full["items"][0]["prompt"] == {"positive": "raiden shogun", "negative": "lowres"}
+        assert full["items"][0]["blocks"] == [{"name": "Raiden", "block_id": "block-raiden", "version": 1,
+                                               "polarity": "positive"}]
+        favs = await call_json(c, "list_images", {"work_id": "work-1", "favorite": True})
+        assert [im["id"] for im in favs["items"]] == ["img-1"]
+        found = await call_json(c, "search_images", {"tags": ["vampire"]})
+        assert [(i["image_id"], i["work_id"], i["work_title"]) for i in found["items"]] == [("img-1", "work-1", "Halloween")]
+        # a tag from the blocks an image was made of matches in both, as it does in the app's gallery
+        assert [i["image_id"] for i in (await call_json(c, "search_images", {"tags": ["genshin"]}))["items"]] == ["img-2"]
+        by_block = await call_json(c, "list_images", {"work_id": "work-1", "tags": ["genshin"]})
+        assert [(im["id"], im["tags"], im["block_tags"]) for im in by_block["items"]] == [("img-2", ["night"], ["genshin"])]
+        # paged one by one, every image comes once
+        pages = [await call_json(c, "search_images", {"page": p, "per_page": 1}) for p in (1, 2)]
+        assert sorted(p["items"][0]["image_id"] for p in pages) == ["img-1", "img-2"]
+
+
+async def test_images_are_seen_whole_close_up_or_side_by_side(settings):
+    seed(settings)
+    seed_recipe_image(settings)
+    async with mcp_client(settings) as c:
         image = await call(c, "get_image", {"work_id": "work-1", "image_id": "img-1", "width": 64})
         block = image["content"][0]
         assert block["type"] == "image" and block["mimeType"] == "image/png"
         assert base64.b64decode(block["data"])[:8] == b"\x89PNG\r\n\x1a\n"
+        crop = await call(c, "get_image", {"work_id": "work-1", "image_id": "img-1",
+                                           "crop": {"x": 8, "y": 8, "width": 32, "height": 40}})
+        with PILImage.open(io.BytesIO(base64.b64decode(crop["content"][0]["data"]))) as im:
+            assert im.size == (32, 40)  # the source's own pixels, not a scaled copy
+        off = await call(c, "get_image", {"work_id": "work-1", "image_id": "img-1",
+                                          "crop": {"x": 60, "y": 0, "width": 32, "height": 32}})
+        assert off["isError"] and "64×96" in off["content"][0]["text"]  # past the edge — and it says how big it is
+        small = await call(c, "get_image", {"work_id": "work-1", "image_id": "img-1", "width": 64,
+                                            "crop": {"x": 0, "y": 0, "width": 64, "height": 96}})
+        with PILImage.open(io.BytesIO(base64.b64decode(small["content"][0]["data"]))) as im:
+            assert im.size == (64, 96)  # within 'width': sent as it is
+        wide = await call(c, "get_image", {"work_id": "work-1", "image_id": "img-2", "width": 64,
+                                           "crop": {"x": 0, "y": 0, "width": 256, "height": 128}})
+        with PILImage.open(io.BytesIO(base64.b64decode(wide["content"][0]["data"]))) as im:
+            assert im.size == (64, 32)  # wider than 'width': scaled down to it
+        sheet = await call(c, "contact_sheet", {"work_id": "work-1", "cols": 2, "tile": 64})
+        assert sheet["content"][1] == {"type": "text", "text": "1: img-2\n2: img-1"}
+        with PILImage.open(io.BytesIO(base64.b64decode(sheet["content"][0]["data"]))) as im:
+            assert im.size == (128, 96)  # two 64 px tiles in a row, 2:3 cells
+        assert (await call(c, "contact_sheet", {"work_id": "work-1", "image_ids": ["img-scratch"]}))["isError"]
 
 
 async def test_reads_are_logged_and_folded(settings):
@@ -289,20 +351,40 @@ async def test_new_blocks_follow_the_import_rules(settings):
                 {"category": "Character", "name": "Yae", "text": "yae miko", "tags": ["genshin", " genshin "]},
                 {"text": "Raiden   SHOGUN"},  # the seeded block, spelled differently
                 {"text": "  "},
-                {"category": "no such category", "text": "x"},
                 {"text": "yae miko", "polarity": "positive"},  # repeats the first one
+                {"category": "Jewelry", "text": "pearl necklace"},  # a new category, as the import makes one
+                {"category": "jewelry", "text": "gold ring"},  # the same one, by its name in another case
+                {"category": "Never made", "text": "raiden shogun"},  # a duplicate: no category made for it
             ]})
         notice = await asyncio.wait_for(notices.get(), 1)
-    [made] = out["created"]
+    made, pearl, ring = out["created"]
     assert made["category"] == "character" and made["name"] == "Yae"
-    assert [(d["index"], d["existing_id"]) for d in out["duplicates"]] == [(1, "block-raiden"), (4, made["id"])]
-    assert [e["index"] for e in out["errors"]] == [2, 3] and "list_categories" in out["errors"][1]["error"]
+    assert [(d["index"], d["existing_id"]) for d in out["duplicates"]] == [(1, "block-raiden"), (3, made["id"]),
+                                                                          (6, "block-raiden")]
+    assert [e["index"] for e in out["errors"]] == [2]
+    assert out["new_categories"] == ["Jewelry"] and pearl["category"] == ring["category"] != "custom"
+    cats = {c.slug: c.name for c in service.list_categories(settings)}
+    assert cats[pearl["category"]] == "Jewelry" and "Never made" not in cats.values()
     [stored] = service.resolve_blocks(settings, [made["id"]])
     assert (stored.text, stored.tags, stored.version) == ("yae miko", ["genshin"], 1)
     row = activity.recent()[0]
-    assert (row["action"], row["detail"]) == ("Added 1 block", "Library → Character (2 duplicates skipped)")
-    assert notice == {"kind": "library", "work_id": None, "cost": None,
-                      "message": "Agent added 1 block — Library → Character (2 duplicates skipped)"}
+    assert (row["action"], row["detail"]) == ("Added 3 blocks",
+                                              "Library → 2 categories (3 duplicates skipped) · new category “Jewelry”")
+    assert notice["message"] == f"Agent added 3 blocks — {row['detail']}"
+
+
+async def test_new_categories_get_a_free_colour_and_a_stale_id_makes_none(settings):
+    seed(settings)
+    async with mcp_client(settings) as c:
+        moved = await call_json(c, "update_block", {"id": "block-raiden", "category": "Characters - Genshin"})
+        stale = await call(c, "create_blocks", {"blocks": [
+            {"category": "cat-3f2a6b1e-0000-4000-8000-000000000000", "text": "a"}]})
+    cats = {c.slug: c for c in service.list_categories(settings)}
+    made = cats[moved["category"]]
+    assert (made.name, moved["new_categories"]) == ("Characters - Genshin", ["Characters - Genshin"])
+    assert made.color not in {c.color for slug, c in cats.items() if slug != made.slug}  # the first hue not in use
+    assert "list_categories" in json.loads(stale["content"][0]["text"])["errors"][0]["error"]
+    assert len(service.list_categories(settings)) == len(cats)
 
 
 async def test_blocks_are_edited_and_deleted_only_when_allowed(settings):
@@ -484,7 +566,7 @@ def mock_novelai(settings, monkeypatch):
     store.update_config(settings, {"enabled": True})
     monkeypatch.setattr(settings.novelai, "mock", True)
     monkeypatch.setattr(generation, "_GAP_S", 0.0)
-    monkeypatch.setattr(generation, "_tier", None)
+    monkeypatch.setattr(generation, "_sub", None)
     monkeypatch.setattr(generation, "_not_before", 0.0)
     monkeypatch.setattr(generation, "_backoff", 0.0)
     return settings
@@ -522,6 +604,61 @@ async def test_a_free_generation_lands_in_quick_access_with_its_recipe(mock_nove
     assert (activity.recent()[0]["cost"], activity.recent()[0]["kind"]) == (0, "generate")
     ops = changes.edits_since("work-1", base, doc.updated_at)
     assert ops[-1]["op"] == "images_added" and ops[-1]["images"][0]["id"] == im.id
+
+
+async def test_a_preset_drives_the_generation_and_unique_tags_apply_as_at_the_station(mock_novelai):
+    settings = mock_novelai
+    seed(settings)
+    doc = service.load_work(settings, "work-1")
+    doc.params = {"model": "nai-diffusion-5-full", "steps": 20, "dedupe": False}
+    service.save_work(settings, doc)
+    presets.save_preset(settings, PresetDoc(id="preset-portrait", name="Portrait", params=PresetParams(
+        width=832, height=1216, steps=23, quality_toggle=False, uc_preset=3, n_samples=4, dedupe=True)))
+    twice = [{"text": "long hair, smile"}, {"text": "long hair"}]
+    async with mcp_client(settings) as c:
+        mine = next(p for p in await call_json(c, "list_presets") if p["id"] == "preset-portrait")
+        assert (mine["name"], mine["builtin"], mine["params"]["steps"]) == ("Portrait", False, 23)
+        est = await call_json(c, "estimate_cost", {"work_id": "work-1", "preset_id": "preset-portrait"})
+        assert (est["params"]["steps"], est["params"]["n_samples"]) == (23, 1)  # a preset's image count isn't used
+        await call_json(c, "generate_images", {"work_id": "work-1", "preset_id": "preset-portrait", "steps": 28,
+                                               "blocks": twice})
+        await call_json(c, "generate_images", {"work_id": "work-1", "blocks": [{"text": "a, a"}]})
+        await call_json(c, "generate_images", {"work_id": "work-1", "blocks": [{"text": "a, a"}], "dedupe": True})
+        assert "list_presets" in (await gen(c, preset_id="preset-nope"))["content"][0]["text"]
+    by_preset, plain, merged = service.load_work(settings, "work-1").snapshots
+    assert by_preset.assembled_positive == "1.5::long hair::, smile"  # the preset's "unique tags"
+    assert {k: by_preset.params[k] for k in ("steps", "width", "quality_toggle", "uc_preset", "dedupe")} == {
+        "steps": 28, "width": 832, "quality_toggle": False, "uc_preset": 3, "dedupe": True}  # the call over the preset
+    assert (plain.assembled_positive, plain.params["dedupe"], plain.params["steps"]) == ("a, a", False, 20)  # the work's
+    assert (merged.assembled_positive, merged.params["dedupe"]) == ("1.5::a::", True)  # the call's own choice
+
+
+async def test_the_account_and_token_counts_are_readable(mock_novelai, monkeypatch):
+    settings = mock_novelai
+    seed(settings)
+    reads: list[int] = []
+
+    async def subscription(self):
+        reads.append(1)
+        return {"tier": 3, "tier_name": "Opus", "active": True, "anlas": 6821 - 10 * len(reads)}
+
+    monkeypatch.setattr(MockNovelAIClient, "get_subscription", subscription)
+    async with mcp_client(settings) as c:
+        acct = await call_json(c, "get_account")
+        assert acct["tier"] == 3 and acct["free_generations"] and acct["anlas"] == 6811
+        assert (acct["agent_paid_generations"], acct["agent_spent_today"]) == (False, 0)
+        assert (await call_json(c, "get_account"))["anlas"] == 6811 and len(reads) == 1  # served again, NovelAI spared
+        await gen(c)  # reads the tier itself — and moves the balance
+        assert (await call_json(c, "get_account"))["anlas"] == 6791 and len(reads) == 3  # read afresh after it
+        bare = await call_json(c, "count_tokens", {"model": "nai-diffusion-4-5-full", "positive": "1girl, smile",
+                                                   "quality_toggle": False})
+        tagged = await call_json(c, "count_tokens", {"model": "nai-diffusion-4-5-full", "positive": "1girl, smile"})
+        assert 0 < bare["positive"] < tagged["positive"]  # generation's quality tags count too
+        twice = {"model": "nai-diffusion-4-5-full", "positive": "1girl, smile, smile, smile", "quality_toggle": False}
+        merged = await call_json(c, "count_tokens", {**twice, "dedupe": True})
+        assert merged["positive"] < (await call_json(c, "count_tokens", twice))["positive"]
+        assert (bare["positive_limit"], bare["tokenizer"]) == (512, "t5")
+        assert (await call(c, "count_tokens", {"model": "no-such-model"}))["isError"]
 
 
 async def test_a_paid_generation_needs_the_users_go_ahead_and_fits_their_limits(mock_novelai):

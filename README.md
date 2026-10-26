@@ -164,13 +164,13 @@ while the app is open. It is **off by default**.
 
 | Switch | Tools |
 |---|---|
-| Browse the Library and works | `search_blocks` `get_blocks` `list_categories` `list_tags` `list_works` `get_work` `get_image` `list_combinations` `get_catalog` `estimate_cost` |
-| Create and edit blocks | `create_blocks` (the Library import's rules — duplicates are skipped) `update_block` |
+| Browse the Library and works | `search_blocks` `get_blocks` `list_categories` `list_tags` `list_works` `get_work` `list_images` `search_images` `get_image` (whole or a close-up crop) `contact_sheet` `list_combinations` `list_presets` `get_catalog` `get_account` `count_tokens` `estimate_cost` |
+| Create and edit blocks | `create_blocks` (the Library import's rules — duplicates are skipped, a new category name makes the category) `update_block` |
 | Delete blocks *(off)* | `delete_blocks` |
 | Create works, edit titles and image metadata | `create_work` `rename_work` `update_images` |
 | Create and edit combinations | `create_combination` `update_combination` |
 | Delete images and combinations *(off)* | `delete_images` `delete_combination` |
-| Generate images | `generate_images` |
+| Generate images | `generate_images` (from a combination or blocks, with the work's settings or a preset's; the prompt is built as the station builds it, *unique tags* included) |
 
 **Anlas.** Free generations (Opus: up to 1024×1024 px, ≤ 28 steps, one image) always run while
 *Generate images* is on. A paid one runs only when you ask the agent for it (the call says

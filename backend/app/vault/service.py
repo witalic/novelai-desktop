@@ -256,6 +256,14 @@ def gallery(settings: Settings, tags: list[str], favorite: bool, page: int, per_
     return GalleryPage(items=items, total=total, page=page, per_page=per_page)
 
 
+def work_titles(settings: Settings, ids: set[str]) -> dict[str, str]:
+    conn = index.open_index(_vault(settings))
+    try:
+        return index.work_titles(conn, sorted(ids))
+    finally:
+        conn.close()
+
+
 def _blocks_root(vault: Path) -> Path:
     return vault / "library" / "blocks"
 

@@ -326,10 +326,17 @@ def gallery(conn, tags: list[str], favorite: bool, page: int, per_page: int):
     total = conn.execute(f"SELECT COUNT(*) FROM image i {clause}", params).fetchone()[0]
     rows = conn.execute(
         f"SELECT i.id,i.work_id,i.favorite,i.group_name,i.created_at FROM image i {clause} "
-        f"ORDER BY i.created_at DESC LIMIT ? OFFSET ?",
+        f"ORDER BY i.created_at DESC, i.id LIMIT ? OFFSET ?",  # one save stamps a batch alike: `id` keeps paging stable
         params + [per_page, (page - 1) * per_page],
     ).fetchall()
     return total, rows
+
+
+def work_titles(conn, ids: list[str]) -> dict[str, str]:
+    if not ids:
+        return {}
+    rows = conn.execute(f"SELECT id,title FROM work WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall()
+    return {r["id"]: r["title"] for r in rows}
 
 
 def rebuild(conn: sqlite3.Connection, vault: Path) -> dict:

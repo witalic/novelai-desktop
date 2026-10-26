@@ -7,7 +7,9 @@ Results are plain JSON-able values; ``ImageResult`` becomes an MCP image block, 
 ``errors`` classes, reported back as tool errors, not crashes.
 """
 import base64
+import io
 import json
+import re
 import secrets
 import threading
 import time
@@ -22,29 +24,39 @@ from typing import Any
 import anyio
 import httpx
 from fastapi import HTTPException
+from PIL import Image as PILImage
+from PIL import ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel, ValidationError
 
 from app import appconfig
 from app.agent import changes, generation, store
 from app.agent.errors import GenerationFailed, Refused, ToolError
 from app.novelai import GenerateParams, get_client
+from app.novelai.augment import augment
 from app.novelai.catalog import get_catalog
 from app.novelai.cost import anlas_cost
+from app.novelai.dedup import dedupe_prompt
 from app.novelai.errors import NovelAIError, NovelAIRateLimitError
+from app.novelai.tokenizer import count_tokens
 from app.settings import Settings
-from app.vault import import_blocks, service
-from app.vault.models import BlockDoc, Combo, ComboBlock, Component, Image, Snapshot, WorkDoc
+from app.vault import import_blocks, presets, service
+from app.vault.models import (
+    BlockDoc, Combo, ComboBlock, Component, Image, PresetParams, SaveCategory, Snapshot, WorkDoc,
+)
 
 MAX_PAGE = 200
 MAX_BATCH = 100  # blocks per create/delete call, blocks per combination
 _MAX_TEXT = 4000
+_MAX_PROMPT = 50_000  # a whole assembled prompt, to count
 _MAX_NAME = 200
 _MAX_TAGS = 50
 
 
 @dataclass(frozen=True)
 class ImageResult:
-    png: bytes
+    data: bytes
+    mime: str = "image/png"
+    caption: str = ""  # sent along as a text block (e.g. which image is which on a contact sheet)
 
 
 @dataclass(frozen=True)
@@ -197,37 +209,141 @@ def _list_works(settings: Settings, args: dict) -> dict:
                       for w in page.items]}
 
 
-_RECIPE_PARAMS = ("model", "width", "height", "steps", "scale", "sampler", "seed", "n_samples")
+# Everything a recipe holds — what reproduces an image (and the station settings a work keeps).
+_RECIPE_KEYS = ("model", "width", "height", "steps", "scale", "sampler", "seed", "n_samples", "noise_schedule",
+                "cfg_rescale", "quality_toggle", "uc_preset", "dedupe")
+MAX_IMAGES_PAGE = 100  # a page of full recipes still fits an agent's tool-result limit…
+MAX_PROMPTS_PAGE = 25  # …and of recipes with their prompts and blocks
+
+
+def _recipe_of(params: dict) -> dict:
+    return {k: params[k] for k in _RECIPE_KEYS if k in params}
 
 
 def _get_work(settings: Settings, args: dict) -> dict:
     doc = service.load_work(settings, _str(args, "work_id", required=True))
-    snaps = {s.id: s for s in doc.snapshots}
-
-    def image(im: Image) -> dict:
-        snap = snaps.get(im.snapshot_id or "")
-        return {
-            "id": im.id, "favorite": im.favorite, "tags": im.tags, "description": im.description,
-            "group": im.group, "created_at": im.created_at,
-            "prompt": {"positive": snap.assembled_positive, "negative": snap.assembled_negative} if snap else None,
-            "params": {k: snap.params[k] for k in _RECIPE_PARAMS if k in snap.params} if snap else None,
-        }
-
     return {
         "id": doc.id, "title": doc.title, "created_at": doc.created_at, "updated_at": doc.updated_at,
-        "params": {k: doc.params[k] for k in _RECIPE_PARAMS if k in doc.params},
-        "combos": [c.model_dump() for c in doc.combos],
+        "params": _recipe_of(doc.params), "preview_image_id": doc.preview_image_id,
+        "combinations": [{"id": c.id, "name": c.name, "blocks": len(c.blocks), "origin": c.origin} for c in doc.combos],
         "favorite_block_ids": doc.favorites,
         # The gallery only: scratch images are working material loose on the canvas, persisted but never listed.
-        "images": [image(im) for im in doc.images if im.role == "gallery"],
+        "image_count": sum(im.role == "gallery" for im in doc.images),
         "stack_count": len(doc.stack),
     }
 
 
+def _list_images(settings: Settings, args: dict) -> dict:
+    doc = service.load_work(settings, _str(args, "work_id", required=True))
+    tags, favorite, with_prompt = _tags(args), _flag(args, "favorite"), _flag(args, "include_prompt")
+    page = _int(args, "page", 1, 1, 100_000)
+    per_page = (_int(args, "per_page", 10, 1, MAX_PROMPTS_PAGE) if with_prompt
+                else _int(args, "per_page", 50, 1, MAX_IMAGES_PAGE))
+    snaps = {s.id: s for s in doc.snapshots}
+
+    def block_tags(im: Image) -> list[str]:
+        """Tags the image has from the blocks it was made of — the gallery and search_images match these too."""
+        snap = snaps.get(im.snapshot_id or "")
+        own = set(im.tags)
+        return list(dict.fromkeys(t for c in snap.components for t in c.tags if t not in own)) if snap else []
+
+    shown = sorted((im for im in doc.images if im.role == "gallery" and (im.favorite or not favorite)
+                    and set(tags) <= {*im.tags, *block_tags(im)}),
+                   key=lambda im: (im.created_at, im.id), reverse=True)
+
+    def item(im: Image) -> dict:
+        snap = snaps.get(im.snapshot_id or "")
+        out = {"id": im.id, "created_at": im.created_at, "favorite": im.favorite, "tags": im.tags,
+               "block_tags": block_tags(im), "description": im.description,
+               "params": _recipe_of(snap.params) if snap else None}
+        if with_prompt and snap:
+            out["prompt"] = {"positive": snap.assembled_positive, "negative": snap.assembled_negative}
+            out["blocks"] = [{"name": c.name, "block_id": c.block_id, "version": c.version, "polarity": c.polarity}
+                             for c in snap.components]
+        return out
+
+    return {"total": len(shown), "page": page, "per_page": per_page,
+            "items": [item(im) for im in shown[(page - 1) * per_page:page * per_page]]}
+
+
+def _search_images(settings: Settings, args: dict) -> dict:
+    page = service.gallery(settings, _tags(args), _flag(args, "favorite"), _int(args, "page", 1, 1, 100_000),
+                           _int(args, "per_page", 50, 1, MAX_PAGE))
+    titles = service.work_titles(settings, {i.work_id for i in page.items})
+    return {"total": page.total, "page": page.page, "per_page": page.per_page,
+            "items": [{"image_id": i.image_id, "work_id": i.work_id, "work_title": titles.get(i.work_id, ""),
+                       "favorite": i.favorite, "created_at": i.created_at} for i in page.items]}
+
+
+def _crop_box(raw: object, size: tuple[int, int]) -> tuple[int, int, int, int]:
+    if not isinstance(raw, dict):
+        raise ToolError("'crop' must be an object with x, y, width and height.")
+    x, y = _int(raw, "x", 0, 0, 100_000), _int(raw, "y", 0, 0, 100_000)
+    w, h = _int(raw, "width", 16, 16, 100_000), _int(raw, "height", 16, 16, 100_000)
+    if x + w > size[0] or y + h > size[1]:
+        raise ToolError(f"The crop goes past the image's edge — it is {size[0]}×{size[1]} px.")
+    return x, y, x + w, y + h
+
+
+def _encode(im: PILImage.Image, fmt: str = "PNG") -> bytes:
+    buf = io.BytesIO()
+    im.save(buf, fmt, **({"quality": 85} if fmt == "JPEG" else {}))
+    return buf.getvalue()
+
+
 def _get_image(settings: Settings, args: dict) -> ImageResult:
-    path = service.image_thumb_path(settings, _str(args, "work_id", required=True), _str(args, "image_id", required=True),
-                                    _int(args, "width", 512, 64, 1024))
-    return ImageResult(path.read_bytes())
+    work_id, image_id = _str(args, "work_id", required=True), _str(args, "image_id", required=True)
+    width = _int(args, "width", 512, 64, 1024)
+    if args.get("crop") is None:
+        return ImageResult(service.image_thumb_path(settings, work_id, image_id, width).read_bytes())
+    # A region at the source's own resolution — a close look (a signature, the hands) without the whole image.
+    with PILImage.open(service.image_path(settings, work_id, image_id)) as im:
+        part = im.crop(_crop_box(args["crop"], im.size))
+    if part.width > width:
+        part = part.resize((width, round(part.height * width / part.width)), PILImage.LANCZOS)
+    return ImageResult(_encode(part))
+
+
+_SHEET_MAX = 36
+_SHEET_DEFAULT = 24
+_SHEET_LONG_SIDE = 1568  # what a model looks at without shrinking it (and well inside any image-size limit)
+_SHEET_SOURCE_W = 320  # one cached thumbnail size per image, shrunk to the tile in memory
+
+
+def _contact_sheet(settings: Settings, args: dict) -> ImageResult:
+    """Many gallery images in one picture, numbered — the caption says which number is which image."""
+    work_id = _str(args, "work_id", required=True)
+    doc = service.load_work(settings, work_id)
+    gallery = {im.id: im for im in doc.images if im.role == "gallery"}
+    if ids := _strs(args, "image_ids", max_items=_SHEET_MAX):
+        if missing := [i for i in ids if i not in gallery]:
+            raise ToolError(f"No gallery image {_names(missing)} in this work.")
+        ids = list(dict.fromkeys(ids))
+    else:  # the newest ones
+        ids = [im.id for im in sorted(gallery.values(), key=lambda im: im.created_at, reverse=True)[:_SHEET_DEFAULT]]
+    if not ids:
+        raise ToolError("This work has no gallery images yet.")
+    cols = min(_int(args, "cols", 6, 1, 8), len(ids))
+    rows = -(-len(ids) // cols)
+    # Tiles shrink so the sheet's long side fits; cells are 2:3, like NovelAI's default sizes.
+    tile = min(_int(args, "tile", 192, 64, 320), _SHEET_LONG_SIDE // cols, _SHEET_LONG_SIDE * 2 // (rows * 3))
+    if tile < 64:
+        raise ToolError(f"{len(ids)} images in {cols} columns make too tall a sheet — use more columns or fewer images.")
+    cell_h = tile * 3 // 2
+    sheet = PILImage.new("RGB", (cols * tile, rows * cell_h), (24, 26, 29))
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default(size=max(12, tile // 9))
+    for n, image_id in enumerate(ids):
+        x, y = (n % cols) * tile, (n // cols) * cell_h
+        with PILImage.open(service.image_thumb_path(settings, work_id, image_id, _SHEET_SOURCE_W)) as im:
+            thumb = ImageOps.contain(im.convert("RGB"), (tile - 4, cell_h - 4))
+        sheet.paste(thumb, (x + (tile - thumb.width) // 2, y + (cell_h - thumb.height) // 2))
+        label = str(n + 1)
+        left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
+        draw.rectangle((x + 2, y + 2, x + 10 + right - left, y + 8 + bottom - top), fill=(0, 0, 0))
+        draw.text((x + 6 - left, y + 5 - top), label, fill=(255, 255, 255), font=font)
+    caption = "\n".join(f"{n + 1}: {image_id}" for n, image_id in enumerate(ids))
+    return ImageResult(_encode(sheet, "JPEG"), "image/jpeg", caption)
 
 
 def _get_catalog(_settings: Settings, _args: dict) -> dict:
@@ -238,12 +354,58 @@ def _list_combinations(settings: Settings, args: dict) -> list[dict]:
     return [c.model_dump() for c in service.load_work(settings, _str(args, "work_id", required=True)).combos]
 
 
+def _list_presets(settings: Settings, _args: dict) -> list[dict]:
+    return [{"id": p.id, "name": p.name, "builtin": p.builtin, "favorite": p.favorite, "default": p.is_default,
+             "params": p.params.model_dump()} for p in presets.list_presets(settings)]
+
+
+_ACCOUNT_TTL_S = 30.0  # an agent checking its balance between calls shouldn't hit NovelAI every time
+
+
+def _get_account(settings: Settings, _args: dict) -> dict:
+    try:  # a read this young with no generation since is served again (generation.subscription)
+        sub = generation.subscription(_client(settings), max_age=_ACCOUNT_TTL_S)
+    except (NovelAIError, httpx.HTTPError) as exc:
+        raise ToolError(f"Could not read the NovelAI subscription: {exc}") from exc
+    cfg = store.load_config(settings)
+    return {"tier": sub.get("tier"), "tier_name": sub.get("tier_name"), "active": sub.get("active"),
+            "anlas": sub.get("anlas"), "free_generations": generation.FREE_TEXT if generation.opus_of(sub) else None,
+            "agent_paid_generations": cfg.spending.paid, "agent_spent_today": store.spent_today(cfg),
+            "agent_daily_budget": cfg.spending.daily_budget}
+
+
+def _count_tokens(_settings: Settings, args: dict) -> dict:
+    """Tokens as generation would send them — quality tags and the UC preset added, like the station's meter."""
+    cat = get_catalog()
+    model = _str(args, "model") or cat.default_model
+    spec = next((m for m in cat.models if m.id == model), None)
+    if spec is None:
+        raise ToolError(f"Unknown model “{model}” — get_catalog lists them.")
+    quality = _flag(args, "quality_toggle") if "quality_toggle" in args else True
+    uc_preset = _int(args, "uc_preset", 4, 0, 7)
+    positive, negative = _str(args, "positive", max_len=_MAX_PROMPT), _str(args, "negative", max_len=_MAX_PROMPT)
+    if _flag(args, "dedupe"):
+        positive, negative = dedupe_prompt(positive), dedupe_prompt(negative)
+    text = augment(model, positive, negative, quality=quality, uc_preset=uc_preset)
+    return {"positive": count_tokens(text.positive, spec.tokenizer), "positive_limit": spec.token_limit,
+            "negative": count_tokens(text.negative, spec.tokenizer), "negative_limit": spec.negative_token_limit,
+            "tokenizer": spec.tokenizer}
+
+
 # ---- Library writes (same rules as Library import: import_blocks) ----
-def _category_of(settings: Settings) -> Callable[[str], str]:
-    """Resolve a category given as its slug or its display name; none given → Custom."""
+_PALETTE = ("#6e5dc6", "#0c66e4", "#ae4787", "#1f845a", "#b65c02", "#12b5a6", "#d4537e", "#e2483d", "#2fb8c6",
+            "#738496")  # the Library's own (LibraryView.vue): a new category takes the first hue not in use
+_MAX_NEW_CATEGORIES = 10
+_CATEGORY_ID = re.compile(r"cat-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")  # service._new_category_id
+
+
+def _category_of(settings: Settings, created: list[str]) -> Callable[[str], str]:
+    """Resolve a category given as its slug or its display name; none given → Custom. A name the Library doesn't
+    know yet becomes a new category, as the Library's "New category" makes one (its name lands in ``created``)."""
     cats = service.list_categories(settings)
     slugs = {c.slug for c in cats}
     by_name = {c.name.strip().lower(): c.slug for c in cats}
+    colors = {c.color.lower() for c in cats}
 
     def resolve(value: str) -> str:
         if not value:
@@ -252,7 +414,17 @@ def _category_of(settings: Settings) -> Callable[[str], str]:
             return value
         if slug := by_name.get(value.lower()):
             return slug
-        raise ToolError(f"Unknown category “{value}” — list_categories has the slugs.")
+        if _CATEGORY_ID.fullmatch(value):  # the id of a category deleted since — not a name for a new one
+            raise ToolError(f"Unknown category “{value}” — list_categories has the slugs.")
+        if len(created) >= _MAX_NEW_CATEGORIES:
+            raise ToolError(f"At most {_MAX_NEW_CATEGORIES} new categories in one call.")
+        color = next((p for p in _PALETTE if p not in colors), _PALETTE[0])
+        cat = service.save_category(settings, SaveCategory(name=value, color=color))
+        slugs.add(cat.slug)
+        by_name[value.lower()] = cat.slug
+        colors.add(color)
+        created.append(cat.name)
+        return cat.slug
 
     return resolve
 
@@ -266,19 +438,23 @@ def _category_names(settings: Settings, slugs: list[str]) -> str:
 _library_lock = threading.Lock()  # parallel create_blocks calls would each miss the other's new blocks as duplicates
 
 
+def _new_categories(names: list[str]) -> str:
+    return f" · new categor{'y' if len(names) == 1 else 'ies'} {_names(names)}" if names else ""
+
+
 def _create_blocks(settings: Settings, args: dict) -> Written | dict:
     items = _items(args, "blocks", MAX_BATCH)
-    category = _category_of(settings)
+    new_cats: list[str] = []
     with _library_lock:
-        created, duplicates, errors = _add_blocks(settings, items, category)
+        created, duplicates, errors = _add_blocks(settings, items, _category_of(settings, new_cats))
     result = {"created": [{"id": b.id, "name": b.name, "category": b.category} for b in created],
-              "duplicates": duplicates, "errors": errors}
+              "duplicates": duplicates, "errors": errors, "new_categories": new_cats}
     if not created:
         return result
     detail = _category_names(settings, [b.category for b in created])
     if duplicates:
         detail += f" ({_plural(len(duplicates), 'duplicate')} skipped)"
-    return Written(result, f"Added {_plural(len(created), 'block')}", detail)
+    return Written(result, f"Added {_plural(len(created), 'block')}", detail + _new_categories(new_cats))
 
 
 def _add_blocks(settings: Settings, items: list[dict],
@@ -289,18 +465,22 @@ def _add_blocks(settings: Settings, items: list[dict],
     errors: list[dict] = []
     for i, raw in enumerate(items):
         try:
-            block = BlockDoc(id=_new_id("block"), category=category(_str(raw, "category", max_len=_MAX_NAME)),
-                             name=_str(raw, "name", max_len=_MAX_NAME),
-                             text=_str(raw, "text", required=True, max_len=_MAX_TEXT),
-                             polarity=_polarity(raw), tags=_tags(raw))
+            name, text = _str(raw, "name", max_len=_MAX_NAME), _str(raw, "text", required=True, max_len=_MAX_TEXT)
+            polarity, tags, cat = _polarity(raw), _tags(raw), _str(raw, "category", max_len=_MAX_NAME)
         except ToolError as exc:
             errors.append({"index": i, "error": str(exc)})
             continue
-        key = import_blocks.dedupe_key(block.polarity, block.text)
+        key = import_blocks.dedupe_key(polarity, text)
         if key in existing:  # the import's duplicate rule: same polarity + prompt text is the same block
             dup_id, dup_name = existing[key]
             duplicates.append({"index": i, "existing_id": dup_id, "existing_name": dup_name})
             continue
+        try:  # the category last: a new one is made only for a block that really lands
+            slug = category(cat)
+        except ToolError as exc:
+            errors.append({"index": i, "error": str(exc)})
+            continue
+        block = BlockDoc(id=_new_id("block"), category=slug, name=name, text=text, polarity=polarity, tags=tags)
         service.save_block(settings, block)
         existing[key] = (block.id, block.name)
         created.append(block)
@@ -313,8 +493,7 @@ def _update_block(settings: Settings, args: dict) -> Written:
     if not found:
         raise ToolError(f"No Library block “{block_id}”.")
     block = found[0]
-    if "category" in args:
-        block.category = _category_of(settings)(_str(args, "category", max_len=_MAX_NAME))
+    new_cats: list[str] = []
     if "name" in args:
         block.name = _str(args, "name", max_len=_MAX_NAME)
     if "text" in args:
@@ -323,8 +502,12 @@ def _update_block(settings: Settings, args: dict) -> Written:
         block.polarity = _polarity(args)
     if "tags" in args:
         block.tags = _tags(args)
+    if "category" in args:  # last: a new category is only made once the rest of the edit is known to be valid
+        with _library_lock:
+            block.category = _category_of(settings, new_cats)(_str(args, "category", max_len=_MAX_NAME))
     service.save_block(settings, block)  # bumps the version when the content changed
-    return Written(_block(block), "Edited a block", f"“{block.name or block.id}”")
+    return Written({**_block(block), "new_categories": new_cats}, "Edited a block",
+                   f"“{block.name or block.id}”" + _new_categories(new_cats))
 
 
 def _delete_blocks(settings: Settings, args: dict) -> Written | dict:
@@ -592,10 +775,30 @@ def _recipe(settings: Settings, doc: WorkDoc, args: dict) -> tuple[list[ComboBlo
     return live, name
 
 
-def _gen_params(doc: WorkDoc, args: dict, prompt: str, negative: str = "") -> GenerateParams:
-    """The work's generation settings (the station's) with the call's own on top — except the image count: one
-    image unless the call asks for more (the station's count would quietly multiply the cost)."""
+def _preset(settings: Settings, args: dict) -> PresetParams | None:
+    if not (preset_id := _str(args, "preset_id")):
+        return None
+    found = next((p for p in presets.list_presets(settings) if p.id == preset_id), None)
+    if found is None:
+        raise ToolError(f"No preset “{preset_id}” — list_presets has them.")
+    return found.params
+
+
+def _dedupe(doc: WorkDoc, preset: PresetParams | None, args: dict) -> bool:
+    """The station's "unique tags": the call's choice, else the preset's, else the work's."""
+    if "dedupe" in args:
+        return _flag(args, "dedupe")
+    return preset.dedupe if preset is not None else bool(doc.params.get("dedupe"))
+
+
+def _gen_params(doc: WorkDoc, args: dict, prompt: str, negative: str = "",
+                preset: PresetParams | None = None) -> GenerateParams:
+    """The work's generation settings (the station's), a preset's over them, the call's own on top — except the
+    image count: one image unless the call asks for more (a station's or preset's count would quietly multiply
+    the cost)."""
     values = {k: doc.params[k] for k in _GEN_PARAMS if k in doc.params and k != "n_samples"}
+    if preset is not None:
+        values.update(preset.model_dump(include=set(_GEN_PARAMS) - {"n_samples"}))
     values.update({k: args[k] for k in (*_GEN_PARAMS, "seed") if k in args})
     try:
         params = GenerateParams(prompt=prompt, negative_prompt=negative, **values)
@@ -610,13 +813,15 @@ def _gen_params(doc: WorkDoc, args: dict, prompt: str, negative: str = "") -> Ge
 _MAX_SEED = 4_294_967_295
 
 
-def _recipe_params(doc: WorkDoc, args: dict, blocks: list[ComboBlock]) -> GenerateParams:
-    """The prompt joined as the station joins it, and a seed fixed here so every image's recipe reproduces —
-    image k gets seed + k, which must stay a valid seed too."""
+def _recipe_params(doc: WorkDoc, args: dict, blocks: list[ComboBlock], preset: PresetParams | None,
+                   dedupe: bool) -> GenerateParams:
+    """The prompt joined (and its tags merged, with "unique tags") as the station does it, and a seed fixed here so
+    every image's recipe reproduces — image k gets seed + k, which must stay a valid seed too."""
     def join(polarity: str) -> str:
-        return ", ".join(b.text for b in blocks if b.polarity == polarity)
+        joined = ", ".join(b.text for b in blocks if b.polarity == polarity)
+        return dedupe_prompt(joined) if dedupe else joined
 
-    params = _gen_params(doc, args, join("positive"), join("negative"))
+    params = _gen_params(doc, args, join("positive"), join("negative"), preset)
     if params.seed is None:
         return params.model_copy(update={"seed": secrets.randbelow(_MAX_SEED - params.n_samples + 2)})
     if params.seed + params.n_samples - 1 > _MAX_SEED:
@@ -645,7 +850,7 @@ def _cost_of(params: GenerateParams, opus: bool) -> int:
 def _estimate_cost(settings: Settings, args: dict) -> dict:
     work_id = _str(args, "work_id")
     doc = service.load_work(settings, work_id) if work_id else WorkDoc(id="-")
-    params = _gen_params(doc, args, prompt="-")  # the cost doesn't depend on the prompt
+    params = _gen_params(doc, args, prompt="-", preset=_preset(settings, args))  # the cost doesn't depend on the prompt
     opus = _has_opus(_client(settings), for_estimate=True)
     cost = _cost_of(params, opus)
     cfg = store.load_config(settings)
@@ -687,7 +892,7 @@ def _send(settings: Settings, client: generation.Client, params: GenerateParams,
     except (httpx.HTTPError, ValueError, zipfile.BadZipFile) as exc:  # no answer, or no readable images in it
         raise GenerationFailed(f"NovelAI request failed: {exc} — it may still have been charged.", cost) from exc
     finally:
-        generation.finished(rate_limited=rate_limited)
+        generation.finished(rate_limited=rate_limited)  # also: the balance moved, a cached subscription is stale
 
 
 def _generate_images(settings: Settings, args: dict) -> Written:
@@ -695,7 +900,9 @@ def _generate_images(settings: Settings, args: dict) -> Written:
     asked_to_pay = _flag(args, "paid")
     doc = service.load_work(settings, work_id)
     blocks, combo_name = _recipe(settings, doc, args)
-    params = _recipe_params(doc, args, blocks)
+    preset = _preset(settings, args)
+    dedupe = _dedupe(doc, preset, args)
+    params = _recipe_params(doc, args, blocks, preset, dedupe)
     client = _client(settings)
     with generation.slot():
         cfg = store.load_config(settings)
@@ -708,7 +915,7 @@ def _generate_images(settings: Settings, args: dict) -> Written:
         pngs = _send(settings, client, params, cost)
 
     components = [Component(**b.model_dump(exclude={"frozen"})) for b in blocks]
-    recipe = {**params.model_dump(exclude={"prompt", "negative_prompt"}), "dedupe": False}
+    recipe = {**params.model_dump(exclude={"prompt", "negative_prompt"}), "dedupe": dedupe}
     made: list[Image] = []
 
     def change(work: WorkDoc) -> list[dict]:
@@ -745,12 +952,22 @@ _GEN_FIELDS = {
     "sampler": {"type": "string"},
     "n_samples": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1,
                   "description": "images in this one generation; only the first can be free"},
+    "noise_schedule": {"type": "string", "enum": [n.value for n in get_catalog().noise_schedules]},
+    "cfg_rescale": {"type": "number", "minimum": 0, "maximum": 1},
     "quality_toggle": {"type": "boolean"}, "uc_preset": {"type": "integer", "minimum": 0, "maximum": 7},
+    "dedupe": {"type": "boolean",
+               "description": "“unique tags”: merge repeated tags, summing their weights; default: the preset's or "
+                              "the work's"},
+    "preset_id": {"type": "string",
+                  "description": "a generation preset (list_presets): its settings apply over the work's, the "
+                                 "fields given here over both; its image count is not used"},
 }
+_TAG_FILTER = {"type": "array", "items": {"type": "string"}, "maxItems": _MAX_TAGS, "description": "all of these"}
 
 
 _BLOCK_FIELDS = {
-    "category": {"type": "string", "description": "category slug or display name (list_categories); default Custom"},
+    "category": {"type": "string", "description": "category slug or display name (list_categories); a name the "
+                                                  "Library doesn't have yet creates that category; default Custom"},
     "name": {"type": "string", "maxLength": _MAX_NAME},
     "text": {"type": "string", "maxLength": _MAX_TEXT, "description": "the prompt text (tags / natural language)"},
     "polarity": {"type": "string", "enum": ["positive", "negative"], "default": "positive"},
@@ -792,24 +1009,81 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
     Tool("list_works", "List works", "Works in the vault, most recently updated first, optionally filtered by title.",
          {"type": "object", "properties": {"query": {"type": "string"}, **_PAGING}}, "read", _list_works),
     Tool("get_work", "Get a work",
-         "One work: title, generation params, saved block combinations, and every gallery image's metadata and "
-         "recipe (the prompt it was generated from). Canvas layout is not included.",
+         "One work's overview: title, its generation settings (the station's), cover image, saved block "
+         "combinations (names — list_combinations has their blocks), starred Library blocks and how many gallery "
+         "images it has. The images themselves: list_images. Canvas layout is not included.",
          {"type": "object", "properties": {"work_id": {"type": "string"}}, "required": ["work_id"]},
          "read", _get_work),
+    Tool("list_images", "List a work's images",
+         "A work's gallery images, newest first, paged: metadata and the full recipe (model, size, steps, seed, "
+         "sampler, quality tags, UC preset, …) of each. Tags match the image's own and those of the blocks it was "
+         "made from (block_tags). include_prompt adds the prompt and its blocks — pages are smaller then.",
+         {"type": "object", "properties": {
+             "work_id": {"type": "string"}, "tags": _TAG_FILTER, "favorite": {"type": "boolean", "default": False},
+             "include_prompt": {"type": "boolean", "default": False},
+             "page": _PAGING["page"],
+             "per_page": {"type": "integer", "minimum": 1, "maximum": MAX_IMAGES_PAGE,
+                          "description": f"default 50; with include_prompt: default 10, at most {MAX_PROMPTS_PAGE}"}},
+          "required": ["work_id"]},
+         "read", _list_images),
+    Tool("search_images", "Search images",
+         "Gallery images across all works by tags (all of them) and/or favourite, newest first, paged — with "
+         "the work each one is in.",
+         {"type": "object", "properties": {"tags": _TAG_FILTER, "favorite": {"type": "boolean", "default": False},
+                                           **_PAGING}},
+         "read", _search_images),
     Tool("get_image", "View an image",
-         "A downscaled PNG of one image of a work, to look at it (e.g. before describing or tagging it).",
+         "A downscaled PNG of one image of a work, to look at it (e.g. before describing or tagging it). With "
+         "'crop', a region of it at the image's own resolution — a close look at small details.",
          {"type": "object", "properties": {
              "work_id": {"type": "string"}, "image_id": {"type": "string"},
-             "width": {"type": "integer", "minimum": 64, "maximum": 1024, "default": 512}},
+             "width": {"type": "integer", "minimum": 64, "maximum": 1024, "default": 512,
+                       "description": "the largest width sent back"},
+             "crop": {"type": "object", "description": "a region in the image's pixels", "properties": {
+                 "x": {"type": "integer", "minimum": 0}, "y": {"type": "integer", "minimum": 0},
+                 "width": {"type": "integer", "minimum": 16}, "height": {"type": "integer", "minimum": 16}},
+                 "required": ["x", "y", "width", "height"]}},
           "required": ["work_id", "image_id"]},
          "read", _get_image),
+    Tool("contact_sheet", "View images side by side",
+         f"Up to {_SHEET_MAX} gallery images of a work in one numbered picture (default: the newest "
+         f"{_SHEET_DEFAULT}) — to compare or pick images in one look; the text that comes with it says which "
+         "number is which image id.",
+         {"type": "object", "properties": {
+             "work_id": {"type": "string"},
+             "image_ids": {"type": "array", "items": {"type": "string"}, "maxItems": _SHEET_MAX},
+             "cols": {"type": "integer", "minimum": 1, "maximum": 8, "default": 6},
+             "tile": {"type": "integer", "minimum": 64, "maximum": 320, "default": 192,
+                      "description": "each image's width in px"}},
+          "required": ["work_id"]},
+         "read", _contact_sheet),
     Tool("get_catalog", "Model catalog",
-         "NovelAI models, samplers and resolution presets the app knows.",
+         "NovelAI models, samplers, noise schedules, UC presets and resolution presets the app knows.",
          {"type": "object", "properties": {}}, "read", _get_catalog),
     Tool("list_combinations", "List combinations",
          "A work's saved block combinations (ready block sets for the generation station), newest first.",
          {"type": "object", "properties": {"work_id": {"type": "string"}}, "required": ["work_id"]},
          "read", _list_combinations),
+    Tool("list_presets", "List generation presets",
+         "The user's generation presets (built-in and their own): settings, which one is the default and which "
+         "are favourites. Pass a preset_id to generate_images or estimate_cost to use one.",
+         {"type": "object", "properties": {}}, "read", _list_presets),
+    Tool("get_account", "NovelAI account",
+         "The user's NovelAI subscription: tier, remaining Anlas, what generates for free — and what agents "
+         "spent today against the user's daily budget.",
+         {"type": "object", "properties": {}}, "read", _get_account),
+    Tool("count_tokens", "Count prompt tokens",
+         "How many tokens a prompt takes for a model, with the quality tags and UC preset generation adds — "
+         "against the model's limits (a longer prompt gets cut).",
+         {"type": "object", "properties": {
+             "model": {"type": "string", "description": "a model id from get_catalog; default: the app's"},
+             "positive": {"type": "string", "maxLength": _MAX_PROMPT},
+             "negative": {"type": "string", "maxLength": _MAX_PROMPT},
+             "quality_toggle": {"type": "boolean", "default": True},
+             "uc_preset": {"type": "integer", "minimum": 0, "maximum": 7, "default": 4},
+             "dedupe": {"type": "boolean", "default": False,
+                        "description": "count it as “unique tags” sends it (repeated tags merged)"}}},
+         "read", _count_tokens),
     # Library
     Tool("create_blocks", "Create Library blocks",
          "Add prompt blocks to the Library, with the same rules as the app's Library import: a block whose polarity "
@@ -875,13 +1149,13 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          "works_delete", _delete_combination),
     # generation
     Tool("estimate_cost", "Estimate a generation's cost",
-         "The Anlas a generation would cost with these settings (default: the work's), whether it is free, and the "
-         "user's limits for paid agent generations.",
+         "The Anlas a generation would cost with these settings (default: the work's, or a preset's), whether it is "
+         "free, and the user's limits for paid agent generations.",
          {"type": "object", "properties": {"work_id": {"type": "string"}, **_GEN_FIELDS}}, "read", _estimate_cost),
     Tool("generate_images", "Generate images",
          "Generate with NovelAI from a combination of the work (combination_id) or from blocks, with the work's "
-         "generation settings unless overridden — one image unless n_samples says more; the work's “unique tags” "
-         "option is not applied. The images land in the work's gallery (Quick access) with their recipe. Free "
+         "generation settings — or a preset's (preset_id) — unless overridden; one image unless n_samples says "
+         "more. The prompt is built as the station builds it, “unique tags” included. The images land in the work's gallery (Quick access) with their recipe. Free "
          "generations (Opus: up to 1024×1024 px, 28 steps, one image) always run; a paid one runs only when the user "
          "agreed to spend Anlas on it — then pass paid: true — and allows paid ones in Settings, within their limits. "
          "One generation at a time, a few seconds apart: for a series, call again for each.",
@@ -895,6 +1169,9 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
 ]}
 
 
+REACHES_NOVELAI = frozenset({"generate_images", "estimate_cost", "get_account"})  # the rest stays in the vault
+
+
 def run(tool: Tool, settings: Settings, args: dict) -> Any:
     """Run a tool, turning service-level HTTP errors into agent-facing ToolErrors."""
     try:
@@ -904,4 +1181,4 @@ def run(tool: Tool, settings: Settings, args: dict) -> Any:
 
 
 def image_block(result: ImageResult) -> dict:
-    return {"type": "image", "mimeType": "image/png", "data": base64.b64encode(result.png).decode("ascii")}
+    return {"type": "image", "mimeType": result.mime, "data": base64.b64encode(result.data).decode("ascii")}

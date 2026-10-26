@@ -21,10 +21,12 @@ const { status: st, busy, statusText } = agent
 // Grouped as in the mockup; deleting is marked and off by default (backend AgentPermissions).
 const PERMS: { group: string; items: { key: keyof AgentPermissions; name: string; desc: string; danger?: true }[] }[] = [
   { group: 'Read', items: [
-    { key: 'read', name: 'Browse the Library and works', desc: 'blocks, categories, tags, works, image metadata and images, models' },
+    { key: 'read', name: 'Browse the Library and works',
+      desc: 'blocks, categories, tags, works, image metadata and images, models, presets, your Anlas balance' },
   ] },
   { group: 'Library', items: [
-    { key: 'blocks_write', name: 'Create and edit blocks', desc: 'same rules as Library import — duplicates are skipped' },
+    { key: 'blocks_write', name: 'Create and edit blocks',
+      desc: 'same rules as Library import — duplicates are skipped, new categories are made' },
     { key: 'blocks_delete', name: 'Delete blocks', desc: 'removes blocks from the Library', danger: true },
   ] },
   { group: 'Works', items: [

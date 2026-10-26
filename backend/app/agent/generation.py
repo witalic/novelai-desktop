@@ -24,12 +24,19 @@ from app.novelai import MockNovelAIClient, NovelAIClient
 _GAP_S = 3.0  # pause between two agent generations
 _BACKOFF_START_S = 30.0  # after a 429 — doubled on each one in a row
 _BACKOFF_MAX_S = 300.0
-_ESTIMATE_TTL_S = 300.0  # how long a subscription read serves cost estimates (never a generation)
+ESTIMATE_TTL_S = 300.0  # how long a subscription read serves cost estimates (never a generation)
+FREE_TEXT = "up to 1024×1024 px, ≤ 28 steps, 1 image"  # what Opus generates for free (novelai.cost)
 
 _lock = threading.Lock()  # one agent generation at a time — a second call is refused, never queued
 _not_before = 0.0  # monotonic time the next agent generation may go out
 _backoff = 0.0
-_tier: tuple[float, bool] | None = None  # (read at, has Opus's free generations), for estimates only
+
+# The last subscription read, for reads that may be a little old (estimates, get_account). A generation request
+# going out moves the balance, so it bumps the epoch, and a read from an older epoch is never served — nor stored,
+# when the read itself started before the generation finished.
+_sub_lock = threading.Lock()
+_sub: tuple[float, int, dict] | None = None  # (read at, epoch, subscription)
+_epoch = 0
 
 Client = NovelAIClient | MockNovelAIClient
 
@@ -51,22 +58,38 @@ def slot() -> Iterator[None]:
 
 
 def finished(*, rate_limited: bool = False) -> None:
-    """A generation request went out: the next one waits the usual pause — or backs off after a 429."""
-    global _not_before, _backoff
+    """A generation request went out: the next one waits the usual pause — or backs off after a 429 — and the
+    account's balance has moved (or may have)."""
+    global _not_before, _backoff, _epoch
     _backoff = min(_backoff * 2 or _BACKOFF_START_S, _BACKOFF_MAX_S) if rate_limited else 0.0
     _not_before = time.monotonic() + max(_GAP_S, _backoff)
+    with _sub_lock:
+        _epoch += 1
+
+
+def subscription(client: Client, *, max_age: float = 0.0) -> dict:
+    """The account's subscription (tier, Anlas): a read younger than ``max_age`` seconds with no generation since, or
+    a fresh one from NovelAI. Called from a worker thread; the client is async."""
+    global _sub
+    with _sub_lock:
+        cached, epoch = _sub, _epoch
+    if cached is not None and cached[1] == epoch and time.monotonic() - cached[0] < max_age:
+        return cached[2]
+    sub = anyio.from_thread.run(client.get_subscription)
+    with _sub_lock:
+        if _epoch == epoch:  # no generation finished while this was read: it is current
+            _sub = (time.monotonic(), epoch, sub)
+    return sub
+
+
+def opus_of(sub: dict) -> bool:
+    """Whether the account gets Opus's free generations: an active tier 3."""
+    return bool(sub.get("active")) and int(sub.get("tier") or 0) >= 3
 
 
 def has_opus(client: Client, *, for_estimate: bool = False) -> bool:
-    """Whether the account gets Opus's free generations (an active tier 3). Read from NovelAI each time, except that
-    an estimate may reuse a read from the last few minutes. Called from a worker thread; the client is async."""
-    global _tier
-    now = time.monotonic()
-    if for_estimate and _tier is not None and now - _tier[0] < _ESTIMATE_TTL_S:
-        return _tier[1]
-    sub = anyio.from_thread.run(client.get_subscription)
-    _tier = (now, bool(sub.get("active")) and int(sub.get("tier") or 0) >= 3)
-    return _tier[1]
+    """Read from NovelAI right before a generation; an estimate may reuse a read from the last few minutes."""
+    return opus_of(subscription(client, max_age=ESTIMATE_TTL_S if for_estimate else 0.0))
 
 
 def refusal(cost: int, asked_to_pay: bool, cfg: AgentConfig, opus: bool) -> tuple[str, str] | None:
@@ -74,8 +97,7 @@ def refusal(cost: int, asked_to_pay: bool, cfg: AgentConfig, opus: bool) -> tupl
     shows) — or None when it may."""
     s = cfg.spending
     if not asked_to_pay:
-        free = ("Free ones are Opus generations up to 1024×1024 px, 28 steps, one image" if opus
-                else "This account has no free generations")
+        free = f"Free ones are Opus generations {FREE_TEXT}" if opus else "This account has no free generations"
         return (f"This generation costs about {cost} Anlas. {free}. Ask the user first — only if they agree to spend "
                 "Anlas on it, call again with paid: true.", f"◆ {cost} — paid not requested")
     if not s.paid:

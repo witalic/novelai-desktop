@@ -71,8 +71,8 @@ def _describe(tool: tools.Tool) -> dict:
     annotations = {"title": tool.title, "readOnlyHint": tool.permission == "read"}
     if tool.permission != "read":
         annotations["destructiveHint"] = tool.permission.endswith("_delete")
-    if tool.permission == "generate":
-        annotations["openWorldHint"] = True  # reaches NovelAI (and may spend Anlas)
+    if tool.name in tools.REACHES_NOVELAI:
+        annotations["openWorldHint"] = True  # talks to NovelAI (a generation may spend Anlas)
     return {"name": tool.name, "title": tool.title, "description": tool.description, "inputSchema": tool.schema,
             "annotations": annotations}
 
@@ -88,7 +88,8 @@ def _summary(args: dict) -> str:
     """What a call was about, for the activity feed — the arguments that name things, never their bulk."""
     parts = [f"{k.replace('_', ' ')} “{v[:60]}”" for k in ("query", "work_id", "image_id", "category")
              if isinstance(v := args.get(k), str) and v]
-    parts += [f"{len(v)} {k}" for k in ("ids", "categories", "tags") if isinstance(v := args.get(k), list) and v]
+    parts += [f"{len(v)} {k.replace('_', ' ')}" for k in ("ids", "image_ids", "categories", "tags")
+              if isinstance(v := args.get(k), list) and v]
     return ", ".join(parts)
 
 
@@ -167,5 +168,6 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
     else:  # a read, or a write that turned out to change nothing (all duplicates, nothing found)
         activity.record_read(tool.title, _summary(args))
     if isinstance(out, tools.ImageResult):
-        return _result(msg_id, {"content": [tools.image_block(out)], "isError": False})
+        caption = [{"type": "text", "text": out.caption}] if out.caption else []
+        return _result(msg_id, {"content": [tools.image_block(out), *caption], "isError": False})
     return _result(msg_id, _text(json.dumps(out, ensure_ascii=False)))
