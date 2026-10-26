@@ -8,8 +8,8 @@ import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
 import { agentWorkChanges, getVaultConfig, listCategories, resolveBlocks } from '../api'
-import { onAgentNotice } from '../composables/useAgentNotices'
-import { applyGalleryOps, planAgentOps, type AgentOp } from '../vault/agentOps'
+import { editedWork, onAgentNotice } from '../composables/useAgentNotices'
+import { applyGalleryOps, applyStarred, planAgentOps, type AgentOp } from '../vault/agentOps'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePipeline, PICK_SCALES, BASE_LONG, DEFAULT_SPAWN_SCALE } from '../composables/useImagePipeline'
@@ -64,6 +64,7 @@ const emit = defineEmits<{
   'reload-work': [] // a concurrent edit (409) → the view re-fetches the full work (params + stack + canvas)
   'view-stack': [string] // open the image viewer over the stack at this draft (the view owns the stack)
   'agent-params': [{ workId: string; set: Partial<PanelParams>; presetId?: string }] // an agent set the station's settings (the view owns them)
+  'work-gone': [string] // the open work left the vault; the canvas keeps its unsaved changes as a new work (keepAsNew)
 }>()
 
 const {
@@ -167,10 +168,11 @@ const combos = ref<PersistedCombo[]>([])
 // Vault autosave (dirty flag, flush, save state). Owns the state + logic; the lifecycle (window listeners,
 // the periodic timer, and the KeepAlive activate/deactivate hooks) is wired in onMounted/onUnmounted below.
 const { title, cover, vaultReady, workId, baseUpdatedAt, saveState, savedAt, markDirty, flush, flushIfDirty, manualSave,
-  onBeforeUnload, refreshInterval, stopAutosave, resetBaseline, onAgentEdit } = useAutosave({
+  onBeforeUnload, refreshInterval, stopAutosave, resetBaseline, onAgentEdit, settle, hasUnsaved } = useAutosave({
   nodes, viewport, params: () => props.params, drafts: () => props.drafts, favorites: () => favorites.value,
   combos: () => combos.value,
   onNoVault: () => emit('navigate', 'settings/vaults'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
+  onGone: keepAsNew,
   agentChanges: agentWorkChanges, applyAgentOps,
 })
 // A concurrent edit (409) → the view re-fetches the FULL work (params + draft stack + canvas doc), not
@@ -183,6 +185,7 @@ function applyAgentOps(ops: AgentOp[]) {
   const edits = planAgentOps(ops, combos.value)
   if (edits.title !== undefined) title.value = edits.title
   if (edits.params) emit('agent-params', { workId: workId.value, set: edits.params, presetId: edits.presetId }) // synchronous: lands in the replay
+  if (edits.starred.length) favorites.value = applyStarred(favorites.value, edits.starred)
   combos.value = edits.combos
   for (const { image, snapshot } of edits.added) {
     if (findNode(image.id)) continue
@@ -205,7 +208,8 @@ function applyAgentOps(ops: AgentOp[]) {
 // What agents change elsewhere: this work → catch up now; the Library → the prompt widget, the category palette
 // and the combinations' drift badges re-read it.
 onAgentNotice((n) => {
-  if (n.kind === 'work' && n.work_id === workId.value) onAgentEdit()
+  if (editedWork(n, workId.value)) onAgentEdit()
+  if (n.kind === 'work_deleted' && n.work_id === workId.value) onWorkDeleted(n.work_id)
   if (n.kind === 'library') { widgetRevalidate.value++; loadCategoryColors() }
 })
 // After a save, point kept gallery images at their on-disk vault URL so later saves don't re-serialize their
@@ -797,16 +801,42 @@ async function newWork() {
     })
     if (!proceed) return
   }
+  startFresh()
+}
+function startFresh() {
   workId.value = newId('work')
   baseUpdatedAt.value = '' // a fresh work has no stored copy → no optimistic-lock base
   title.value = ''
   cover.value = null
   combos.value = []
+  favorites.value = []
   setNodes(zoneNodes())
   shownSrc.value = {} // no images in a fresh work — drop the previous work's entries
   nextTick(fitWidgets)
   resetBaseline('idle')
-  emit('new-work') // GenerateView re-seeds params from the default preset
+  emit('new-work') // GenerateView drops the stack and re-seeds params from the default preset
+}
+
+// The open work was deleted (by an agent, or from the Works list). Once a running save has its answer: with nothing
+// unsaved, a new work takes its place; with unsaved changes, they stay (keepAsNew).
+async function onWorkDeleted(id: string) {
+  await settle()
+  if (workId.value !== id) return // that save found it gone and kept the changes already
+  if (hasUnsaved()) { keepAsNew(id); markDirty() } else startFresh()
+}
+// The open work is gone from the vault — deleted, or the vault changed under it — while the canvas holds changes it
+// never saved. They stay, as a new work: only what lived in that work's folder (its saved images, its saved stack)
+// went with it.
+function keepAsNew(oldId: string) {
+  const inFolder = (url: unknown) => String(url || '').startsWith(`/api/vault/works/${oldId}/`)
+  const lost = nodes.value.filter((n) => n.type === 'image' && inFolder(n.data?.url)).map((n) => n.id)
+  for (const id of lost) removeImageFromGridAlbums(id)
+  if (lost.length) removeNodes(lost)
+  workId.value = newId('work')
+  baseUpdatedAt.value = '' // a new work: nothing stored to be newer than, nothing to be "gone" again
+  cover.value = null
+  emit('work-gone', oldId) // GenerateView drops the stack's saved drafts (their files went with the folder)
+  toast.push('This work is no longer in the vault — your unsaved changes stay here as a new work.', 'err', 8000)
 }
 
 onMounted(async () => {

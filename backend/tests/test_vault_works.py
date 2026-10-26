@@ -357,6 +357,16 @@ async def test_delete_work_removes_dir_and_index(client):
     assert (await ac.get("/api/vault/works")).json()["total"] == 0
 
 
+async def test_a_deleted_work_is_never_saved_back(client):
+    ac, _ = client
+    saved = (await ac.put("/api/vault/works", json=_work("w1"))).json()
+    assert (await ac.delete("/api/vault/works/w1")).status_code == 200
+    res = await ac.put("/api/vault/works", json={**_work("w1"), "updated_at": saved["updated_at"]})  # the open copy
+    assert res.status_code == 404 and res.json()["detail"] == "This work was deleted."
+    assert (await ac.get("/api/vault/works")).json()["total"] == 0  # not brought back with its files gone
+    assert (await ac.put("/api/vault/works", json=_work("w1"))).status_code == 200  # a fresh one (no base) still saves
+
+
 def _held_open(monkeypatch, *names: str) -> None:
     """These files are open in another program (Explorer's Thumbs.db on a share): Windows refuses to delete them."""
     real = os.unlink

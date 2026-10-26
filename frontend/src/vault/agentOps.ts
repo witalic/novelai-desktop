@@ -32,6 +32,7 @@ export type AgentOp =
   | { op: 'images_added'; images: PersistedImage[]; snapshots: PersistedSnapshot[] } // generated, on disk already
   | { op: 'cover'; image_id: string }
   | { op: 'params'; set: Partial<PanelParams>; preset_id?: string } // the station's settings — a preset's, if named
+  | { op: 'starred'; ids: string[]; starred: boolean } // Library blocks starred (or not) in this work
   | GalleryOp
 
 export interface AgentEdits {
@@ -42,6 +43,7 @@ export interface AgentEdits {
   images: Map<string, ImageFields> // per image id, the metadata to set
   deleted: string[] // image ids to remove
   added: { image: PersistedImage; snapshot?: PersistedSnapshot }[] // new gallery images, each with its recipe
+  starred: { ids: string[]; starred: boolean }[] // stars set and taken off, in order (applyStarred)
   gallery: GalleryOp[] // the layout edits, in order (applyGalleryOps), after the added images joined
   cover?: string // the work's cover — set before the deletions, which move it on if it goes, as the backend does
 }
@@ -96,11 +98,21 @@ export function applyGalleryOps(blocks: GalleryBlock[], ops: GalleryOp[], inGall
   }
 }
 
+/** A work's starred blocks with the agent's stars set and taken off — a new list, in the order they were starred. */
+export function applyStarred(favorites: string[], starred: { ids: string[]; starred: boolean }[]): string[] {
+  let next = [...favorites]
+  for (const s of starred) {
+    next = s.starred ? [...next, ...s.ids.filter((id) => !next.includes(id))] : next.filter((id) => !s.ids.includes(id))
+  }
+  return next
+}
+
 export function planAgentOps(ops: AgentOp[], combos: PersistedCombo[]): AgentEdits {
   let next = cloneCombos(combos)
   const images = new Map<string, ImageFields>()
   const deleted = new Set<string>()
   const added = new Map<string, { image: PersistedImage; snapshot?: PersistedSnapshot }>()
+  const starred: { ids: string[]; starred: boolean }[] = []
   const gallery: GalleryOp[] = []
   let title: string | undefined
   let cover: string | undefined
@@ -110,6 +122,7 @@ export function planAgentOps(ops: AgentOp[], combos: PersistedCombo[]): AgentEdi
     if (o.op === 'title') title = o.title
     else if (o.op === 'cover') cover = o.image_id
     else if (o.op === 'params') { params = { ...params, ...o.set }; presetId = o.preset_id ?? presetId }
+    else if (o.op === 'starred') starred.push({ ids: o.ids, starred: o.starred })
     else if (isGalleryOp(o)) gallery.push(o)
     else if (o.op === 'combo') {
       const c = cloneCombos([o.combo])[0]
@@ -124,7 +137,9 @@ export function planAgentOps(ops: AgentOp[], combos: PersistedCombo[]): AgentEdi
       for (const im of o.images) added.set(im.id, { image: im, snapshot: snaps.get(im.snapshot_id ?? '') })
     }
   }
-  return { title, params, presetId, combos: next, images, deleted: [...deleted], added: [...added.values()], gallery, cover }
+  return {
+    title, params, presetId, combos: next, images, deleted: [...deleted], added: [...added.values()], starred, gallery, cover,
+  }
 }
 
 /** Catching up, one run at a time: a call during a run (another agent edit, a save's 409) makes it run once more
@@ -152,6 +167,7 @@ export function applyAgentOpsToDoc(doc: WorkDoc, ops: AgentOp[]): void {
   const edits = planAgentOps(ops, doc.combos || [])
   if (edits.title !== undefined) doc.title = edits.title
   if (edits.params) doc.params = { ...doc.params, ...edits.params }
+  if (edits.starred.length) doc.favorites = applyStarred(doc.favorites || [], edits.starred)
   doc.combos = edits.combos
   const have = new Set(doc.images.map((im) => im.id))
   for (const { image, snapshot } of edits.added) {

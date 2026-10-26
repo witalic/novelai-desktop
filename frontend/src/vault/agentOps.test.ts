@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyAgentOpsToDoc, applyGalleryOps, catchUpQueue, planAgentOps, type AgentOp, type GalleryOp } from './agentOps'
+import {
+  applyAgentOpsToDoc, applyGalleryOps, applyStarred, catchUpQueue, planAgentOps, type AgentOp, type GalleryOp,
+} from './agentOps'
 import { gridsOf } from './workOps'
 import type { GalleryBlock, PersistedCombo, WorkDoc } from '../types'
 
@@ -34,6 +36,16 @@ describe('planAgentOps', () => {
     expect(edits.params).toEqual({ steps: 24, uc_preset: 3 })
     expect(edits.presetId).toBe('preset-a')
     expect(planAgentOps([{ op: 'title', title: 'x' }], mine).params).toBeUndefined() // nothing to set: the station stays
+  })
+
+  it('stars and unstars blocks in order, each once', () => {
+    const edits = planAgentOps([
+      { op: 'starred', ids: ['b-1', 'b-2'], starred: true },
+      { op: 'starred', ids: ['b-0'], starred: false },
+    ], mine)
+    const once = applyStarred(['b-0', 'b-1'], edits.starred)
+    expect(once).toEqual(['b-1', 'b-2'])
+    expect(applyStarred(once, edits.starred)).toEqual(once) // replayed: nothing more
   })
 
   it('removes what the agent removed', () => {
@@ -96,12 +108,14 @@ describe('applyAgentOpsToDoc', () => {
     applyAgentOpsToDoc(doc, [
       { op: 'title', title: 'Renamed' },
       { op: 'params', set: { steps: 24, n_samples: 2 } },
+      { op: 'starred', ids: ['b-9'], starred: true },
       { op: 'image', id: 'img-2', set: { description: 'moonlit' } },
       { op: 'images_deleted', ids: ['img-1'] },
       { op: 'combo_deleted', id: 'c-1' },
     ])
     expect(doc.title).toBe('Renamed')
     expect(doc.params).toEqual({ steps: 24, seed: 77, n_samples: 2 }) // what the agent set; the seed stays
+    expect(doc.favorites).toEqual(['b-9'])
     expect(doc.combos).toEqual([])
     expect(doc.images.map((im) => [im.id, im.description])).toEqual([['img-2', 'moonlit']])
     expect(doc.preview_image_id).toBe('img-2')

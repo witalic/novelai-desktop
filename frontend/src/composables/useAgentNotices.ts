@@ -5,12 +5,20 @@
 import { onUnmounted } from 'vue'
 
 export interface AgentNotice {
-  kind: 'library' | 'work' | 'failed' // what changed: Library blocks, the work `work_id` — or a generation failed
+  // what changed: Library blocks, the work `work_id` (deleted, for `work_deleted`) — or a generation failed
+  kind: 'library' | 'work' | 'work_deleted' | 'failed'
   work_id: string | null
+  also?: string[] // other works the same edit changed (images moved out of one into another)
   message: string // what the agent did, as the activity feed words it
   cost: number | null // a generation's Anlas (0 = free); null for everything else
+  local?: boolean // the app's own change, told the same way (announceWorkDeleted) — no agent, no toast
 }
 type Listener = (notice: AgentNotice) => void
+
+/** Whether a notice says the agent edited this work (it was the one changed, or one of them). */
+export function editedWork(n: AgentNotice, workId: string | null | undefined): boolean {
+  return n.kind === 'work' && !!workId && (n.work_id === workId || !!n.also?.includes(workId))
+}
 
 const RETRY_MS = 5000
 const listeners = new Set<Listener>()
@@ -28,10 +36,20 @@ function connect() {
   source.onmessage = (ev) => {
     let notice: AgentNotice
     try { notice = JSON.parse(ev.data) } catch { return }
-    for (const fn of [...listeners]) {
-      try { fn(notice) } catch { /* one listener's failure never starves the rest */ }
-    }
+    tell(notice)
   }
+}
+
+function tell(notice: AgentNotice) {
+  for (const fn of [...listeners]) {
+    try { fn(notice) } catch { /* one listener's failure never starves the rest */ }
+  }
+}
+
+/** A work the user deleted (the Works list), told to the listeners an agent's deletion reaches — so an open copy of it
+ *  lets it go then, rather than at its next save. */
+export function announceWorkDeleted(workId: string): void {
+  tell({ kind: 'work_deleted', work_id: workId, message: '', cost: null, local: true })
 }
 
 /** Hear every agent notice for as long as the calling component lives (KeepAlive'd views keep hearing them). */

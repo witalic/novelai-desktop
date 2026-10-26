@@ -31,7 +31,7 @@ PERMISSION_LABELS = {  # as the switches read in Settings → Agents
     "blocks_delete": "Delete blocks",
     "works_write": "Create and edit works",
     "combos_write": "Create and edit combinations",
-    "works_delete": "Delete images and combinations",
+    "works_delete": "Delete works, images and combinations",
     "generate": "Generate images",
 }
 
@@ -163,7 +163,8 @@ async def _call(msg_id: object, params: dict, ctx: Context) -> dict:
     if isinstance(out, tools.Written):
         activity.record(out.action, out.detail, "ok", kind=kind, cost=out.cost)
         price = "" if out.cost is None else " · free" if out.cost == 0 else f" · ◆ {out.cost}"
-        changes.publish({"kind": "work" if out.work_id else "library", "work_id": out.work_id, "cost": out.cost,
+        what = "work_deleted" if out.deleted else "work" if out.work_id else "library"
+        changes.publish({"kind": what, "work_id": out.work_id, "also": list(out.also), "cost": out.cost,
                          "message": f"Agent {out.action[0].lower()}{out.action[1:]} — {out.detail}{price}"})
         out = out.result
     else:  # a read, or a write that turned out to change nothing (all duplicates, nothing found)

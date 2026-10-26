@@ -59,25 +59,27 @@ def _guard_no_move() -> None:
         raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
 
 
-def save_work(settings: Settings, doc: WorkDoc, *, must_exist: bool = False) -> dict:
-    """Write a work. ``must_exist``: an edit of a stored work (an agent's) — 404 if it was deleted meanwhile,
-    rather than bring it back with images whose files are gone."""
+def save_work(settings: Settings, doc: WorkDoc) -> dict:
+    """Write a work. One that comes with a base (``updated_at``: the stored copy it was loaded from) is an edit: if
+    that work is gone meanwhile — deleted by the user or an agent, or the vault changed under it — it's a 404, never a
+    resurrection whose image files are gone; the app keeps its unsaved changes as a new work then. (A copy that opted
+    out of the base — the browser fallback's close beacon — saves as a new one would.)"""
     if not layout.valid_id(doc.id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
     _guard_no_move()
     vault = _vault(settings)
     with _works_lock:
-        return _save_work_locked(vault, doc, must_exist)
+        return _save_work_locked(vault, doc)
 
 
-def _save_work_locked(vault: Path, doc: WorkDoc, must_exist: bool) -> dict:
+def _save_work_locked(vault: Path, doc: WorkDoc) -> dict:
     conn = index.open_index(vault)
     try:
         # Full id (not a prefix) in the directory name — a short prefix can collide for two same-title works
         # created close together, and the second write_work would overwrite the first's work.json.
         existing_dir = index.find_work_dir(conn, doc.id)
-        if must_exist and not existing_dir:
-            raise HTTPException(status_code=404, detail="Work not found.")
+        if doc.updated_at and not existing_dir:
+            raise HTTPException(status_code=404, detail="This work was deleted.")
         dir_name = existing_dir or f"{_now()[:10]}__{layout.slugify(doc.title)}__{doc.id}"
         work_dir = layout.safe_join(vault / "works", dir_name)
         doc.slug = layout.slugify(doc.title)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { ApiError, deleteWork, listWorks, type WorkSort } from '../api'
-import { onAgentNotice } from '../composables/useAgentNotices'
+import { announceWorkDeleted, onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import WorkEditor from './WorkEditor.vue'
@@ -92,6 +92,7 @@ async function removeWork(w: WorkListItem) {
   if (!ok) return
   try {
     await deleteWork(w.id)
+    announceWorkDeleted(w.id) // open in Generate: the canvas lets it go now
     push('Work deleted', 'ok')
     // If the last item on a page is gone, step back a page.
     fetchPage(items.value.length === 1 && page.value > 1 ? page.value - 1 : page.value)
@@ -108,7 +109,9 @@ onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
 let shown = false
 onActivated(() => { shown = true })
 onDeactivated(() => { shown = false })
-onAgentNotice((n) => { if (n.kind === 'work' && shown && !openWork.value) fetchPage() })
+onAgentNotice((n) => {
+  if ((n.kind === 'work' || n.kind === 'work_deleted') && !n.local && shown && !openWork.value) fetchPage()
+})
 </script>
 
 <template>

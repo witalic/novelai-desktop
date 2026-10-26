@@ -46,7 +46,18 @@ Landing in blocks, one commit each:
      activity row shows the new values.
    - The open app takes them into its station (a named preset lands whole and becomes the active one); the
      Works editor into its copy.
-4. **Housekeeping:** #18, #19, #20.
+4. **Housekeeping — done:** #18, #19, #20.
+   - `delete_work` (under the delete switch, now "Delete works, images and combinations"). An open copy
+     lets the work go: the canvas starts a new work — or, with unsaved changes, keeps them as a new work —
+     and the Works editor returns to the list. A delete from the Works list is told to the canvas the same
+     way.
+   - A save that comes with a base for a work that is no longer in the vault is a 404 — for the app too —
+     so a work deleted while open (or a vault that changed under it) is never brought back without its
+     image files. The canvas keeps what it hadn't saved as a new work instead; only what lived in the old
+     work's folder (its saved images and stack) is gone.
+   - `move_images` moves or copies gallery images between works with their recipes and metadata, under
+     new ids, into the target's Quick access; both works' open copies catch up (a notice names both).
+   - `star_blocks` stars and unstars Library blocks in a work.
 
 ## What existed in v1.2 (before the blocks above)
 

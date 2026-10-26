@@ -31,9 +31,9 @@ const PERMS: { group: string; items: { key: keyof AgentPermissions; name: string
   ] },
   { group: 'Works', items: [
     { key: 'works_write', name: 'Create and edit works',
-      desc: 'titles; generation settings; image tags, descriptions and favorites; the gallery layout and cover' },
+      desc: 'titles; generation settings; starred blocks; image tags, descriptions and favorites; the gallery layout and cover; moving images between works (out of the one they were in)' },
     { key: 'combos_write', name: 'Create and edit combinations', desc: 'ready block sets inside a work' },
-    { key: 'works_delete', name: 'Delete images and combinations', desc: 'permanent', danger: true },
+    { key: 'works_delete', name: 'Delete works, images and combinations', desc: 'permanent', danger: true },
   ] },
   { group: 'Generation', items: [
     { key: 'generate', name: 'Generate images', desc: "results go into the work's gallery — Quick access" },

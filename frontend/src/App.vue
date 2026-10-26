@@ -44,6 +44,7 @@ function openSection(section: SettingsSection) {
 // updates the one toast on screen instead of stacking a column of them.
 let agentToast = { id: 0, more: 0 }
 onAgentNotice((n) => {
+  if (n.local) return // the app's own change — no agent did anything
   agent.load() // Agent activity and the sidebar badge catch up now rather than at the next poll
   if (n.cost) account.refresh() // a paid agent generation spent Anlas — the balance in the sidebar follows
   if (n.kind === 'failed') { push(n.message, 'err', 8000); return } // a failure gets its own, longer-lived toast

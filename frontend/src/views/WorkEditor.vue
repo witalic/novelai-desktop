@@ -5,7 +5,7 @@
  * facet fills in next. */
 import { computed, nextTick, ref, watch } from 'vue'
 import { agentWorkChanges, ApiError, loadWork, saveWork } from '../api'
-import { onAgentNotice } from '../composables/useAgentNotices'
+import { editedWork, onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useImagePreview } from '../composables/useImagePreview'
@@ -126,19 +126,23 @@ async function flush() {
 }
 let conflicts = 0 // 409s in a row answered by catching up — a busy agent can land more edits in between
 async function saveOnce() {
-  if (!doc.value) return
+  const d = doc.value
+  if (!d) return
   try {
     // doc.updated_at is the base the editor loaded — the server 409s if the stored copy is newer (H3).
-    const res = await saveWork(doc.value)
+    const res = await saveWork(d)
+    if (doc.value !== d) return // let go meanwhile (deleted, reloaded or closed)
     conflicts = 0
     saveState.value = 'saved'
     suppressWatch = true
     doc.value.updated_at = res.updated_at // new base for the next save — must not re-trigger autosave
     await nextTick(); suppressWatch = false
   } catch (e) {
+    if (doc.value !== d) return // an answer about a copy let go meanwhile
     // Stored copy is newer: when only an agent changed it, replay its edits and let the flush loop save again.
     if (e instanceof ApiError && e.status === 409 && conflicts < 5 && await catchUp()) { conflicts++; pending = true; return }
     conflicts = 0
+    if (e instanceof ApiError && e.status === 404) { pending = false; push('This work is no longer in the vault.', 'err'); gone(); return }
     if (e instanceof ApiError && e.status === 409) { pending = false; push('This work changed elsewhere — reloading.', 'err'); await load() }
     else { saveState.value = 'idle'; push(e instanceof Error ? e.message : 'Save failed', 'err') }
   }
@@ -166,10 +170,19 @@ const catchUp = catchUpQueue(async () => {
   return false
 })
 onAgentNotice(async (n) => {
-  if (n.kind !== 'work' || n.work_id !== doc.value?.id) return
+  if (n.kind === 'work_deleted' && n.work_id === doc.value?.id) { gone(); return } // the agent's notice says so already
+  if (!editedWork(n, doc.value?.id)) return
   if (inflight) await inflight // a running save lands (or 409s and catches up itself) first
   await catchUp()
 })
+// The work was deleted while open here (by an agent), or is no longer in the vault: nothing saves back to it — back to
+// the list. (The editor holds no images of its own to keep: only metadata and layout edits of that work.)
+function gone() {
+  ready.value = false // no autosave of what is left
+  if (saveTimer) clearTimeout(saveTimer)
+  doc.value = null
+  emit('back')
+}
 
 // ---- download (shared save-to-Downloads pipeline) ----
 const { downloadUrls } = useImageDownload()

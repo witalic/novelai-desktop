@@ -440,6 +440,74 @@ async def test_deleted_images_leave_every_structure(settings):
     assert sorted(p.name for p in (work_dir / "images").iterdir()) == ["img-b.json", "img-b.png"]
 
 
+async def test_a_work_is_deleted_only_when_allowed_and_the_app_is_told(settings):
+    seed(settings)
+    async with mcp_client(settings) as c:
+        refused = await call(c, "delete_work", {"work_id": "work-1"})
+        assert refused["isError"] and "“Delete works, images and combinations” is turned off" in refused["content"][0]["text"]
+    with changes.subscribe() as notices:
+        async with mcp_client(settings, allowing(works_delete=True)) as c:
+            assert await call_json(c, "delete_work", {"work_id": "work-1"}) == {"deleted": "work-1"}
+            assert (await call(c, "get_work", {"work_id": "work-1"}))["isError"]
+        notice = await asyncio.wait_for(notices.get(), 1)
+    assert (notice["kind"], notice["work_id"]) == ("work_deleted", "work-1")  # the app closes it if it's open
+    assert (activity.recent()[0]["action"], activity.recent()[0]["detail"]) == ("Deleted a work", "“Halloween” with 1 image")
+    assert not list((appconfig.active_vault(settings) / "works").iterdir())
+
+
+async def test_images_move_or_copy_to_another_work_with_their_recipes(api, settings):
+    seed(settings)
+    seed_recipe_image(settings)  # work-1: img-1 (favourite, no recipe) and img-2 (with its recipe)
+    src_base = service.load_work(settings, "work-1").updated_at
+    with changes.subscribe() as notices:
+        async with mcp_client(settings) as c:
+            other = await call_json(c, "create_work", {"title": "Picks"})
+            copied = await call_json(c, "move_images", {"from_work_id": "work-1", "to_work_id": other["id"],
+                                                        "image_ids": ["img-2"], "copy": True})
+            moved = await call_json(c, "move_images", {"from_work_id": "work-1", "to_work_id": other["id"],
+                                                       "image_ids": ["img-1"]})
+            for args, message in [({"image_ids": ["img-scratch"]}, "No gallery image “img-scratch”"),
+                                  ({"to_work_id": "work-1"}, "the work they are in already"),
+                                  ({"to_work_id": "work-nope"}, "not found")]:
+                res = await call(c, "move_images", {"from_work_id": "work-1", "to_work_id": other["id"],
+                                                    "image_ids": ["img-2"], **args})
+                assert res["isError"] and message in res["content"][0]["text"], (args, res)
+        *_, move_notice = [notices.get_nowait() for _ in range(notices.qsize())]
+    assert (move_notice["work_id"], move_notice["also"]) == (other["id"], ["work-1"])  # both open copies catch up
+    new2, new1 = copied["images"][0]["id"], moved["images"][0]["id"]
+    assert copied["copied"] and not moved["copied"] and new2 != "img-2"
+    src, dst = service.load_work(settings, "work-1"), service.load_work(settings, other["id"])
+    assert [im.id for im in src.images if im.role == "gallery"] == ["img-2"]  # the copied one stays, the moved one left
+    assert {im.id for im in dst.images} == {new1, new2} and dst.preview_image_id == new2
+    im2, im1 = (next(im for im in dst.images if im.id == i) for i in (new2, new1))
+    recipe = next(s for s in dst.snapshots if s.id == im2.snapshot_id)
+    assert (recipe.params, recipe.id != "snap-2", im2.tags, im2.created_at) == (
+        _RECIPE, True, ["night"], "2099-01-01T00:00:00.000+00:00")
+    assert (im1.favorite, im1.description, im1.tags, im1.snapshot_id) == (True, "first", ["vampire"], None)
+    assert (service.image_path(settings, other["id"], new2).read_bytes()
+            == service.image_path(settings, "work-1", "img-2").read_bytes())
+    ops = (await api.get("/api/agent/works/work-1/changes", params={"since": src_base})).json()["ops"]
+    assert ops == [{"op": "images_deleted", "ids": ["img-1"]}]
+    assert [r["action"] for r in activity.recent() if r["kind"] == "write"][:2] == ["Moved images", "Copied images"]
+
+
+async def test_blocks_are_starred_in_a_work(settings):
+    seed(settings)
+    async with mcp_client(settings) as c:
+        out = await call_json(c, "star_blocks", {"work_id": "work-1", "block_ids": ["block-raiden", "block-sig"]})
+        assert out["favorite_block_ids"] == ["block-raiden", "block-sig"]
+        assert (await call_json(c, "star_blocks", {"work_id": "work-1", "block_ids": ["block-raiden"]}))[
+            "favorite_block_ids"] == ["block-raiden", "block-sig"]  # starred already: nothing to write
+        off = await call_json(c, "star_blocks", {"work_id": "work-1", "block_ids": ["block-raiden"], "starred": False})
+        assert off["favorite_block_ids"] == ["block-sig"]
+        bad = await call(c, "star_blocks", {"work_id": "work-1", "block_ids": ["block-nope"]})
+        assert bad["isError"] and "No Library block “block-nope”" in bad["content"][0]["text"]
+        assert (await call_json(c, "get_work", {"work_id": "work-1"}))["favorite_block_ids"] == ["block-sig"]
+    writes = [(r["action"], r["detail"]) for r in activity.recent() if r["kind"] == "write"]
+    assert writes == [("Unstarred 1 block", "“Raiden” in “Halloween”"),
+                      ("Starred 2 blocks", "“Raiden”, “No signature” in “Halloween”")]
+
+
 async def test_combinations_are_made_from_library_and_custom_blocks(settings):
     seed(settings)
     async with mcp_client(settings, allowing(works_delete=True)) as c:
@@ -754,7 +822,7 @@ def test_two_saves_on_one_base_never_both_land(settings, monkeypatch):
         assert stored.title == "Agent's title"
     # an edit of a work deleted meanwhile is refused, never a resurrection with its image files gone
     with pytest.raises(HTTPException) as gone:
-        service.save_work(settings, WorkDoc(id="work-gone", updated_at=base.updated_at), must_exist=True)
+        service.save_work(settings, WorkDoc(id="work-gone", updated_at=base.updated_at))
     assert gone.value.status_code == 404
 
 

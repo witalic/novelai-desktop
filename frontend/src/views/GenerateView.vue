@@ -56,6 +56,13 @@ watch(() => props.applyPreset?.nonce, () => {
 
 // New work (from the canvas) starts clean: drop the previous work's generation stack (it lives here,
 // not in the canvas nodes CanvasBoard already reset) and re-seed params from the current default preset.
+// The open work left the vault and the canvas keeps its unsaved changes as a new work: the stack keeps what it hadn't
+// saved either (data: drafts) — the saved drafts' files went with the work's folder.
+function onWorkGone(oldId: string) {
+  drafts.value = drafts.value.filter((d) => !d.url.startsWith(`/api/vault/works/${oldId}/`))
+  loadedWork.value = null
+  paramsOf = null
+}
 function onNewWork() {
   drafts.value = []
   loadedWork.value = null
@@ -215,7 +222,7 @@ function onReloadWork() { if (loadedWork.value) loadWorkIntoView(loadedWork.valu
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
       :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate" @view-stack="viewStack"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
-      @new-work="onNewWork" @reload-work="onReloadWork" @agent-params="onAgentParams" />
+      @new-work="onNewWork" @reload-work="onReloadWork" @agent-params="onAgentParams" @work-gone="onWorkGone" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"
       @toggle="panelOpen = !panelOpen" @pick-preset="onPickPreset" @update-preset="onUpdatePreset" @save-as="onSaveAsPreset"
       @clear-stack="onClearStack" @keep-many="onKeepMany" @remove-many="onRemoveMany" @view="viewStack" />

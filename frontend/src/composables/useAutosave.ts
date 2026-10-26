@@ -22,13 +22,16 @@ interface Deps {
   onNoVault: () => void // no vault configured → route the user to Settings
   onSaved?: (workId: string) => void // after a successful save: swap just-persisted data: URLs for vault URLs
   onConflict?: () => void // a concurrent edit was detected (409) → the host reloads the work
+  // The stored work `id` is no longer in the vault (404: deleted meanwhile, or the vault changed under it). The host
+  // keeps what isn't saved as a new work — a new id, no base — and the save goes on as that one.
+  onGone?: (id: string) => void
   // What agents changed in the stored copy since `since` (null: it was also saved some other way) …
   agentChanges?: (workId: string, since: string) => Promise<{ at: string; ops: AgentOp[] } | null>
   applyAgentOps?: (ops: AgentOp[]) => void // … and how the host replays those edits over the canvas
 }
 
 export function useAutosave({
-  nodes, viewport, params, drafts, favorites, combos, onNoVault, onSaved, onConflict, agentChanges, applyAgentOps,
+  nodes, viewport, params, drafts, favorites, combos, onNoVault, onSaved, onConflict, onGone, agentChanges, applyAgentOps,
 }: Deps) {
   const toast = useToast()
   const title = ref('')
@@ -117,6 +120,10 @@ export function useAutosave({
     if (inflight) await inflight
     await catchUp()
   }
+  // A running save has landed (or met its answer), so the canvas is what's stored — or knows it isn't.
+  async function settle() { if (inflight) await inflight }
+  // Whether the canvas holds anything the stored copy doesn't.
+  const hasUnsaved = () => isMeaningful() && changeKey() !== lastSig
 
   // One save attempt. Returns true if the work is persisted (or nothing needed saving), false on error.
   // `conflicts`: 409s already answered by catching up — a busy agent can land more edits in between.
@@ -124,8 +131,10 @@ export function useAutosave({
     const key = changeKey()
     if (key === lastSig) { dirty = false; if (saveState.value === 'dirty') saveState.value = 'saved'; return true }
     saveState.value = 'saving'
+    const wid = workId.value
     try {
       const res = await saveWork(buildDoc())
+      if (workId.value !== wid) return true // the canvas moved on meanwhile (another work, or this one let go)
       baseUpdatedAt.value = res.updated_at // new base for the next save
       lastSig = key
       dirty = false
@@ -137,6 +146,7 @@ export function useAutosave({
       if (onSaved) { ignoreDirty = true; onSaved(workId.value); await nextTick(); ignoreDirty = false }
       return true
     } catch (e) {
+      if (workId.value !== wid) return true // an answer about a work the canvas has moved on from
       // Stored copy is newer: when only an agent changed it, replay its edits and save again on the new base.
       if (e instanceof ApiError && e.status === 409 && conflicts < 5 && await catchUp()) return doSave(conflicts + 1)
       if (e instanceof ApiError && e.status === 409) { // concurrent edit → let the host reload; don't stay dirty
@@ -144,6 +154,10 @@ export function useAutosave({
         toast.push('This work changed elsewhere — reloading.', 'err')
         onConflict?.()
         return false
+      }
+      if (e instanceof ApiError && e.status === 404 && onGone && conflicts < 5) { // gone from the vault while open
+        onGone(wid) // what isn't saved stays, as a new work (no base: it can't be "gone" again) …
+        return isMeaningful() ? doSave(conflicts + 1) : true // … and is saved as that
       }
       dirty = true
       saveState.value = 'dirty'
@@ -211,6 +225,6 @@ export function useAutosave({
   return {
     title, cover, vaultReady, workId, baseUpdatedAt, saveState, savedAt,
     changeKey, markDirty, flush, flushIfDirty, manualSave, onBeforeUnload, refreshInterval, stopAutosave, resetBaseline,
-    onAgentEdit,
+    onAgentEdit, settle, hasUnsaved,
   }
 }

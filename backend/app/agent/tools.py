@@ -65,13 +65,16 @@ class ImageResult:
 class Written:
     """A write's result for the agent, plus what it did: ``action`` (e.g. "Added 3 blocks") and ``detail``
     (what it touched) make the activity row and the app's notice; ``work_id`` is the work it changed (None: the
-    Library); ``cost`` the Anlas a generation spent (0: free; None: not a generation)."""
+    Library) — ``also`` other works it changed, ``deleted`` when it removed that work; ``cost`` the Anlas a generation
+    spent (0: free; None: not a generation)."""
 
     result: Any
     action: str
     detail: str
     work_id: str | None = None
     cost: int | None = None
+    also: tuple[str, ...] = ()
+    deleted: bool = False
 
 
 @dataclass(frozen=True)
@@ -573,7 +576,7 @@ def _edit_work(settings: Settings, work_id: str, change: Callable[[WorkDoc], lis
             if not ops:
                 return doc, []
             try:
-                saved = service.save_work(settings, doc, must_exist=True)
+                saved = service.save_work(settings, doc)  # a 404 if it was deleted meanwhile (the loaded base)
             except HTTPException as exc:
                 if exc.status_code != 409 or service.load_work(settings, work_id).updated_at == prev:
                     raise  # not a concurrent edit (e.g. a vault move in progress)
@@ -639,6 +642,33 @@ def _update_images(settings: Settings, args: dict) -> Written | dict:
     return Written(result, f"Updated {_plural(len(ops), 'image')}", f"in {_title(doc)}", work_id=doc.id)
 
 
+def _star_blocks(settings: Settings, args: dict) -> Written | dict:
+    ids = list(dict.fromkeys(_strs(args, "block_ids", max_items=MAX_BATCH)))
+    if not ids:
+        raise ToolError("'block_ids' must name at least one block.")
+    starred = _flag(args, "starred") if "starred" in args else True
+    names = {b.id: b.name for b in service.resolve_blocks(settings, ids)}
+    if starred and (missing := next((i for i in ids if i not in names), None)):
+        raise ToolError(f"No Library block “{missing}”.")  # unstarring one that's gone from the Library is fine
+    changed: list[str] = []
+
+    def change(doc: WorkDoc) -> list[dict]:
+        if starred:
+            changed[:] = [i for i in ids if i not in doc.favorites]
+            doc.favorites += changed
+        else:
+            changed[:] = [i for i in ids if i in doc.favorites]
+            doc.favorites = [f for f in doc.favorites if f not in changed]
+        return [{"op": "starred", "ids": list(changed), "starred": starred}] if changed else []
+
+    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    result = {"favorite_block_ids": doc.favorites}
+    if not ops:
+        return result
+    action = f"{'Starred' if starred else 'Unstarred'} {_plural(len(changed), 'block')}"
+    return Written(result, action, f"{_names([names.get(i, i) for i in changed])} in {_title(doc)}", work_id=doc.id)
+
+
 def _purge_images(doc: WorkDoc, ids: set[str]) -> None:
     """Delete images from every structure that names them — the images list, the canvas image nodes, every
     gallery grid album — and move the preview on. Mirrors ``frontend/src/vault/workOps.ts`` ``purgeImages``."""
@@ -676,6 +706,68 @@ def _delete_images(settings: Settings, args: dict) -> Written | dict:
     if not ops:
         return result
     return Written(result, f"Deleted {_plural(len(gone), 'image')}", f"from {_title(doc)}", work_id=doc.id)
+
+
+def _delete_work(settings: Settings, args: dict) -> Written:
+    work_id = _str(args, "work_id", required=True)
+    with changes.edit_lock:  # never in the middle of an agent's edit of it
+        doc = service.load_work(settings, work_id)
+        service.delete_work(settings, work_id)
+    count = sum(im.role == "gallery" for im in doc.images)
+    return Written({"deleted": work_id}, "Deleted a work", f"{_title(doc)} with {_plural(count, 'image')}",
+                   work_id=work_id, deleted=True)
+
+
+_MAX_MOVE = 20  # images per move — their bytes travel through memory
+
+
+def _move_images(settings: Settings, args: dict) -> Written:
+    src_id, dst_id = _str(args, "from_work_id", required=True), _str(args, "to_work_id", required=True)
+    if src_id == dst_id:
+        raise ToolError("'to_work_id' is the work they are in already.")
+    ids = list(dict.fromkeys(_strs(args, "image_ids", max_items=_MAX_MOVE)))
+    if not ids:
+        raise ToolError("'image_ids' must name at least one image.")
+    keep = _flag(args, "copy")
+    src = service.load_work(settings, src_id)
+    in_gallery = {im.id: im for im in src.images if im.role == "gallery"}
+    if missing := next((i for i in ids if i not in in_gallery), None):
+        raise ToolError(f"No gallery image “{missing}” in {_title(src)}.")
+    service.load_work(settings, dst_id)  # it exists — before any bytes are read
+    snaps = {s.id: s for s in src.snapshots}
+    data = {i: base64.b64encode(service.image_path(settings, src_id, i).read_bytes()).decode("ascii") for i in ids}
+    new_ids = {i: _new_id("img") for i in ids}  # ids are the vault's, one image one id
+    new_snaps = {s: _new_id("snap") for s in {in_gallery[i].snapshot_id for i in ids} if s in snaps}
+
+    def add(doc: WorkDoc) -> list[dict]:
+        """Each image with its recipe and metadata, as it was — into Quick access."""
+        made = [in_gallery[i].model_copy(update={
+            "id": new_ids[i], "snapshot_id": new_snaps.get(in_gallery[i].snapshot_id or ""), "file": "",
+            "image_b64": data[i]}) for i in ids]
+        recipes = [snaps[s].model_copy(update={"id": new}) for s, new in new_snaps.items()]
+        doc.snapshots += recipes
+        doc.images += made
+        doc.preview_image_id = doc.preview_image_id or made[0].id
+        return [{"op": "images_added", "images": made, "snapshots": recipes}]
+
+    dst, _ = _edit_work(settings, dst_id, add)
+    result = {"to_work_id": dst.id, "images": [{"from": i, "id": new_ids[i]} for i in ids], "copied": keep}
+    what = f"{_plural(len(ids), 'image')} from {_title(src)} to {_title(dst)}"
+    if keep:
+        return Written(result, "Copied images", what, work_id=dst.id)
+
+    def remove(doc: WorkDoc) -> list[dict]:
+        gone = [i for i in ids if any(im.id == i and im.role == "gallery" for im in doc.images)]
+        _purge_images(doc, set(gone))
+        return [{"op": "images_deleted", "ids": gone}] if gone else []
+
+    try:
+        _edit_work(settings, src_id, remove)
+    except (ToolError, HTTPException, OSError) as exc:  # the copy has landed: report it as one, never lose track of it
+        reason = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        result.update(copied=True, not_removed=f"Removing them from {_title(src)} failed: {reason}")
+        return Written(result, "Copied images", f"{what} — removing them there failed", work_id=dst.id)
+    return Written(result, "Moved images", what, work_id=dst.id, also=(src_id,))
 
 
 # ---- the gallery layout (app/agent/gallery): sections, headings, albums, Quick access, the cover ----
@@ -1555,11 +1647,34 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
              "preset_id": {"type": "string", "description": "a generation preset (list_presets) to apply"}},
           "required": ["work_id"]},
          "works_write", _update_work_params),
+    Tool("star_blocks", "Star blocks in a work",
+         "Star Library blocks in a work — the work's quick picks in the app's prompt widget (get_work lists them as "
+         "favorite_block_ids) — or unstar them with starred: false.",
+         {"type": "object", "properties": {
+             "work_id": {"type": "string"},
+             "block_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_BATCH},
+             "starred": {"type": "boolean", "default": True}},
+          "required": ["work_id", "block_ids"]},
+         "works_write", _star_blocks),
+    Tool("move_images", "Move images to another work",
+         "Move gallery images to another work — or copy them (copy: true) — each with its recipe, tags, description "
+         "and favourite flag. They get new ids (returned) and land in that work's Quick access.",
+         {"type": "object", "properties": {
+             "from_work_id": {"type": "string"}, "to_work_id": {"type": "string"},
+             "image_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": _MAX_MOVE},
+             "copy": {"type": "boolean", "default": False}},
+          "required": ["from_work_id", "to_work_id", "image_ids"]},
+         "works_write", _move_images),
     Tool("delete_images", "Delete images", "Remove gallery images from a work for good (files included).",
          {"type": "object", "properties": {"work_id": {"type": "string"}, "image_ids": {
              "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_PAGE}},
           "required": ["work_id", "image_ids"]},
          "works_delete", _delete_images),
+    Tool("delete_work", "Delete a work",
+         "Delete a whole work for good: its images and their files, combinations and layout. If the user has it open, "
+         "the app lets it go — changes they hadn't saved stay with them, as a new work.",
+         {"type": "object", "properties": {"work_id": {"type": "string"}}, "required": ["work_id"]},
+         "works_delete", _delete_work),
     # combinations
     Tool("create_combination", "Create a combination",
          "Save a named block set in a work — what the user loads into the generation station in one click (blocks "

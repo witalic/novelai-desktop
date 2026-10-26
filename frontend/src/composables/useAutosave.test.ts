@@ -196,6 +196,47 @@ describe('useAutosave — combinations', () => {
   })
 })
 
+describe('useAutosave — a work gone from the vault while open', () => {
+  function withGone(onSaved = vi.fn()) {
+    const onGone = vi.fn()
+    const a = useAutosave({
+      nodes: ref<any[]>([]), viewport: ref({ x: 0, y: 0, zoom: 1 }),
+      params: () => ({}) as any, drafts: () => [], favorites: () => [], combos: () => [], onNoVault: vi.fn(), onGone, onSaved,
+    })
+    a.vaultReady.value = true
+    a.title.value = 'x'
+    a.baseUpdatedAt.value = 'stamp-1' // loaded from the vault
+    onGone.mockImplementation(() => { a.workId.value = 'work-kept'; a.baseUpdatedAt.value = '' }) // as the canvas does
+    return { a, onGone, onSaved }
+  }
+
+  it('a 404 keeps what was unsaved as a new work and saves it as that — nothing lost, quit goes on', async () => {
+    const { a, onGone } = withGone()
+    const gone = a.workId.value
+    saveWork.mockRejectedValueOnce(new ApiError(404, 'This work was deleted.'))
+    a.markDirty()
+    expect(await a.flush()).toBe(true)
+    expect(onGone).toHaveBeenCalledWith(gone)
+    expect(saveWork).toHaveBeenCalledTimes(2)
+    expect(saveWork.mock.calls[1][0]).toMatchObject({ id: 'work-kept', updated_at: '' }) // a new work: no base
+    expect(a.saveState.value).toBe('saved')
+  })
+
+  it('an answer about a work the canvas has moved on from touches nothing', async () => {
+    const { a, onSaved } = withGone()
+    let land!: () => void
+    saveWork.mockImplementationOnce(() => new Promise((r) => { land = () => r({ updated_at: 'stamp-2' }) }))
+    a.markDirty()
+    const saving = a.flush()
+    await Promise.resolve()
+    a.workId.value = 'work-other'; a.baseUpdatedAt.value = '' // e.g. the work was deleted and a new one started
+    land()
+    expect(await saving).toBe(true)
+    expect(a.baseUpdatedAt.value).toBe('') // not the old work's stamp
+    expect(onSaved).not.toHaveBeenCalled() // no repointing the new work's images at the old one's folder
+  })
+})
+
 describe('useAutosave — the cover', () => {
   it('a chosen cover is a change that saves, as the work’s preview', async () => {
     const { nodes, a } = setup()
