@@ -3,6 +3,7 @@ copy as the lock base → log the operations (``worklog``). A copy of that work 
 catches up by replaying them (``frontend/src/vault/agentOps.ts``) instead of meeting a conflict.
 """
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,8 +13,10 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from app.settings import Settings
-from app.vault import service, worklog
+from app.vault import gallery_layout, service, worklog
 from app.vault.models import WorkDoc
+
+log = logging.getLogger(__name__)
 
 
 def _dump(value: object) -> object:
@@ -72,6 +75,36 @@ def purge_images(doc: WorkDoc, ids: set[str]) -> None:
         doc.preview_image_id = next((im.id for im in doc.images if im.role == "gallery"), None)
 
 
+def set_favorite(settings: Settings, work_id: str, image_id: str, favorite: bool) -> bool:
+    """Star a gallery image (or not) — True when that changed something."""
+    def change(doc: WorkDoc) -> list[dict]:
+        im = next((im for im in doc.images if im.id == image_id and im.role == "gallery"), None)
+        if im is None:
+            raise HTTPException(status_code=404, detail=f"No gallery image “{image_id}” in {title_of(doc)}.")
+        if im.favorite == favorite:
+            return []
+        im.favorite = favorite
+        return [{"op": "image", "id": image_id, "set": {"favorite": favorite}}]
+
+    return bool(edit_work(settings, work_id, change)[1])
+
+
+def delete_images(settings: Settings, work_id: str, image_ids: list[str]) -> tuple[WorkDoc, list[str]]:
+    """Delete gallery images of a work — from its albums too. Returns the work and the ones that were there."""
+    gone: list[str] = []
+
+    def change(doc: WorkDoc) -> list[dict]:
+        in_gallery = {im.id for im in doc.images if im.role == "gallery"}
+        gone[:] = [i for i in dict.fromkeys(image_ids) if i in in_gallery]
+        if not gone:
+            return []
+        purge_images(doc, set(gone))
+        return [{"op": "images_deleted", "ids": list(gone)}]
+
+    doc, _ = edit_work(settings, work_id, change)
+    return doc, gone
+
+
 @dataclass(frozen=True)
 class Transfer:
     """What a move or copy did: ``ids`` maps each image to its id in ``dst``. A move whose removal from ``src``
@@ -84,10 +117,11 @@ class Transfer:
     not_removed: str | None = None
 
 
-def transfer_images(settings: Settings, src_id: str, dst_id: str, image_ids: list[str], *, copy: bool) -> Transfer:
-    """Gallery images of one work into another's Quick access, each with its recipe and metadata, as it was — under
-    new ids (ids are the vault's: one image, one id). The files are copied in as the target saves; a move then removes
-    them from the source."""
+def transfer_images(settings: Settings, src_id: str, dst_id: str, image_ids: list[str], *, copy: bool,
+                    grid_id: str | None = None) -> Transfer:
+    """Gallery images of one work into another — its Quick access, or the album ``grid_id`` — each with its recipe and
+    metadata, as it was, under new ids (ids are the vault's: one image, one id). The files are copied in as the target
+    saves; a move then removes them from the source."""
     image_ids = list(dict.fromkeys(image_ids))
     if not image_ids:
         raise HTTPException(status_code=400, detail="Name at least one image.")
@@ -108,10 +142,16 @@ def transfer_images(settings: Settings, src_id: str, dst_id: str, image_ids: lis
             "id": new_ids[i], "snapshot_id": new_snaps.get(in_gallery[i].snapshot_id or ""), "file": ""})
             for i in image_ids]
         recipes = [snaps[s].model_copy(update={"id": new}) for s, new in new_snaps.items()]
+        if grid_id and not any(g.get("id") == grid_id for g in gallery_layout.grids(gallery_layout.stack(doc))):
+            raise HTTPException(status_code=404, detail=f"That album is no longer in {title_of(doc)}.")
         doc.snapshots += recipes
         doc.images += made
         doc.preview_image_id = doc.preview_image_id or made[0].id
-        return [{"op": "images_added", "images": made, "snapshots": recipes}]
+        ops = [{"op": "images_added", "images": made, "snapshots": recipes}]
+        if grid_id:  # at the album's end, as the open app replays it
+            ops.append({"op": "gallery_place", "grid": grid_id, "image_ids": [im.id for im in made], "order": []})
+            gallery_layout.apply(doc, ops[-1])
+        return ops
 
     try:
         dst, _ = edit_work(settings, dst_id, add, adopt)
@@ -119,6 +159,8 @@ def transfer_images(settings: Settings, src_id: str, dst_id: str, image_ids: lis
         what = "copied" if copy else "moved"
         raise HTTPException(status_code=409, detail=f"An image left {title_of(src)} while it was being {what} — "
                                                     "nothing changed, try again.") from exc
+    except OSError as exc:  # a held file, a full disk, a share gone: the save took its copies back out, wrote nothing
+        raise HTTPException(status_code=409, detail=f"Saving into the target failed — nothing changed: {exc}") from exc
     if copy:
         return Transfer(src, dst, new_ids, copied=True)
 
@@ -134,3 +176,78 @@ def transfer_images(settings: Settings, src_id: str, dst_id: str, image_ids: lis
         return Transfer(src, dst, new_ids, copied=True,
                         not_removed=f"Removing them from {title_of(src)} failed: {reason}")
     return Transfer(src, dst, new_ids, copied=False)
+
+
+def place_images(settings: Settings, work_id: str, image_ids: list[str], grid_id: str | None) -> list[str]:
+    """Gallery images of a work into one of its albums (at its end), or out of every album into Quick access (no
+    ``grid_id``) — a move within the work. Returns the ones that were there."""
+    placed: list[str] = []
+
+    def change(doc: WorkDoc) -> list[dict]:
+        in_gallery = {im.id for im in doc.images if im.role == "gallery"}
+        placed[:] = [i for i in dict.fromkeys(image_ids) if i in in_gallery]
+        if grid_id and not any(g.get("id") == grid_id for g in gallery_layout.grids(gallery_layout.stack(doc))):
+            raise HTTPException(status_code=404, detail=f"That album is no longer in {title_of(doc)}.")
+        if not placed:
+            return []
+        op = ({"op": "gallery_place", "grid": grid_id, "image_ids": list(placed), "order": []} if grid_id
+              else {"op": "gallery_unplace", "image_ids": list(placed)})
+        gallery_layout.apply(doc, op)
+        return [op]
+
+    edit_work(settings, work_id, change)
+    return placed
+
+
+# ---- the gallery's selections: images of many works at once, each work edited on its own ----
+MAX_WORKS = 50  # works one request touches
+
+
+def _by_work(images: list[tuple[str, str]]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for work_id, image_id in images:
+        out.setdefault(work_id, []).append(image_id)
+    if len(out) > MAX_WORKS:
+        raise HTTPException(status_code=422, detail=f"Those images are in more than {MAX_WORKS} works — fewer at once.")
+    return out
+
+
+def _failure(work_id: str, exc: HTTPException | OSError) -> str:
+    """Why one work of a selection couldn't change — the rest go on."""
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    log.warning("A gallery action on %s failed: %s", work_id, exc)
+    return f"Saving it failed: {exc}"
+
+
+def delete_many(settings: Settings, images: list[tuple[str, str]]) -> list[dict]:
+    """Delete (work id, image id) pairs, work by work: what each work lost — or why it couldn't."""
+    out = []
+    for work_id, ids in _by_work(images).items():
+        try:
+            out.append({"work_id": work_id, "deleted": delete_images(settings, work_id, ids)[1]})
+        except (HTTPException, OSError) as exc:
+            out.append({"work_id": work_id, "deleted": [], "error": _failure(work_id, exc)})
+    return out
+
+
+def transfer_many(settings: Settings, images: list[tuple[str, str]], dst_id: str, *, copy: bool,
+                  grid_id: str | None = None) -> list[dict]:
+    """Move or copy (work id, image id) pairs into one work, work by work: each image's id there — and for a move that
+    landed as a copy, why — or why a work's images couldn't go. The target's own images move within it: into the
+    album, or into Quick access; they aren't copied into the work they are in."""
+    service.load_work(settings, dst_id)  # it exists — or nothing goes anywhere
+    out = []
+    for work_id, ids in _by_work(images).items():
+        try:
+            if work_id == dst_id:
+                if copy:
+                    raise HTTPException(status_code=400, detail="They are in that work already.")
+                placed = place_images(settings, work_id, ids, grid_id)
+                out.append({"work_id": work_id, "ids": {i: i for i in placed}, "copied": False})
+                continue
+            t = transfer_images(settings, work_id, dst_id, ids, copy=copy, grid_id=grid_id)
+            out.append({"work_id": work_id, "ids": t.ids, "copied": t.copied, "not_removed": t.not_removed})
+        except (HTTPException, OSError) as exc:
+            out.append({"work_id": work_id, "ids": {}, "copied": copy, "error": _failure(work_id, exc)})
+    return out

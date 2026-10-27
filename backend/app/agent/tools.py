@@ -640,19 +640,9 @@ def _delete_images(settings: Settings, args: dict) -> Written | dict:
     ids = _strs(args, "image_ids", max_items=MAX_PAGE)
     if not ids:
         raise ToolError("'image_ids' must name at least one image.")
-    gone: list[str] = []
-
-    def change(doc: WorkDoc) -> list[dict]:
-        in_gallery = {im.id for im in doc.images if im.role == "gallery"}
-        gone[:] = [i for i in dict.fromkeys(ids) if i in in_gallery]
-        if not gone:
-            return []
-        workedit.purge_images(doc, set(gone))
-        return [{"op": "images_deleted", "ids": gone}]
-
-    doc, ops = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, gone = workedit.delete_images(settings, _str(args, "work_id", required=True), ids)
     result = {"deleted": gone, "missing": [i for i in ids if i not in gone]}
-    if not ops:
+    if not gone:
         return result
     return Written(result, f"Deleted {_plural(len(gone), 'image')}", f"from {workedit.title_of(doc)}", work_id=doc.id)
 

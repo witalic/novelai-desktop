@@ -1,8 +1,9 @@
 """What agents change, told to the app as it happens (``rules/security.md``: nothing happens silently).
 
 Every agent write publishes a **notice** to the open app over SSE (``GET /api/agent/events``): a toast says what
-happened, and the Library, the Works list and an open work refresh at once. An open work catches up on an agent's edit
-through the work log (``app.vault.worklog``), which keeps the operations every backend edit applied.
+happened, and the Library, the Works list and an open work refresh at once. The app's own backend edits (the gallery's)
+publish one too, marked ``local`` — no toast. An open work catches up on the edit through the work log
+(``app.vault.worklog``), which keeps the operations every backend edit applied.
 
 In memory for the app's lifetime, bounded. Agent tools run in worker threads; subscribers live on the event loop.
 """

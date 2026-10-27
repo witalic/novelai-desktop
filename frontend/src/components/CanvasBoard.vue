@@ -7,7 +7,7 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/node-resizer/dist/style.css'
-import { agentWorkChanges, getVaultConfig, listCategories, resolveBlocks } from '../api'
+import { getVaultConfig, listCategories, resolveBlocks, workChanges } from '../api'
 import { editedWork, onAgentNotice } from '../composables/useAgentNotices'
 import { useVault } from '../composables/useVault'
 import { applyGalleryOps, applyStarred, planAgentOps, type AgentOp } from '../vault/agentOps'
@@ -174,7 +174,7 @@ const { title, cover, vaultReady, workId, baseUpdatedAt, saveState, savedAt, mar
   combos: () => combos.value,
   onNoVault: () => emit('navigate', 'settings/vaults'), onSaved: rewriteSavedUrls, onConflict: reloadWork,
   onGone: keepAsNew,
-  agentChanges: agentWorkChanges, applyAgentOps,
+  agentChanges: workChanges, applyAgentOps,
 })
 // A concurrent edit (409) → the view re-fetches the FULL work (params + draft stack + canvas doc), not
 // just the canvas nodes, so the next save doesn't write stale params/stack over the fresh version (H3/#4).

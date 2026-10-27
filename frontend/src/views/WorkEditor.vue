@@ -4,7 +4,7 @@
  * loaded WorkDoc (readonly in View); edits mutate the WorkDoc in place and autosave. The Composition
  * facet fills in next. */
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import { agentWorkChanges, ApiError, loadWork, saveWork } from '../api'
+import { ApiError, loadWork, saveWork, workChanges } from '../api'
 import { editedWork, onAgentNotice } from '../composables/useAgentNotices'
 import { useVault, vaultMayBeAway } from '../composables/useVault'
 import { useToast } from '../composables/useToast'
@@ -169,8 +169,8 @@ const catchUp = catchUpQueue(async () => {
   const d = doc.value
   for (let tries = 0; d && d.updated_at && tries < 3; tries++) {
     const since = d.updated_at
-    let res: Awaited<ReturnType<typeof agentWorkChanges>>
-    try { res = await agentWorkChanges(d.id, since) } catch { return false }
+    let res: Awaited<ReturnType<typeof workChanges>>
+    try { res = await workChanges(d.id, since) } catch { return false }
     if (doc.value !== d) return false // reloaded or closed meanwhile
     if (d.updated_at !== since) continue // one of our saves landed meanwhile → ask again from its stamp
     if (!res) return false

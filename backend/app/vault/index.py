@@ -624,11 +624,12 @@ def gallery_facets(conn: sqlite3.Connection, q: ImageQuery) -> dict:
     return {"total": total, "unsorted": unsorted, "tags": tags, "models": model_counts, "works": work_counts}
 
 
-def work_titles(conn, ids: list[str]) -> dict[str, str]:
-    if not ids:
-        return {}
-    rows = conn.execute(f"SELECT id,title FROM work WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall()
-    return {r["id"]: r["title"] for r in rows}
+def gallery_images(conn: sqlite3.Connection, image_ids: list[str]) -> set[tuple[str, str]]:
+    """Which of these are gallery images — as (work id, image id)."""
+    if not image_ids:
+        return set()
+    rows = conn.execute(f"SELECT work_id, id FROM image WHERE role='gallery' AND {_in('id', image_ids)}", image_ids)
+    return {(r["work_id"], r["id"]) for r in rows}
 
 
 def _out_of_reach(vault: Path) -> None:

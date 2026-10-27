@@ -7,17 +7,19 @@ generation SSE). Only genuinely-async endpoints (``routers/generate.py``, httpx)
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import AwareDatetime
 
+from app.agent import changes
 from app.settings import Settings, get_settings
-from app.vault import import_blocks, index, manager, presets as presets_svc, service
+from app.vault import import_blocks, index, manager, presets as presets_svc, service, workedit, worklog
 from app.vault.import_blocks import ImportParseRequest, ImportParseResult, ImportSaveRequest, ImportSaveResult
 from app.vault.models import (
-    BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryFacets, GalleryItem, GalleryPage, ImageDetail, MoveStatus,
-    MoveVault, Preset, PresetDoc, ReorderCategories, RestoreCategories, SaveCategory, SetDefault, SetFavorite, TagCount,
-    VaultConfig, VaultPath, WorkDoc, WorksPage,
+    AlbumInfo, BlockDoc, BlocksPage, CategoryCount, CategoryDoc, Deleted, GalleryFacets, GalleryItem,
+    GalleryPage, ImageDetail, ImagesBody, MoveStatus, MoveVault, Preset, PresetDoc, ReorderCategories, RestoreCategories,
+    SaveCategory, SetDefault, SetFavorite, TagCount, TransferBody, Transferred, VaultConfig, VaultPath, WorkChanges,
+    WorkDoc, WorksPage,
 )
 
 log = logging.getLogger(__name__)
@@ -103,6 +105,64 @@ def get_image(
 ) -> FileResponse:
     path = service.image_thumb_path(settings, work_id, image_id, w) if w else service.image_path(settings, work_id, image_id)
     return FileResponse(path, media_type="image/png")
+
+
+@router.get("/works/{work_id}/changes", response_model=WorkChanges)
+def work_changes(work_id: str, since: str = Query(..., min_length=1, max_length=64),
+                 settings: Settings = Depends(get_settings)) -> WorkChanges:
+    """What backend edits (an agent's, the gallery's) changed in a work since the app's copy of it was saved
+    (``since``: its lock base). 409 when the stored copy got there some other way — then only a reload brings the
+    app's copy up to date."""
+    with worklog.edit_lock:  # an edit saved but not yet logged would look like someone else's save
+        stored = service.load_work(settings, work_id).updated_at
+        ops = worklog.edits_since(work_id, since, stored)
+    if ops is None:
+        raise HTTPException(status_code=409, detail="This work was saved from elsewhere meanwhile.")
+    return WorkChanges(at=stored, ops=ops)
+
+
+@router.get("/works/{work_id}/albums", response_model=list[AlbumInfo])
+def work_albums(work_id: str, settings: Settings = Depends(get_settings)) -> list[AlbumInfo]:
+    return service.albums(settings, work_id)
+
+
+def _tell(work_ids: list[str]) -> None:
+    """The app's copies of these works open elsewhere (the canvas, the Works editor) catch up on the edits just logged —
+    the app's own doing, so no toast (``local``)."""
+    if work_ids:
+        changes.publish({"kind": "work", "work_id": work_ids[0], "also": work_ids[1:], "message": "", "cost": None,
+                         "local": True})
+
+
+@router.put("/works/{work_id}/images/{image_id}/favorite")
+def set_image_favorite(work_id: str, image_id: str, body: SetFavorite,
+                       settings: Settings = Depends(get_settings)) -> dict:
+    """Star a gallery image from outside its open copy (the gallery) — logged, so that copy catches up."""
+    changed = workedit.set_favorite(settings, work_id, image_id, body.favorite)
+    _tell([work_id] if changed else [])
+    return {"changed": changed}
+
+
+# ---- the gallery's selection: images of many works at once ----
+@router.post("/images/delete", response_model=list[Deleted])
+def delete_images(body: ImagesBody, settings: Settings = Depends(get_settings)) -> list[Deleted]:
+    done = workedit.delete_many(settings, body.pairs())
+    _tell([r["work_id"] for r in done if r["deleted"]])
+    return [Deleted(**r) for r in done]
+
+
+@router.post("/images/transfer", response_model=list[Transferred])
+def transfer_images(body: TransferBody, settings: Settings = Depends(get_settings)) -> list[Transferred]:
+    done = workedit.transfer_many(settings, body.pairs(), body.to_work_id, copy=body.copy_, grid_id=body.grid_id)
+    sources = [r["work_id"] for r in done if r["ids"] and not r["copied"] and r["work_id"] != body.to_work_id]
+    _tell([body.to_work_id, *sources] if any(r["ids"] for r in done) else [])
+    return [Transferred(**r) for r in done]
+
+
+@router.post("/images/download")
+def download_images(body: ImagesBody, settings: Settings = Depends(get_settings)) -> dict:
+    """The images' files into the downloads folder (Settings → General), each under a name of its own."""
+    return service.download_images(settings, body.pairs())
 
 
 @router.get("/works/{work_id}/preview")

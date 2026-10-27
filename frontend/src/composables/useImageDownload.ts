@@ -17,8 +17,9 @@ export function useImageDownload() {
   async function downloadUrls(urls: string[]): Promise<void> {
     if (!urls.length) return
     try {
-      await saveDownloads(await Promise.all(urls.map(toBase64)))
-      push(`Saved ${urls.length} image${urls.length === 1 ? '' : 's'} to Downloads`, 'ok')
+      const { count, failed } = await saveDownloads(await Promise.all(urls.map(toBase64)))
+      if (failed) push(`Saved ${count} of ${urls.length} images to Downloads — ${failed} couldn’t be written`, 'err')
+      else push(`Saved ${count} image${count === 1 ? '' : 's'} to Downloads`, 'ok')
     } catch (e) {
       push(e instanceof Error ? e.message : 'Download failed', 'err')
     }

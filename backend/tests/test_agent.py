@@ -489,7 +489,7 @@ async def test_images_move_or_copy_to_another_work_with_their_recipes(api, setti
     assert (im1.favorite, im1.description, im1.tags, im1.snapshot_id) == (True, "first", ["vampire"], None)
     assert (service.image_path(settings, other["id"], new2).read_bytes()
             == service.image_path(settings, "work-1", "img-2").read_bytes())
-    ops = (await api.get("/api/agent/works/work-1/changes", params={"since": src_base})).json()["ops"]
+    ops = (await api.get("/api/vault/works/work-1/changes", params={"since": src_base})).json()["ops"]
     assert ops == [{"op": "images_deleted", "ids": ["img-1"]}]
     assert [r["action"] for r in activity.recent() if r["kind"] == "write"][:2] == ["Moved images", "Copied images"]
 
@@ -613,7 +613,7 @@ async def test_an_agent_arranges_the_gallery_and_the_app_replays_it(api, setting
 
     # the open app catches up by replaying the same operations over its copy — to the same layout, however often
     stored = service.load_work(settings, "work-g")
-    res = (await api.get("/api/agent/works/work-g/changes", params={"since": base.updated_at})).json()
+    res = (await api.get("/api/vault/works/work-g/changes", params={"since": base.updated_at})).json()
     assert res["at"] == stored.updated_at
     replayed = base.model_copy(deep=True)
     for op in res["ops"] * 2:
@@ -703,7 +703,7 @@ async def test_an_agent_sets_the_station_and_the_app_replays_it(api, settings):
     row = next(r for r in activity.recent() if r["kind"] == "write")
     assert (row["action"], row["detail"]) == ("Changed the generation settings",
                                               "of “Halloween” · cfg_rescale 0.2, quality_toggle off")  # values shown
-    preset_op, own_op = (await api.get("/api/agent/works/work-1/changes", params={"since": base})).json()["ops"]
+    preset_op, own_op = (await api.get("/api/vault/works/work-1/changes", params={"since": base})).json()["ops"]
     # a preset lands whole in the open app, as its Apply does; a plain call only what changed — the seed never
     assert (preset_op["preset_id"], preset_op["set"]["steps"], preset_op["set"]["model"]) == (
         "preset-portrait", 24, "nai-diffusion-5-full")
@@ -746,12 +746,12 @@ async def test_the_open_app_replays_agent_edits_instead_of_reloading(api, settin
         made = await call_json(c, "create_combination", {"work_id": "work-1", "name": "Set", "blocks": [{"text": "a"}]})
         await call_json(c, "update_images", {"work_id": "work-1", "images": [{"id": "img-1", "favorite": False}]})
     stored = service.load_work(settings, "work-1").updated_at
-    res = (await api.get("/api/agent/works/work-1/changes", params={"since": base})).json()
+    res = (await api.get("/api/vault/works/work-1/changes", params={"since": base})).json()
     assert res["at"] == stored
     assert [op["op"] for op in res["ops"]] == ["combo", "image"]
     assert res["ops"][0]["combo"]["id"] == made["id"] and res["ops"][0]["combo"]["created_at"]
     assert res["ops"][1] == {"op": "image", "id": "img-1", "set": {"favorite": False}}
-    assert (await api.get("/api/agent/works/work-1/changes", params={"since": stored})).json() == {"at": stored, "ops": []}
+    assert (await api.get("/api/vault/works/work-1/changes", params={"since": stored})).json() == {"at": stored, "ops": []}
 
     # the app saves (its own edit), then the agent edits again: from the app's new base only the agent's edit
     # replays; from the old base the chain is broken by a save that wasn't the agent's → a real conflict
@@ -760,9 +760,9 @@ async def test_the_open_app_replays_agent_edits_instead_of_reloading(api, settin
     app_base = service.save_work(settings, doc)["updated_at"]
     async with mcp_client(settings) as c:
         await call_json(c, "rename_work", {"work_id": "work-1", "title": "Halloween ✦"})
-    res = (await api.get("/api/agent/works/work-1/changes", params={"since": app_base})).json()
+    res = (await api.get("/api/vault/works/work-1/changes", params={"since": app_base})).json()
     assert res["ops"] == [{"op": "title", "title": "Halloween ✦"}]
-    assert (await api.get("/api/agent/works/work-1/changes", params={"since": base})).status_code == 409
+    assert (await api.get("/api/vault/works/work-1/changes", params={"since": base})).status_code == 409
 
 
 async def test_an_app_save_landing_mid_edit_is_kept_and_the_edit_redone(settings, monkeypatch):

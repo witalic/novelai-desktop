@@ -9,6 +9,7 @@ Quick access.
 replayed again changes nothing, and an operation about a block or an image that is gone is skipped.
 """
 import copy
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -82,13 +83,11 @@ class Placement:
     section: str | None
 
 
-def placements(doc: WorkDoc) -> dict[str, Placement]:
-    """Each placed gallery image's album, as the app shows the gallery: an image in two albums (a malformed copy)
-    belongs to the first. Gallery images missing here are unsorted — in Quick access."""
-    gallery_ids = {im.id for im in doc.images if im.role == "gallery"}
-    out: dict[str, Placement] = {}
+def _albums(doc: WorkDoc) -> list[tuple[Placement, list]]:
+    """Each album of the gallery, in order, where it sits — with its ``imageIds`` as stored (a hand-edited copy may
+    hold anything there)."""
+    out = []
     section = heading = None
-    number = 0
     for b in stack(doc):
         kind = b.get("type")
         if kind == "section":
@@ -96,13 +95,31 @@ def placements(doc: WorkDoc) -> dict[str, Placement]:
         elif kind == "heading":
             heading = _text(b.get("text"))
         elif kind == "grid":
-            number += 1
+            number = len(out) + 1
             gid, ids = b.get("id"), b.get("imageIds")
-            for i in ids if isinstance(ids, list) else []:
-                if isinstance(i, str) and i in gallery_ids and i not in out:  # a hand-edited copy may hold anything
-                    out[i] = Placement(gid if isinstance(gid, str) and gid else f"grid-{number}", number, heading,
-                                       section)
+            out.append((Placement(gid if isinstance(gid, str) and gid else f"grid-{number}", number, heading, section),
+                        ids if isinstance(ids, list) else []))
     return out
+
+
+def placements(doc: WorkDoc) -> dict[str, Placement]:
+    """Each placed gallery image's album, as the app shows the gallery: an image in two albums (a malformed copy)
+    belongs to the first. Gallery images missing here are unsorted — in Quick access."""
+    gallery_ids = {im.id for im in doc.images if im.role == "gallery"}
+    out: dict[str, Placement] = {}
+    for album, ids in _albums(doc):
+        for i in ids:
+            if isinstance(i, str) and i in gallery_ids and i not in out:
+                out[i] = album
+    return out
+
+
+def albums(doc: WorkDoc) -> list[tuple[Placement, int]]:
+    """The gallery's albums images can be put in, in order, each with how many gallery images it shows — not a
+    malformed one (no id, no image list), which nothing can be placed in."""
+    shown = Counter(p.grid_id for p in placements(doc).values())
+    real = {g.get("id") for g in grids(stack(doc))}
+    return [(album, shown[album.grid_id]) for album, _ in _albums(doc) if album.grid_id in real]
 
 
 _WORDS = {"section": ("section", "title"), "heading": ("heading", "text"), "text": ("note", "text")}

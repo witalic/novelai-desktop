@@ -14,12 +14,12 @@ from pathlib import Path
 from fastapi import HTTPException
 from PIL import Image as PILImage
 
-from app import appconfig
+from app import appconfig, downloads
 from app.settings import Settings
 from app.vault import categories, gallery_layout, index, layout, manager, migrate, store
 from app.vault import config as vaultcfg
 from app.vault.models import (
-    BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryAlbum, GalleryFacets, GalleryImage, GalleryItem,
+    AlbumInfo, BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryAlbum, GalleryFacets, GalleryImage, GalleryItem,
     GalleryPage, ImageDetail, SaveCategory, TagCount, WorkCount, WorkDoc, WorkListItem, WorkMatch, WorksPage,
 )
 
@@ -329,6 +329,23 @@ def gallery_facets(settings: Settings, q: index.ImageQuery) -> GalleryFacets:
         models=[TagCount(name=n, count=c) for n, c in f["models"]],
         works=[WorkCount(id=i, title=t or "Untitled", count=c) for i, t, c in f["works"]],
     )
+
+
+def albums(settings: Settings, work_id: str) -> list[AlbumInfo]:
+    """A work's albums, in its gallery's order — where images can be moved or copied to."""
+    return [AlbumInfo(grid_id=a.grid_id, number=a.number, heading=a.heading, section=a.section, count=n)
+            for a, n in gallery_layout.albums(load_work(settings, work_id))]
+
+
+def download_images(settings: Settings, images: list[tuple[str, str]]) -> dict:
+    """Copy (work id, image id) gallery images into the downloads folder — the files themselves, each once, each under
+    a free name."""
+    images = list(dict.fromkeys(images))
+    with _index(settings, _vault(settings)) as conn:
+        listed = index.gallery_images(conn, [i for _, i in images])
+    if missing := next((i for w, i in images if (w, i) not in listed), None):
+        raise HTTPException(status_code=404, detail=f"No gallery image “{missing}”.")
+    return downloads.save(settings, [image_path(settings, w, i) for w, i in images])
 
 
 def gallery_image(settings: Settings, work_id: str, image_id: str) -> ImageDetail:

@@ -338,6 +338,49 @@ class GalleryFacets(BaseModel):
     works: list[WorkCount]
 
 
+class WorkChanges(BaseModel):
+    at: str  # the stored copy's updated_at — the app's new lock base once it has applied ``ops``
+    ops: list[dict]
+
+
+class AlbumInfo(GalleryAlbum):
+    count: int  # the gallery images it shows
+
+
+class ImageRef(BaseModel):
+    work_id: str = Field(max_length=100)
+    image_id: str = Field(max_length=100)
+
+
+class ImagesBody(BaseModel):
+    """Gallery images picked across works — the gallery's selection."""
+
+    images: list[ImageRef] = Field(min_length=1, max_length=200)
+
+    def pairs(self) -> list[tuple[str, str]]:
+        return [(r.work_id, r.image_id) for r in self.images]
+
+
+class TransferBody(ImagesBody):
+    to_work_id: str = Field(max_length=100)
+    copy_: bool = Field(default=False, alias="copy")  # move unless asked to copy
+    grid_id: str | None = Field(default=None, max_length=100)  # one of its albums — None: its Quick access
+
+
+class Deleted(BaseModel):
+    work_id: str
+    deleted: list[str]
+    error: str | None = None  # why this work's images couldn't go
+
+
+class Transferred(BaseModel):
+    work_id: str
+    ids: dict[str, str]  # each image's id in the target
+    copied: bool
+    not_removed: str | None = None  # a move that landed as a copy: why they stayed here too
+    error: str | None = None  # why this work's images couldn't go
+
+
 class ImageDetail(GalleryImage):
     """One gallery image with its recipe: the prompt as sent, the blocks it was made of, its settings."""
 

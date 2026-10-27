@@ -1,6 +1,6 @@
 """The work log: each backend edit of a work (``workedit``) records the operations it applied and the ``updated_at`` it
 replaced. The app's open copy of that work (unsaved canvas edits and all) catches up by replaying them
-(``GET /api/agent/works/{id}/changes?since=<its base>``) instead of reloading on a 409 and losing its edits. Only an
+(``GET /api/vault/works/{id}/changes?since=<its base>``) instead of reloading on a 409 and losing its edits. Only an
 unbroken chain of logged edits from that base to the stored copy can be replayed; a save from anywhere else in between
 is a real conflict.
 
@@ -10,7 +10,7 @@ import threading
 from collections import OrderedDict, deque
 
 _EDITS_PER_WORK = 50  # an open copy catches up on every notice — it never falls this far behind
-_WORKS = 20  # works whose edits are remembered, most recently edited first
+_WORKS = 200  # works whose edits are remembered, most recently edited first — a gallery selection spans many
 
 # Held across a whole edit of a work — load, save, log — so backend edits never overlap, and a reader of the log
 # (GET …/changes) never sees the saved copy before the edit that made it is logged.

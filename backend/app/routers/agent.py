@@ -1,5 +1,6 @@
 """Settings → Agents: the MCP listener's config, live status, token and activity (``app.agent``) — and
-what agents change, for the rest of the app: a stream of notices and, per work, the edits to catch up on.
+what agents change, for the rest of the app: a stream of notices (an open work catches up on the edits themselves
+through ``GET /api/vault/works/{id}/changes``).
 
 The agent token is a local credential the user pastes into their agent's config. It is handed out in full only
 by ``GET /token`` (the Copy button) — the token the running listener accepts, never a freshly issued one — and
@@ -11,7 +12,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -21,7 +22,6 @@ from app.agent import activity, changes, store
 from app.agent.config import AgentConfig
 from app.agent.server import PORTS, listener
 from app.settings import Settings, get_settings
-from app.vault import service, worklog
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 _LOOPBACK = {"127.0.0.1", "localhost"}
@@ -55,11 +55,6 @@ class AgentPatch(BaseModel):
     enabled: bool | None = None
     permissions: dict[str, bool] | None = None
     spending: dict[str, bool | int] | None = None
-
-
-class WorkChanges(BaseModel):
-    at: str  # the stored copy's updated_at — the app's new lock base once it has applied ``ops``
-    ops: list[dict]
 
 
 def _status(settings: Settings) -> AgentStatus:
@@ -134,16 +129,3 @@ async def events() -> StreamingResponse:
                 yield f"data: {json.dumps(notice, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
-
-
-@router.get("/works/{work_id}/changes", response_model=WorkChanges)
-def work_changes(work_id: str, since: str = Query(..., min_length=1, max_length=64),
-                 settings: Settings = Depends(get_settings)) -> WorkChanges:
-    """What agents changed in a work since the app's copy of it was saved (``since``: its lock base). 409 when
-    the stored copy got there some other way — then only a reload brings the app's copy up to date."""
-    with worklog.edit_lock:  # an edit saved but not yet logged would look like someone else's save
-        stored = service.load_work(settings, work_id).updated_at
-        ops = worklog.edits_since(work_id, since, stored)
-    if ops is None:
-        raise HTTPException(status_code=409, detail="This work was changed elsewhere, not only by an agent.")
-    return WorkChanges(at=stored, ops=ops)

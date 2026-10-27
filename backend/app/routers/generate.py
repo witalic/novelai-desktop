@@ -3,8 +3,6 @@ import base64
 import json
 import logging
 import secrets
-import time
-from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app import appconfig
+from app import downloads
 from app.novelai import GenerateParams, get_client
 from app.novelai.errors import NovelAIError
 from app.settings import Settings, get_settings
@@ -88,17 +86,8 @@ def download(req: DownloadRequest, settings: Settings = Depends(get_settings)) -
     """Write image(s) straight to the Downloads folder (no OS save dialog); the UI just toasts the result.
 
     Plain ``def`` — the base64 decode + file writes are blocking, so Starlette runs it in its threadpool."""
-    dest = Path(appconfig.load(settings)["download_dir"])
-    dest.mkdir(parents=True, exist_ok=True)
-    stamp = int(time.time())
-    saved: list[str] = []
-    for i, b64 in enumerate(req.images, start=1):
-        try:
-            data = base64.b64decode(b64, validate=True)
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=400, detail="invalid image data") from exc
-        name = f"novelai-{stamp}-{i}.png"
-        (dest / name).write_bytes(data)
-        saved.append(name)
-    log.info("Saved %d image(s) to %s", len(saved), dest)
-    return {"count": len(saved), "dir": str(dest)}
+    try:
+        images = [base64.b64decode(b64, validate=True) for b64 in req.images]
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid image data") from exc
+    return downloads.save(settings, images)

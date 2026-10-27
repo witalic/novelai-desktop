@@ -11,7 +11,7 @@ export interface AgentNotice {
   also?: string[] // other works the same edit changed (images moved out of one into another)
   message: string // what the agent did, as the activity feed words it
   cost: number | null // a generation's Anlas (0 = free); null for everything else
-  local?: boolean // the app's own change, told the same way (announceWorkDeleted) — no agent, no toast
+  local?: boolean // the app's own change, told the same way (announceWorkDeleted, the gallery's edits) — no toast
 }
 type Listener = (notice: AgentNotice) => void
 

@@ -155,6 +155,24 @@ describe('applyAgentOpsToDoc', () => {
     applyAgentOpsToDoc(doc, [{ op: 'cover', image_id: 'a' }, { op: 'images_deleted', ids: ['a'] }])
     expect(doc.preview_image_id).toBe('b') // a cover deleted in the same catch-up moves on, as on the backend
   })
+
+  it('images moved in from another work land at the end of the album — after unsaved edits, once', () => {
+    const doc = {
+      id: 'w', title: 'T', combos: [], snapshots: [], preview_image_id: 'a',
+      images: [{ id: 'a', role: 'gallery' }, { id: 'b', role: 'gallery' }],
+      canvas: { nodes: [{ id: 'gallery', type: 'zone', data: { role: 'gallery', blocks: [
+        { id: 'g', type: 'grid', imageIds: ['b', 'a'], cols: 3 }] } }] }, // the user reordered it, unsaved
+    } as unknown as WorkDoc
+    const moved = { id: 'm', snapshot_id: null, role: 'gallery' as const, ar: 1, file: 'images/m.png', created_at: '', group: null, favorite: false, tags: [], description: '' }
+    const ops: AgentOp[] = [
+      { op: 'images_added', images: [moved], snapshots: [] },
+      { op: 'gallery_place', grid: 'g', image_ids: ['m'], order: [] }, // as the gallery's move logs it
+    ]
+    applyAgentOpsToDoc(doc, ops)
+    applyAgentOpsToDoc(doc, ops)
+    expect(doc.images.map((im) => im.id)).toEqual(['a', 'b', 'm'])
+    expect(((doc.canvas.nodes[0].data as any).blocks[0]).imageIds).toEqual(['b', 'a', 'm'])
+  })
 })
 
 describe('applyGalleryOps', () => {

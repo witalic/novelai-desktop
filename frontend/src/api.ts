@@ -375,16 +375,20 @@ export async function clearAgentActivity(): Promise<AgentStatus> {
   return jsonOrThrow(await fetch('/api/agent/activity', { method: 'DELETE' }), 'Failed to clear the agent activity')
 }
 
-// What agents changed in a work since our copy was saved at `since` (its lock base): the operations to replay and
-// the stored copy's stamp. null (409) when it was also saved some other way — only a reload catches up then.
-export async function agentWorkChanges(workId: string, since: string): Promise<{ at: string; ops: AgentOp[] } | null> {
-  const resp = await fetch(`/api/agent/works/${encodeURIComponent(workId)}/changes?${new URLSearchParams({ since })}`)
+// What backend edits (an agent's, the gallery's) changed in a work since our copy was saved at `since` (its lock base):
+// the operations to replay and the stored copy's stamp. null (409) when it was also saved some other way — only a
+// reload catches up then.
+export async function workChanges(workId: string, since: string): Promise<{ at: string; ops: AgentOp[] } | null> {
+  const resp = await fetch(`/api/vault/works/${encodeURIComponent(workId)}/changes?${new URLSearchParams({ since })}`)
   if (resp.status === 409) return null
-  return jsonOrThrow(resp, 'Failed to read the agent’s changes')
+  return jsonOrThrow(resp, 'Failed to read the work’s changes')
 }
 
+// What a save to the Downloads folder did: `count` written (each under a free name), `failed` that couldn't be.
+export interface SavedDownloads { count: number; dir: string; failed: number }
+
 // Save image(s) to the Downloads folder via the backend (no OS save dialog). `images` are raw base64.
-export async function saveDownloads(images: string[]): Promise<{ count: number; dir: string }> {
+export async function saveDownloads(images: string[]): Promise<SavedDownloads> {
   const resp = await fetch('/api/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
