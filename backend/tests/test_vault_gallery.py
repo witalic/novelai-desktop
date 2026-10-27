@@ -10,7 +10,7 @@ from app import appconfig
 from app.main import app
 from app.novelai._png import solid_png
 from app.settings import Settings, VaultSettings, get_settings
-from app.vault import gallery_layout, service
+from app.vault import gallery_layout, index, service
 from app.vault.models import Component, Image, Snapshot, WorkDoc
 
 PNG = base64.b64encode(solid_png(8, 12)).decode("ascii")
@@ -252,7 +252,7 @@ def test_a_hand_edited_gallery_never_drops_its_work_from_the_index(settings):
 
 async def test_an_older_index_is_rebuilt_with_the_new_columns(api, settings):
     seed(settings)
-    db = appconfig.active_vault(settings) / ".index.sqlite"
+    db = index.location(appconfig.cache_dir(settings), appconfig.active_vault(settings))
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA user_version = 3")
     conn.commit()

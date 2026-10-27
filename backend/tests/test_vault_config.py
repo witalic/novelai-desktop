@@ -12,6 +12,7 @@ import pytest
 from app import appconfig
 from app.main import app
 from app.settings import Settings, VaultSettings, get_settings
+from app.vault import index, manager
 
 
 @pytest.fixture
@@ -206,6 +207,29 @@ async def test_move_vault_with_progress(client):
     assert status["error"] is None and status["done"] == status["total"]
     assert not src.exists() and (dst / "keep.txt").is_file()
     assert (await ac.get("/api/vault/config")).json()["active"] == str(dst)
+
+
+async def test_a_moved_or_deleted_vault_leaves_no_index_behind(client):
+    ac, tmp = client
+    await ac.get("/api/vault/works")  # creates the default vault and builds its index
+    state, src, dst = tmp / "state", tmp / "default-vault", tmp / "moved"
+    assert index.location(state, src).is_file()
+    assert (await _moved(ac, src, dst))["error"] is None
+    assert not index.location(state, src).exists()  # the old path's index went with the move
+    await ac.get("/api/vault/works")
+    assert index.location(state, dst).is_file()  # the moved vault built its own
+    await ac.delete("/api/vault/vaults", params={"dir": str(dst)})
+    assert not index.location(state, dst).exists()
+
+
+async def test_indexes_of_vaults_gone_from_the_list_are_swept_at_start(client):
+    ac, tmp = client
+    await ac.get("/api/vault/works")  # the default vault and its index
+    state = tmp / "state"
+    listed, orphan = index.location(state, tmp / "default-vault"), index.location(state, tmp / "renamed-elsewhere")
+    orphan.write_bytes(b"prompts of a vault no longer listed")
+    manager.sweep_index_cache(Settings(vault=VaultSettings(state_dir=str(state)), _env_file=None))
+    assert listed.is_file() and not orphan.exists()
 
 
 async def _moved(ac: httpx.AsyncClient, src, dst) -> dict:

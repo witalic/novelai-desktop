@@ -12,6 +12,7 @@ from PIL import Image
 from app.main import app
 from app.novelai._png import solid_png
 from app.settings import Settings, VaultSettings, get_settings
+from app.vault import index
 
 
 @pytest.fixture
@@ -24,6 +25,11 @@ async def client(tmp_path):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac, vault
     app.dependency_overrides.clear()
+
+
+def _drop_index(vault) -> None:
+    """Throw the vault's index away (it lives in the fixture's state dir): the next request rebuilds it."""
+    index.discard(index.location(vault.parent / "state", vault))
 
 
 def _png_b64() -> str:
@@ -299,7 +305,7 @@ async def test_rebuild_skips_a_corrupt_work(client):
     bad = vault / "works" / "0000__bad__work-bad"
     bad.mkdir(parents=True)
     (bad / "work.json").write_text("{ not valid json", "utf-8")  # a garbage sibling work
-    (vault / ".index.sqlite").unlink()  # force a full rebuild from disk
+    _drop_index(vault)  # force a full rebuild from disk
     page = (await ac.get("/api/vault/works")).json()
     assert page["total"] == 1 and page["items"][0]["title"]  # valid work indexed, bad one skipped, no 500
 
@@ -332,7 +338,7 @@ async def test_gallery_tag_and_favorite_filters(client):
 async def test_index_rebuilds_when_deleted(client):
     ac, vault = client
     await ac.put("/api/vault/works", json=_work())
-    (vault / ".index.sqlite").unlink()
+    _drop_index(vault)
     assert (await ac.get("/api/vault/works")).json()["total"] == 1
 
 
@@ -389,7 +395,7 @@ async def test_a_file_another_program_holds_never_half_deletes_a_work(client, mo
     assert (await ac.get("/api/vault/works")).json()["total"] == 0
     assert sorted(p.name for p in wdir.iterdir()) == ["Thumbs.db"]  # …only the held file stays, and it is logged
     assert "Thumbs.db" in caplog.text
-    (vault / ".index.sqlite").unlink()  # a rebuild doesn't bring it back: no manifest, no work
+    _drop_index(vault)  # a rebuild doesn't bring it back: no manifest, no work
     assert (await ac.get("/api/vault/works")).json()["total"] == 0
 
 
