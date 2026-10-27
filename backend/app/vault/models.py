@@ -255,12 +255,22 @@ class SetFavorite(BaseModel):
 
 
 # ---- list / gallery DTOs ----
+class WorkMatch(BaseModel):
+    """Where a work matched a search its title didn't: a section, heading or note of its gallery (``text``) — or
+    ``count`` of its gallery images."""
+
+    kind: Literal["section", "heading", "note", "images"]
+    text: str | None = None
+    count: int = 0
+
+
 class WorkListItem(BaseModel):
     id: str
     title: str
     updated_at: str
     image_count: int
     preview_url: str | None
+    match: WorkMatch | None = None
 
 
 class WorksPage(BaseModel):
@@ -268,6 +278,7 @@ class WorksPage(BaseModel):
     total: int
     page: int
     per_page: int
+    in_vault: int  # every work, the filters aside
 
 
 class GalleryItem(BaseModel):
@@ -279,8 +290,61 @@ class GalleryItem(BaseModel):
     created_at: str
 
 
+class GalleryAlbum(BaseModel):
+    """The album a gallery image sits in (``gallery_layout.Placement``)."""
+
+    grid_id: str
+    number: int
+    heading: str | None = None
+    section: str | None = None
+
+
+class GalleryImage(BaseModel):
+    """An image as the global gallery lists it. ``album`` None: unsorted — in its work's Quick access."""
+
+    image_id: str
+    work_id: str
+    work_title: str
+    url: str
+    favorite: bool
+    created_at: str
+    ar: float | None = None
+    model: str | None = None
+    album: GalleryAlbum | None = None
+
+
 class GalleryPage(BaseModel):
-    items: list[GalleryItem]
+    items: list[GalleryImage]
     total: int
     page: int
     per_page: int
+    next: str | None = None  # the cursor of the page after this one (``after``); None: this is the last
+
+
+class WorkCount(BaseModel):
+    id: str
+    title: str
+    count: int
+
+
+class GalleryFacets(BaseModel):
+    """What the gallery's filters offer for the current ones: tags of the listed images, the models and works to pick
+    (each with what it would list), and ``unsorted`` — how many images in no album match the rest."""
+
+    total: int
+    unsorted: int
+    tags: list[TagCount]
+    models: list[TagCount]
+    works: list[WorkCount]
+
+
+class ImageDetail(GalleryImage):
+    """One gallery image with its recipe: the prompt as sent, the blocks it was made of, its settings."""
+
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)        # its own
+    block_tags: list[str] = Field(default_factory=list)  # from the positive blocks it was made of
+    positive: str = ""
+    negative: str = ""
+    components: list[Component] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)

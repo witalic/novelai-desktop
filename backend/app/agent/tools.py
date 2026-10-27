@@ -40,7 +40,7 @@ from app.novelai.dedup import dedupe_prompt
 from app.novelai.errors import NovelAIError, NovelAIRateLimitError
 from app.novelai.tokenizer import count_tokens
 from app.settings import Settings
-from app.vault import gallery_layout, import_blocks, presets, service, workedit, worklog
+from app.vault import gallery_layout, import_blocks, index, presets, service, workedit, worklog
 from app.vault.models import (
     BlockDoc, Combo, ComboBlock, Component, Image, PresetParams, SaveCategory, Snapshot, WorkDoc,
 )
@@ -205,7 +205,8 @@ def _list_works(settings: Settings, args: dict) -> dict:
     page = service.list_works(settings, _int(args, "page", 1, 1, 100_000), _int(args, "per_page", 50, 1, MAX_PAGE),
                               search=_str(args, "query") or None)
     return {"total": page.total, "page": page.page, "per_page": page.per_page,
-            "items": [{"id": w.id, "title": w.title, "updated_at": w.updated_at, "image_count": w.image_count}
+            "items": [{"id": w.id, "title": w.title, "updated_at": w.updated_at, "image_count": w.image_count,
+                       **({"match": w.match.model_dump(exclude_defaults=True)} if w.match else {})}
                       for w in page.items]}
 
 
@@ -292,11 +293,11 @@ def _list_images(settings: Settings, args: dict) -> dict:
 
 
 def _search_images(settings: Settings, args: dict) -> dict:
-    page = service.gallery(settings, _tags(args), _flag(args, "favorite"), _int(args, "page", 1, 1, 100_000),
-                           _int(args, "per_page", 50, 1, MAX_PAGE))
-    titles = service.work_titles(settings, {i.work_id for i in page.items})
+    query = index.ImageQuery(tags=tuple(_tags(args)), favorite=_flag(args, "favorite"))
+    page = service.gallery(settings, query, _int(args, "per_page", 50, 1, MAX_PAGE),
+                           page=_int(args, "page", 1, 1, 100_000))
     return {"total": page.total, "page": page.page, "per_page": page.per_page,
-            "items": [{"image_id": i.image_id, "work_id": i.work_id, "work_title": titles.get(i.work_id, ""),
+            "items": [{"image_id": i.image_id, "work_id": i.work_id, "work_title": i.work_title,
                        "favorite": i.favorite, "created_at": i.created_at} for i in page.items]}
 
 
@@ -1392,7 +1393,10 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_PAGE}},
           "required": ["ids"]},
          "read", _get_blocks),
-    Tool("list_works", "List works", "Works in the vault, most recently updated first, optionally filtered by title.",
+    Tool("list_works", "List works",
+         "Works in the vault, most recently updated first. 'query' finds a work by its title or what it holds — its "
+         "gallery's section titles, headings and notes, its images' prompts, descriptions and tags; a work found by "
+         "what it holds says where in 'match' (a section, heading or note, or how many of its images).",
          {"type": "object", "properties": {"query": {"type": "string"}, **_PAGING}}, "read", _list_works),
     Tool("get_work", "Get a work",
          "One work's overview: title, its generation settings (the station's), cover image, saved block "

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
-import { ApiError, deleteWork, listWorks, type WorkSort } from '../api'
+import { ApiError, deleteWork, listWorks, listWorkTags, type WorkSort } from '../api'
 import { announceWorkDeleted, onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useVault, vaultMayBeAway } from '../composables/useVault'
 import WorkEditor from './WorkEditor.vue'
-import type { WorkListItem } from '../types'
+import TagPanel from '../components/TagPanel.vue'
+import TagToggle from '../components/TagToggle.vue'
+import { matchParts } from '../vault/workMatch'
+import type { TagCount, WorkListItem } from '../types'
 
 const emit = defineEmits<{ open: [string] }>()
 const { unreachable: vaultAway, onBack: onVaultBack } = useVault()
@@ -21,13 +24,20 @@ const { confirm } = useConfirm()
 
 const items = ref<WorkListItem[]>([])
 const total = ref(0)
+const inVault = ref(0)
 const page = ref(1)
 const perPage = 24
 const loading = ref(false)
 const noVault = ref(false)
 
-// ---- filter + sort (name search now; tag/content filters land with the DB indexing step) ----
+// ---- filter + sort: the search finds a work by its title or what it holds; tags — its gallery carries them all ----
 const search = ref('')
+const selectedTags = ref<string[]>([])
+const tagOptions = ref<TagCount[]>([])
+const tagsOpen = ref(false) // the view lives on (KeepAlive): open stays open while the app runs
+const query = () => search.value.trim()
+const filtered = () => !!query() || selectedTags.value.length > 0
+const listedQuery = ref('') // the search the list on screen answers (the box may be ahead of it)
 const sort = ref<WorkSort>('updated')
 const direction = ref<'asc' | 'desc'>('desc')
 const sortOpen = ref(false)
@@ -50,6 +60,14 @@ function onSearch(v: string) {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(reload, 250) // debounce — don't hit the index on every keystroke
 }
+function toggleTag(name: string) {
+  const i = selectedTags.value.indexOf(name)
+  if (i >= 0) selectedTags.value.splice(i, 1)
+  else selectedTags.value.push(name)
+  reload()
+}
+function clearTags() { selectedTags.value = []; reload() }
+function clearFilters() { search.value = ''; selectedTags.value = []; reload() }
 function reload() { requestedPage = 1; fetchPage(1) }
 
 let fetchReq = 0
@@ -57,10 +75,17 @@ async function fetchPage(p = page.value) {
   const req = ++fetchReq // rapid pagination: a slow earlier response must not overwrite a newer page
   loading.value = true
   try {
-    const res = await listWorks({ page: p, perPage, search: search.value.trim() || undefined, sort: sort.value, direction: direction.value })
+    const filter = { search: query() || undefined, tags: [...selectedTags.value] }
+    const [res, tags] = await Promise.all([
+      listWorks({ page: p, perPage, ...filter, sort: sort.value, direction: direction.value }),
+      listWorkTags(filter), // the chips' counts follow the filters
+    ])
     if (req !== fetchReq) return
     items.value = res.items
+    listedQuery.value = filter.search ?? ''
     total.value = res.total
+    inVault.value = res.in_vault
+    tagOptions.value = tags
     page.value = res.page
     requestedPage = res.page
     noVault.value = false
@@ -126,15 +151,16 @@ onAgentNotice((n) => {
 
   <div v-else class="works" @click="sortOpen = false">
     <div class="whead">
-      <h1>Works</h1><span class="count">· {{ total }} saved</span>
+      <h1>Works</h1><span class="count">· {{ filtered() ? `${total} of ${inVault}` : total }} saved</span>
     </div>
 
     <div class="wscroll">
       <div class="wtoolbar">
         <div class="search">
           <span class="ic">⌕</span>
-          <input type="text" placeholder="Search by name…" :value="search" @input="onSearch(($event.target as HTMLInputElement).value)" />
+          <input type="text" placeholder="Search names, prompts, sections…" :value="search" @input="onSearch(($event.target as HTMLInputElement).value)" />
         </div>
+        <TagToggle :open="tagsOpen" :picked="selectedTags.length" @toggle="tagsOpen = !tagsOpen" />
         <span class="hsp"></span>
         <div class="sortwrap">
           <button class="sortbtn" @click.stop="sortOpen = !sortOpen">Sort: {{ sortLabel() }}</button>
@@ -144,6 +170,8 @@ onAgentNotice((n) => {
         </div>
         <button class="dirbtn" :title="direction === 'asc' ? 'Ascending' : 'Descending'" @click.stop="toggleDir">{{ direction === 'asc' ? '↑' : '↓' }}</button>
       </div>
+      <TagPanel v-if="!vaultAway && !noVault" class="wtags" :tags="tagOptions" :selected="selectedTags" :open="tagsOpen"
+        @toggle="toggleTag" @clear="clearTags" />
 
       <div v-if="vaultAway" class="empty">
         <div class="emoji away">⚠</div>
@@ -155,9 +183,10 @@ onAgentNotice((n) => {
         <p>No vault folder chosen yet. Pick one in <b>Settings</b> to start saving works to disk.</p>
       </div>
 
-      <div v-else-if="!loading && !items.length && search.trim()" class="empty">
+      <div v-else-if="!loading && !items.length && filtered()" class="empty">
         <div class="emoji">⌕</div>
-        <p>No works match “{{ search.trim() }}”.<br /><button class="linkbtn" @click="onSearch('')">Clear search</button></p>
+        <p>No works match {{ query() ? `“${query()}”` : 'these tags' }}{{ query() && selectedTags.length ? ' with these tags' : '' }}.<br />
+          <button class="linkbtn" @click="clearFilters">Clear filters</button></p>
       </div>
 
       <div v-else-if="!loading && !items.length" class="empty">
@@ -180,6 +209,9 @@ onAgentNotice((n) => {
         <div class="meta">
           <div class="title">{{ w.title || 'Untitled' }}</div>
           <div class="sub">{{ w.image_count }} image{{ w.image_count === 1 ? '' : 's' }}</div>
+          <div v-if="w.match && listedQuery" class="why">
+            <template v-for="(part, i) in matchParts(w.match, listedQuery)" :key="i"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template>
+          </div>
         </div>
       </div>
     </div>
@@ -200,6 +232,7 @@ onAgentNotice((n) => {
 .whead .count { font-size: 13px; color: var(--text-faint); }
 .wscroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px; }
 .wtoolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.wtags { margin: -10px 0 20px; } /* under the toolbar, in place of its gap */
 .hsp { flex: 1; }
 .search { position: relative; }
 .search input { width: 240px; font: inherit; font-size: 12.5px; color: var(--text); background: var(--surface-2);
@@ -241,6 +274,9 @@ onAgentNotice((n) => {
 .meta { padding: 10px 12px 12px; }
 .title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sub { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
+.why { font-size: 11px; color: var(--text-dim); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.why mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--text); border-radius: 3px; padding: 0 2px; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 26px;
   font-size: 13px; color: var(--text-dim); }
 .pager button { padding: 6px 14px; border-radius: var(--radius); border: 1px solid var(--border);
