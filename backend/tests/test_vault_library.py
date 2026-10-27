@@ -4,6 +4,7 @@ import pytest
 
 from app.main import app
 from app.settings import Settings, VaultSettings, get_settings
+from app.vault import index
 
 
 @pytest.fixture
@@ -224,7 +225,7 @@ async def test_recategorize_removes_stale_file(client):
 async def test_blocks_survive_index_rebuild(client):
     ac, vault = client
     await ac.post("/api/vault/library/blocks", json=_block())
-    (vault / ".index.sqlite").unlink()
+    index.discard(index.location(vault.parent / "state", vault))  # the next request rebuilds it
     assert (await ac.get("/api/vault/library/blocks")).json()["total"] == 1
 
 

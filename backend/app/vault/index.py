@@ -1,32 +1,41 @@
 """SQLite index — throwaway, rebuildable by scanning ``work.json`` files (files are the truth).
 
+It lives in this machine's cache (``location``), never in the vault: a vault may sit on a network share, where SQLite's
+WAL can't work and every request would pay the network for its pages.
+
 Tags are normalized (``tag``/``image_tag``/``work_tag``/``block_tag``) so the global gallery can
 filter across many images efficiently. Image tags are inherited from the snapshot's block tags
 (source ``block``) plus manual tags (source ``manual``); work tags are their union.
 """
+import hashlib
 import json
 import logging
+import os
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
-from app.vault import migrate
+from app import appconfig
+from app.vault import config as vaultcfg
+from app.vault import layout, migrate
 from app.vault.models import WorkDoc
 
 log = logging.getLogger(__name__)
 
-_DB = ".index.sqlite"
-_SCHEMA_VERSION = 3  # 3: image.role (gallery/scratch) — bumping rebuilds the throwaway index
+_LEGACY = ".index.sqlite"  # where earlier builds kept the index: inside the vault
+_SCHEMA_VERSION = 4  # 4: work/block mtime_ns (what sync compares) — bumping rebuilds the throwaway index
 
 _SCHEMA = """
 CREATE TABLE work(id TEXT PRIMARY KEY, dir TEXT NOT NULL, title TEXT, slug TEXT,
-  created_at TEXT, updated_at TEXT, preview_image_id TEXT, image_count INTEGER DEFAULT 0);
+  created_at TEXT, updated_at TEXT, preview_image_id TEXT, image_count INTEGER DEFAULT 0, mtime_ns INTEGER);
 CREATE TABLE snapshot(id TEXT PRIMARY KEY, work_id TEXT NOT NULL, hash TEXT,
   positive TEXT, negative TEXT, created_at TEXT);
 CREATE TABLE image(id TEXT PRIMARY KEY, work_id TEXT NOT NULL, snapshot_id TEXT, file TEXT,
   role TEXT DEFAULT 'gallery', favorite INTEGER DEFAULT 0, group_name TEXT, seed INTEGER, model TEXT, created_at TEXT);
 CREATE TABLE block(id TEXT PRIMARY KEY, category TEXT, name TEXT, text TEXT,
-  polarity TEXT DEFAULT 'positive', version INTEGER, created_at TEXT, updated_at TEXT);
+  polarity TEXT DEFAULT 'positive', version INTEGER, created_at TEXT, updated_at TEXT, mtime_ns INTEGER);
 CREATE TABLE tag(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);
 CREATE TABLE image_tag(image_id TEXT, tag_id INTEGER, source TEXT, PRIMARY KEY(image_id, tag_id, source));
 CREATE TABLE work_tag(work_id TEXT, tag_id INTEGER, source TEXT, PRIMARY KEY(work_id, tag_id, source));
@@ -39,23 +48,40 @@ CREATE INDEX idx_work_tag_tag ON work_tag(tag_id);
 """
 
 
-def _connect(vault: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(vault / _DB)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")  # WAL has a single writer — wait out a concurrent save/rebuild
+def location(cache: Path, vault: Path) -> Path:
+    """A vault's index file in the machine's cache dir: named after the folder for whoever looks, keyed by its full
+    path — so two vaults never share one, and a moved vault starts afresh."""
+    key = hashlib.sha256(os.path.normcase(str(vault)).encode("utf-8")).hexdigest()[:12]
+    return cache / "index" / f"{layout.slugify(vault.name)}-{key}.sqlite"
+
+
+def _connect(db: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")  # WAL has a single writer — wait out a concurrent save/rebuild
+        conn.execute("PRAGMA journal_mode=WAL")  # the first read of the file: a non-database fails here
+    except BaseException:
+        conn.close()  # never left to the traceback: an open handle would keep Windows from replacing the file
+        raise
     return conn
 
 
-# Per-vault lock so parallel first-run requests (the frontend fires several at once) don't both wipe +
+def _unlink(db: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):  # the DB together with its WAL sidecars
+        db.with_name(db.name + suffix).unlink(missing_ok=True)
+
+
+# Per-index lock so parallel first-run requests (the frontend fires several at once) don't both wipe +
 # recreate the index — that races to "table already exists" / a Windows PermissionError unlinking a DB a
 # sibling thread still holds.
 _build_locks: dict[str, threading.Lock] = {}
 _build_locks_guard = threading.Lock()
+_synced: set[str] = set()  # the indexes brought in line with their vault's files in this run
 
 
-def _build_lock(vault: Path) -> threading.Lock:
-    key = str(vault)
+def _build_lock(db: Path) -> threading.Lock:
+    key = str(db)
     with _build_locks_guard:
         lock = _build_locks.get(key)
         if lock is None:
@@ -63,33 +89,109 @@ def _build_lock(vault: Path) -> threading.Lock:
         return lock
 
 
-def _healthy(conn: sqlite3.Connection) -> bool:
+def _corrupt(exc: BaseException) -> bool:
+    return getattr(exc, "sqlite_errorcode", 0) & 0xFF in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB)
+
+
+def _index_fault(exc: BaseException) -> bool:
+    """A failure of the index itself (corrupt, locked, out of space) — never to be taken for one bad file in the vault."""
+    return isinstance(exc, sqlite3.OperationalError) or _corrupt(exc)
+
+
+def _healthy(db: Path) -> sqlite3.Connection | None:
+    """The index as it stands, or None when it must be built: missing/empty (user_version 0), an older schema, or not
+    a SQLite file at all."""
     try:
-        return conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
-    except sqlite3.DatabaseError:  # missing/empty (user_version 0) or not a valid SQLite file
-        return False
+        conn = _connect(db)
+    except sqlite3.DatabaseError as exc:
+        if not _corrupt(exc):  # busy or the like: an error for this request, not a reason to wipe the file
+            raise
+        return None
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION:
+            return conn
+    except sqlite3.DatabaseError as exc:
+        if not _corrupt(exc):
+            conn.close()
+            raise
+    conn.close()
+    return None
 
 
-def open_index(vault: Path) -> sqlite3.Connection:
-    """Open the index; (re)build it if missing, corrupt, or on a schema version bump.
+def open_index(vault: Path, db: Path) -> sqlite3.Connection:
+    """Open a vault's index at ``db`` (see ``location``); (re)build it if missing, unreadable, or on a schema version
+    bump, and bring it in line with the files (``sync``) on its first open in a run.
 
-    The per-vault lock wraps the whole open (connect + health check + any rebuild), not just the rebuild:
+    The per-index lock wraps the whole open (connect + health check + any rebuild), not just the rebuild:
     otherwise a sibling thread sitting between its own connect() and close() would hold a handle to the DB
     while this thread unlinks it — a Windows 'file in use' error during the first-run request burst. For the
     common healthy path the lock is held only for a connect + one PRAGMA, so contention is negligible."""
-    with _build_lock(vault):
-        conn = _connect(vault)
-        if _healthy(conn):
+    with _build_lock(db):
+        db.parent.mkdir(parents=True, exist_ok=True)
+        if conn := _healthy(db):
+            try:
+                if str(db) not in _synced:
+                    sync(conn, vault)
+                    _synced.add(str(db))
+            except BaseException:
+                conn.close()
+                raise
             return conn
-        conn.close()
-        for suffix in ("", "-wal", "-shm"):  # drop the DB together with its WAL sidecars
-            (vault / f"{_DB}{suffix}").unlink(missing_ok=True)
-        conn = _connect(vault)
-        conn.executescript(_SCHEMA)
-        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
-        conn.commit()
-        rebuild(conn, vault)
-        return conn
+        _unlink(db)
+        conn = _connect(db)
+        try:
+            conn.executescript(_SCHEMA)
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            conn.commit()
+            sync(conn, vault)
+            _synced.add(str(db))
+        except BaseException:
+            conn.close()
+            raise
+    _drop_legacy(vault)
+    return conn
+
+
+@contextmanager
+def connection(vault: Path, db: Path) -> Iterator[sqlite3.Connection]:
+    """The index for one request, closed after. One SQLite finds corrupt is thrown away, so a damaged page costs one
+    failed request and a rebuild — not a failure on every call (the health check reads the header only)."""
+    conn = None
+    try:
+        conn = open_index(vault, db)
+        yield conn
+    except sqlite3.DatabaseError as exc:
+        if _corrupt(exc):
+            log.warning("The vault index is corrupt — it is rebuilt on the next request: %s", exc)
+            if conn is not None:
+                conn.close()
+            discard(db)
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def discard(db: Path) -> None:
+    """Throw an index away — its vault moved or went, or the file is corrupt; the next open builds it anew. A file
+    still open elsewhere (Windows won't delete it) stays until then, and is synced again rather than trusted."""
+    with _build_lock(db):
+        _synced.discard(str(db))
+        try:
+            _unlink(db)
+        except OSError as exc:
+            log.info("Left the index %s for later: %s", db.name, exc)
+
+
+def _drop_legacy(vault: Path) -> None:
+    """Earlier builds kept the index in the vault itself — removed for good once its successor is built. One an older
+    app still holds (on another computer) stays for a later build."""
+    if not (vault / _LEGACY).exists():
+        return
+    try:
+        _unlink(vault / _LEGACY)
+    except OSError as exc:
+        log.info("Left the vault's old index in place: %s", exc)
 
 
 def _tag_id(conn: sqlite3.Connection, name: str) -> int:
@@ -114,12 +216,16 @@ def remove_work(conn: sqlite3.Connection, work_id: str) -> None:
     conn.commit()
 
 
-def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str) -> None:
+def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str, mtime_ns: int | None = None) -> None:
+    """``mtime_ns``: the work folder's modification time as ``sync`` lists it — none for the app's own saves, which
+    ``sync`` then reads back once."""
     _delete_work(conn, doc.id)
     gallery_count = sum(1 for im in doc.images if im.role == "gallery")  # scratch never counts
     conn.execute(
-        "INSERT INTO work(id,dir,title,slug,created_at,updated_at,preview_image_id,image_count) VALUES(?,?,?,?,?,?,?,?)",
-        (doc.id, dir_name, doc.title, doc.slug, doc.created_at, doc.updated_at, doc.preview_image_id, gallery_count),
+        "INSERT INTO work(id,dir,title,slug,created_at,updated_at,preview_image_id,image_count,mtime_ns) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        (doc.id, dir_name, doc.title, doc.slug, doc.created_at, doc.updated_at, doc.preview_image_id, gallery_count,
+         mtime_ns),
     )
     snap_tags: dict[str, set[str]] = {}
     snap_params: dict[str, dict] = {}
@@ -151,13 +257,14 @@ def upsert_work(conn: sqlite3.Connection, doc: WorkDoc, dir_name: str) -> None:
     conn.commit()
 
 
-def upsert_block(conn: sqlite3.Connection, data: dict) -> None:
+def upsert_block(conn: sqlite3.Connection, data: dict, mtime_ns: int | None = None) -> None:
+    """``mtime_ns``: the block file's modification time as ``sync`` lists it — none for the app's own saves."""
     conn.execute(
-        "INSERT OR REPLACE INTO block(id,category,name,text,polarity,version,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO block(id,category,name,text,polarity,version,created_at,updated_at,mtime_ns) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
         (data["id"], data.get("category", "custom"), data.get("name", ""), data.get("text", ""),
          data.get("polarity", "positive"), data.get("version", 1),
-         data.get("created_at", ""), data.get("updated_at", "")),
+         data.get("created_at", ""), data.get("updated_at", ""), mtime_ns),
     )
     conn.execute("DELETE FROM block_tag WHERE block_id=?", (data["id"],))
     for t in data.get("tags", []):
@@ -278,12 +385,6 @@ def find_work_dir(conn: sqlite3.Connection, work_id: str) -> str | None:
     return row[0] if row else None
 
 
-def work_updated_at(conn: sqlite3.Connection, work_id: str) -> str | None:
-    """The stored work's last-saved timestamp — used for the save-time concurrency check (H3)."""
-    row = conn.execute("SELECT updated_at FROM work WHERE id=?", (work_id,)).fetchone()
-    return row[0] if row else None
-
-
 # Whitelisted ORDER BY columns (the router validates `sort`; this is belt & braces against injection).
 _WORK_SORTS = {
     "updated": "updated_at",
@@ -339,36 +440,127 @@ def work_titles(conn, ids: list[str]) -> dict[str, str]:
     return {r["id"]: r["title"] for r in rows}
 
 
-def rebuild(conn: sqlite3.Connection, vault: Path) -> dict:
-    for tbl in ("image_tag", "work_tag", "block_tag", "image", "snapshot", "work", "block", "tag"):
-        conn.execute(f"DELETE FROM {tbl}")
-    works = 0
-    works_root = vault / "works"
-    if works_root.is_dir():
-        for wj in works_root.glob("*/work.json"):
-            try:
-                # Same migration choke point as store.read_work — a v1 work must index the same
-                # way it loads, or the gallery and the canvas would disagree.
-                doc = migrate.load_doc(wj.read_text("utf-8"))
-            except Exception:  # noqa: BLE001 — a bad file must not abort the whole rebuild
-                log.warning("Skipping unreadable work: %s", wj)
-                continue
-            try:
-                upsert_work(conn, doc, wj.parent.name)
-                works += 1
-            except Exception:  # noqa: BLE001 — one corrupt/duplicate work must not 500 the rebuild
-                conn.rollback()
-                log.warning("Skipping work that failed to index: %s", wj)
-    blocks = 0
-    blocks_root = vault / "library" / "blocks"
-    if blocks_root.is_dir():
-        for bj in blocks_root.glob("**/*.json"):
-            try:
-                upsert_block(conn, json.loads(bj.read_text("utf-8")))
-                blocks += 1
-            except Exception:  # noqa: BLE001
-                log.warning("Skipping unreadable block: %s", bj)
+def _out_of_reach(vault: Path) -> None:
+    """Raise when the vault itself can't be seen — a share that dropped mid-sync reports its folders and files as
+    missing, which must never read as "deleted": the request waits (503), and the next one syncs again."""
+    if not vaultcfg.is_initialized(vault):
+        raise appconfig.VaultUnavailable(str(vault))
+
+
+def _listing(vault: Path, folder: Path) -> list[os.DirEntry]:
+    """A folder's entries with their modification times: the listing carries them (on Windows, and over SMB in bulk),
+    so reading them costs no request per entry — what keeps ``sync`` cheap on a network share."""
+    try:
+        with os.scandir(folder) as entries:
+            return list(entries)
+    except FileNotFoundError:
+        _out_of_reach(vault)
+        return []
+
+
+def _block_files(vault: Path, folder: Path) -> Iterator[os.DirEntry]:
+    for entry in _listing(vault, folder):
+        if entry.name.startswith("._"):  # macOS's AppleDouble litter on a share — never a block
+            continue
+        if entry.is_dir(follow_symlinks=False):  # a linked folder could loop
+            yield from _block_files(vault, Path(entry.path))
+        elif entry.name.endswith(".json"):
+            yield entry
+
+
+def _gone(vault: Path, path: Path, exc: Exception) -> bool:
+    """For a file ``sync`` couldn't read: whether it is gone for good (forget what the index holds for it) or only
+    unreadable right now (keep that). A vault out of reach altogether raises instead."""
+    if not isinstance(exc, OSError):  # unparseable: as good as gone
+        log.warning("Skipping unreadable file: %s", path)
+        return True
+    _out_of_reach(vault)
+    if isinstance(exc, FileNotFoundError):  # e.g. a work folder without a manifest: no work, not a fault
+        return True
+    log.warning("Can't read %s now — keeping what the index holds: %s", path, exc)
+    return False
+
+
+def _forget(conn: sqlite3.Connection, work_id: str | None, dir_name: str) -> int:
+    """Drop what the index holds for a folder — unless that work has since turned up in another one (renamed)."""
+    if work_id is None or find_work_dir(conn, work_id) != dir_name:
+        return 0
+    _delete_work(conn, work_id)
+    return 1
+
+
+def sync(conn: sqlite3.Connection, vault: Path) -> None:
+    """Bring the index in line with the vault's files, which can change without this app (another build of it, a
+    restored backup, a different vault at the same path). A work is read again only when its folder's modification time
+    differs from the indexed one — every save replaces ``work.json`` in it (a hand edit made in place doesn't move it) —
+    and a block when its file's does; whatever is gone is dropped. An empty index reads everything: that is the
+    rebuild. One work or block in two places stays where the index first found it, rather than swapping every run."""
+    read = dropped = 0
+    known = {r["dir"]: (r["id"], r["mtime_ns"]) for r in conn.execute("SELECT id,dir,mtime_ns FROM work")}
+    folders = [e for e in _listing(vault, vault / "works") if e.is_dir()]
+    listed = {e.name for e in folders}
+    for entry in folders:
+        mtime = entry.stat().st_mtime_ns  # taken before the read: a save in between is caught by the next sync
+        work_id, indexed = known.get(entry.name, (None, None))
+        if indexed == mtime:
+            continue
+        wj = Path(entry.path) / "work.json"
+        try:
+            # Same migration choke point as store.read_work — a v1 work must index the same
+            # way it loads, or the gallery and the canvas would disagree.
+            doc = migrate.load_doc(wj.read_text("utf-8"))
+        except Exception as exc:  # noqa: BLE001 — a bad file must not abort the whole sync
+            if _gone(vault, wj, exc):
+                dropped += _forget(conn, work_id, entry.name)
+                conn.commit()
+            continue
+        where = find_work_dir(conn, doc.id)
+        if where not in (None, entry.name) and where in listed:  # a copied folder (Explorer's "… - Copy")
+            log.warning("Work %s is in two folders, %s and %s — the second is left out", doc.id, where, entry.name)
+            continue
+        try:
+            _forget(conn, work_id, entry.name)  # the work this folder held may be another one now
+            upsert_work(conn, doc, entry.name, mtime)
+            read += 1
+        except Exception as exc:  # noqa: BLE001 — one malformed work must not 500 the sync
+            conn.rollback()
+            if _index_fault(exc):
+                raise
+            log.warning("Skipping work that failed to index: %s", wj)
+    for dir_name, (work_id, _) in known.items():
+        if dir_name not in listed:
+            dropped += _forget(conn, work_id, dir_name)
     conn.commit()
-    counts = {"works": works, "blocks": blocks}
-    log.info("Rebuilt vault index: %s", counts)
-    return counts
+    known_blocks = {r["id"]: r["mtime_ns"] for r in conn.execute("SELECT id,mtime_ns FROM block")}
+    keep: set[str] = set()
+    files: set[str] = set()
+    for entry in sorted(_block_files(vault, vault / "library" / "blocks"), key=lambda e: e.path):
+        block_id = entry.name.removesuffix(".json")
+        if block_id in files:  # one block in two category folders: the first by path stands, every run
+            log.warning("Block %s is in two files — %s is left out", block_id, entry.path)
+            continue
+        files.add(block_id)
+        mtime = entry.stat().st_mtime_ns
+        if known_blocks.get(block_id) == mtime:
+            keep.add(block_id)
+            continue
+        try:
+            data = json.loads(Path(entry.path).read_text("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            if not _gone(vault, Path(entry.path), exc):
+                keep.add(block_id)
+            continue
+        try:
+            upsert_block(conn, data, mtime)
+            keep.add(data["id"])
+            read += 1
+        except Exception as exc:  # noqa: BLE001 — one malformed block must not 500 the sync
+            conn.rollback()
+            if _index_fault(exc):
+                raise
+            log.warning("Skipping block that failed to index: %s", entry.path)
+    for block_id in known_blocks.keys() - keep:
+        delete_block(conn, block_id)
+        dropped += 1
+    if read or dropped:
+        log.info("Synced the vault index with %s: %d read, %d dropped", vault, read, dropped)

@@ -1,11 +1,13 @@
 """Vault orchestration: save/load/list works, serve images, gallery query, save blocks.
 
-Files on disk are authoritative; the SQLite index is opened per call and rebuilt on demand.
+Files on disk are authoritative; the SQLite index (in this machine's cache) is opened per call and rebuilt on demand.
 """
 import json
 import logging
+import sqlite3
 import threading
 import uuid
+from contextlib import AbstractContextManager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from PIL import Image as PILImage
 from app import appconfig
 from app.settings import Settings
 from app.vault import categories, index, layout, manager, migrate, store
+from app.vault import config as vaultcfg
 from app.vault.models import (
     BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage,
     SaveCategory, TagCount, WorkDoc, WorkListItem, WorksPage,
@@ -51,6 +54,11 @@ def _vault(settings: Settings) -> Path:
     return appconfig.active_vault(settings)
 
 
+def _index(settings: Settings, vault: Path) -> AbstractContextManager[sqlite3.Connection]:
+    # The vault's index for one request — kept in this machine's cache, never in the vault itself.
+    return index.connection(vault, index.location(appconfig.cache_dir(settings), vault))
+
+
 def _guard_no_move() -> None:
     # Any vault write landing between a move's copy and rmtree would silently vanish — refuse while moving.
     if manager.move_status().active:
@@ -68,16 +76,34 @@ def save_work(settings: Settings, doc: WorkDoc, adopt: dict[str, Path] | None = 
     _guard_no_move()
     vault = _vault(settings)
     with _works_lock:
-        return _save_work_locked(vault, doc, adopt)
+        return _save_work_locked(settings, vault, doc, adopt)
 
 
-def _save_work_locked(vault: Path, doc: WorkDoc, adopt: dict[str, Path] | None) -> dict:
-    conn = index.open_index(vault)
+def _saved_at(work_dir: Path) -> str | None:
+    """The stored work's ``updated_at``, read from its manifest: a save checks against the files, which are the truth —
+    not the index, which changes made outside this app reach only at its next sync. None: no manifest there (any more);
+    "" when it has no readable one (a hand-broken file, which the save writes over)."""
     try:
+        raw = json.loads((work_dir / "work.json").read_text("utf-8"))
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return ""
+    stamp = raw.get("updated_at") if isinstance(raw, dict) else None
+    return stamp if isinstance(stamp, str) else ""
+
+
+def _save_work_locked(settings: Settings, vault: Path, doc: WorkDoc, adopt: dict[str, Path] | None) -> dict:
+    with _index(settings, vault) as conn:
         # Full id (not a prefix) in the directory name — a short prefix can collide for two same-title works
         # created close together, and the second write_work would overwrite the first's work.json.
         existing_dir = index.find_work_dir(conn, doc.id)
-        if doc.updated_at and not existing_dir:
+        stored = _saved_at(layout.safe_join(vault / "works", existing_dir)) if existing_dir else None
+        if doc.updated_at and stored is None:
+            if existing_dir:  # its manifest went without this app — the index learns it now
+                if not vaultcfg.is_initialized(vault):  # or the share dropped, which reads as missing: wait for it
+                    raise appconfig.VaultUnavailable(str(vault))
+                index.remove_work(conn, doc.id)
             raise HTTPException(status_code=404, detail="This work was deleted.")
         dir_name = existing_dir or f"{_now()[:10]}__{layout.slugify(doc.title)}__{doc.id}"
         work_dir = layout.safe_join(vault / "works", dir_name)
@@ -85,7 +111,6 @@ def _save_work_locked(vault: Path, doc: WorkDoc, adopt: dict[str, Path] | None) 
         # Optimistic concurrency (H3): if the stored copy is newer than the base the client loaded
         # (its incoming updated_at), another editor saved in between — refuse so it doesn't clobber.
         # A client that sends no base (empty) opts out (fresh works, best-effort close beacon).
-        stored = index.work_updated_at(conn, doc.id) if existing_dir else None
         if stored and doc.updated_at and stored > doc.updated_at:
             raise HTTPException(status_code=409, detail="This work was changed elsewhere. Reload to get the latest.")
         doc.updated_at = _stamp_after(stored)
@@ -125,19 +150,14 @@ def _save_work_locked(vault: Path, doc: WorkDoc, adopt: dict[str, Path] | None) 
         store.write_thumbnail(work_dir, doc)
         index.upsert_work(conn, doc, dir_name)
         return {"id": doc.id, "updated_at": doc.updated_at}
-    finally:
-        conn.close()
 
 
 def load_work(settings: Settings, work_id: str) -> WorkDoc:
     if not layout.valid_id(work_id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         dir_name = index.find_work_dir(conn, work_id)
-    finally:
-        conn.close()
     if not dir_name:
         raise HTTPException(status_code=404, detail="Work not found.")
     work_dir = layout.safe_join(vault / "works", dir_name)
@@ -157,8 +177,7 @@ def delete_work(settings: Settings, work_id: str) -> dict:
     _guard_no_move()
     vault = _vault(settings)
     with _works_lock:  # never under a save that is writing into the same folder
-        conn = index.open_index(vault)
-        try:
+        with _index(settings, vault) as conn:
             dir_name = index.find_work_dir(conn, work_id)
             if not dir_name:
                 raise HTTPException(status_code=404, detail="Work not found.")
@@ -169,8 +188,6 @@ def delete_work(settings: Settings, work_id: str) -> dict:
                 raise HTTPException(status_code=409, detail="The work's files are in use by another program — "
                                                             "close it and try again.") from exc
             index.remove_work(conn, work_id)
-        finally:
-            conn.close()
         if work_dir.is_dir() and (held := layout.remove_tree(work_dir)):
             log.warning("Deleted %s, but %d file(s) in use by another program stay behind: %s",
                         work_dir.name, len(held), ", ".join(held[:5]))
@@ -180,11 +197,8 @@ def delete_work(settings: Settings, work_id: str) -> dict:
 def list_works(settings: Settings, page: int, per_page: int,
                search: str | None = None, sort: str = "updated", direction: str = "desc") -> WorksPage:
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         total, rows = index.list_works(conn, page, per_page, search, sort, direction)
-    finally:
-        conn.close()
     items = [
         WorkListItem(
             id=r["id"], title=r["title"] or "Untitled", updated_at=r["updated_at"] or "",
@@ -201,11 +215,8 @@ def image_path(settings: Settings, work_id: str, image_id: str) -> Path:
     if not (layout.valid_id(work_id) and layout.valid_id(image_id)):
         raise HTTPException(status_code=400, detail="Invalid id.")
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         dir_name = index.find_work_dir(conn, work_id)
-    finally:
-        conn.close()
     if not dir_name:
         raise HTTPException(status_code=404, detail="Not found.")
     path = layout.safe_join(vault / "works", dir_name, "images", f"{image_id}.png")
@@ -241,11 +252,8 @@ def preview_path(settings: Settings, work_id: str) -> Path:
     if not layout.valid_id(work_id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         dir_name = index.find_work_dir(conn, work_id)
-    finally:
-        conn.close()
     if not dir_name:
         raise HTTPException(status_code=404, detail="Not found.")
     path = layout.safe_join(vault / "works", dir_name, "preview.png")
@@ -256,11 +264,8 @@ def preview_path(settings: Settings, work_id: str) -> Path:
 
 def gallery(settings: Settings, tags: list[str], favorite: bool, page: int, per_page: int) -> GalleryPage:
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         total, rows = index.gallery(conn, tags, favorite, page, per_page)
-    finally:
-        conn.close()
     items = [
         GalleryItem(
             image_id=r["id"], work_id=r["work_id"],
@@ -273,11 +278,8 @@ def gallery(settings: Settings, tags: list[str], favorite: bool, page: int, per_
 
 
 def work_titles(settings: Settings, ids: set[str]) -> dict[str, str]:
-    conn = index.open_index(_vault(settings))
-    try:
+    with _index(settings, _vault(settings)) as conn:
         return index.work_titles(conn, sorted(ids))
-    finally:
-        conn.close()
 
 
 def _blocks_root(vault: Path) -> Path:
@@ -324,11 +326,8 @@ def save_block(settings: Settings, block: BlockDoc) -> dict:
     path = layout.safe_join(root, block.category, f"{block.id}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     layout.atomic_write_text(path, block.model_dump_json())
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         index.upsert_block(conn, json.loads(block.model_dump_json()))
-    finally:
-        conn.close()
     return {"id": block.id}
 
 
@@ -345,24 +344,18 @@ def delete_block(settings: Settings, block_id: str) -> dict:
             removed = True
     if not removed:
         raise HTTPException(status_code=404, detail="Block not found.")
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         index.delete_block(conn, block_id)
-    finally:
-        conn.close()
     return {"id": block_id, "deleted": True}
 
 
 def list_blocks(settings: Settings, category_slugs: list[str], tags: list[str], search: str, sort: str,
                 page: int, per_page: int) -> BlocksPage:
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         # Section order follows the category order (one order everywhere), so pages arrive in display order.
         cat_order = [c.slug for c in categories.read_all(vault)] if sort == "category" else None
         total, rows = index.list_blocks(conn, category_slugs, tags, search or None, sort, page, per_page, cat_order)
-    finally:
-        conn.close()
     items = [
         BlockDoc(
             id=r["id"], category=r["category"] or "custom", name=r["name"] or "", text=r["text"] or "",
@@ -379,11 +372,8 @@ def resolve_blocks(settings: Settings, ids: list[str]) -> list[BlockDoc]:
     """Current BlockDocs for the given ids (missing ids are simply omitted) — the widget diffs a
     pinned copy's frozen version against the live one to flag drift."""
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         rows = index.blocks_by_ids(conn, ids)
-    finally:
-        conn.close()
     return [
         BlockDoc(
             id=r["id"], category=r["category"] or "custom", name=r["name"] or "", text=r["text"] or "",
@@ -397,11 +387,8 @@ def resolve_blocks(settings: Settings, ids: list[str]) -> list[BlockDoc]:
 
 def list_categories(settings: Settings, tags: list[str] | None = None) -> list[CategoryCount]:
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         counts = index.category_counts(conn, tags or None)
-    finally:
-        conn.close()
     cats = categories.read_all(vault)
     known = {c.slug for c in cats}
     result = [
@@ -452,12 +439,9 @@ def delete_category(settings: Settings, slug: str) -> dict:
     removed = categories.remove(vault, slug)
     if not removed and not moved:
         raise HTTPException(status_code=404, detail="Category not found.")
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         for data in moved:  # targeted re-index of just the moved blocks (no full, crash-prone rebuild)
             index.upsert_block(conn, data)
-    finally:
-        conn.close()
     return {"slug": slug, "deleted": True, "moved": len(moved)}
 
 
@@ -504,11 +488,8 @@ def reorder_categories(settings: Settings, slugs: list[str]) -> dict:
 
 def image_examples(settings: Settings, tags: list[str], limit: int) -> list[GalleryItem]:
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         rows = index.examples_by_tags(conn, [t for t in tags if t.strip()], min(max(limit, 1), 24))
-    finally:
-        conn.close()
     return [
         GalleryItem(
             image_id=r["id"], work_id=r["work_id"],
@@ -521,9 +502,6 @@ def image_examples(settings: Settings, tags: list[str], limit: int) -> list[Gall
 
 def list_tags(settings: Settings, category: str) -> list[TagCount]:
     vault = _vault(settings)
-    conn = index.open_index(vault)
-    try:
+    with _index(settings, vault) as conn:
         rows = index.tag_counts(conn, category or None)
-    finally:
-        conn.close()
     return [TagCount(name=r["name"], count=r["count"]) for r in rows]

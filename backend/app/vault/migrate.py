@@ -2,7 +2,7 @@
 
 Files are the truth and stay at their written version until the next save (lazy migration —
 rewriting on read would collide with the autosave/atomic-write invariants). Both read paths,
-``store.read_work`` and ``index.rebuild``, go through :func:`load_doc`, so a v1 work indexes
+``store.read_work`` and ``index.sync``, go through :func:`load_doc`, so a v1 work indexes
 and loads identically. Each step is a plain ``dict -> dict`` function so it can never depend
 on the current Pydantic models — it must keep working after the models move on.
 """

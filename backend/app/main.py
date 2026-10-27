@@ -20,6 +20,7 @@ from app.agent import store as agent_store
 from app.agent.server import listener as agent_listener
 from app.routers import account, agent, catalog, generate, settings, system, tokenize, vault
 from app.settings import Settings, get_settings
+from app.vault import manager as vault_manager
 
 log = logging.getLogger(__name__)
 _LOOPBACK = {"127.0.0.1", "localhost"}
@@ -50,12 +51,22 @@ async def _start_agent_access(app_settings: Settings) -> None:
         agent_listener.error = "Agent access could not start — see the app log."
 
 
+async def _sweep_index_cache(app_settings: Settings) -> None:
+    """The cached indexes of vaults gone from the list — once per start; never a reason not to start."""
+    try:
+        await run_in_threadpool(vault_manager.sweep_index_cache, app_settings)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not sweep the vault index cache")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # In the background: a slow keychain must not hold up the boot (the shell waits on /health).
     starting = asyncio.create_task(_start_agent_access(get_settings()))
+    sweeping = asyncio.create_task(_sweep_index_cache(get_settings()))
     yield
     await starting
+    await sweeping
     await agent_listener.stop()
 
 

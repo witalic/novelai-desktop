@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from app import appconfig
 from app.settings import Settings
 from app.vault import config as vaultcfg
-from app.vault import layout
+from app.vault import index, layout
 from app.vault.models import AppSettings, MoveStatus, PatchSettings, VaultConfig, VaultInfo
 
 log = logging.getLogger(__name__)
@@ -89,6 +89,7 @@ def delete_vault(settings: Settings, dir_str: str, keep_files: bool = False) -> 
         if d["active_vault"] == ts:
             d["active_vault"] = d["vaults"][0] if d["vaults"] else None
     appconfig.update(settings, drop)
+    index.discard(index.location(appconfig.cache_dir(settings), target))  # its index goes with it from the list
     return get_config(settings)
 
 
@@ -127,10 +128,22 @@ def start_move(settings: Settings, src_str: str, dst_str: str) -> MoveStatus:
     return move_status()
 
 
+def sweep_index_cache(settings: Settings) -> None:
+    """Remove the cached indexes of vaults no longer in the list — one a move or delete couldn't remove at the time (a
+    request still had it open), or a vault's folder renamed outside the app. They hold prompt text, and nothing would
+    open them again. Run once per start."""
+    cache = appconfig.cache_dir(settings)
+    listed = [*appconfig.load(settings)["vaults"], *([settings.vault.dir] if settings.vault.dir else [])]
+    keep = {index.location(cache, Path(v)) for v in listed}
+    for db in (cache / "index").glob("*.sqlite"):
+        if db not in keep:
+            index.discard(db)
+
+
 def _carried(f: Path) -> bool:
-    """What a move copies: the vault's own files — not OS litter, writes still in flight (*.tmp), or the index (open on
-    and off as the app reads it; the copy rebuilds its own from the works)."""
-    return not (layout.is_os_litter(f) or f.suffix == ".tmp" or f.name.startswith(".index.sqlite"))
+    """What a move copies: the vault's own files — not OS litter or writes still in flight (*.tmp). The index isn't in
+    the vault; the moved one gets its own, built from the works at the first open."""
+    return not (layout.is_os_litter(f) or f.suffix == ".tmp")
 
 
 def _run_move(settings: Settings, src: Path, dst: Path) -> None:
@@ -163,6 +176,7 @@ def _run_move(settings: Settings, src: Path, dst: Path) -> None:
                 d["active_vault"] = str(dst)
         appconfig.update(settings, relink)
         relinked = True
+        index.discard(index.location(appconfig.cache_dir(settings), src))
         if held := layout.remove_tree(src):
             log.warning("Moved the vault to %s, but %d file(s) in use by another program stay in %s: %s",
                         dst, len(held), src, ", ".join(held[:5]))

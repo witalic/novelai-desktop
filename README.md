@@ -83,7 +83,9 @@ recipe-exchange format. Out of scope for now: text/video generation, collaborati
   `sha256(token)` so the shell can confirm it reached its own sidecar.
 - **Vault = files + index.** The source of truth is the files on disk, so the store survives losing
   the index. SQLite is only a fast, rebuildable index for listing/tags/search; writes are atomic and
-  paths are traversal-safe.
+  paths are traversal-safe. The index lives in this machine's cache (`%LOCALAPPDATA%\novelai-desktop\index`),
+  never in the vault — so a vault on a network share stays SQLite-free — and it catches up with changes
+  made outside the app each time the app starts.
 - **Thin, first-party NovelAI client.** There is no official REST API, so the app calls the same
   private endpoint the web client uses behind a small wrapper (no heavy dependency); community
   libraries are used only as a reference for undocumented fields.

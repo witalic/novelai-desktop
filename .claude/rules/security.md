@@ -23,7 +23,8 @@ private creative work — leaking a token or the vault is the core risk.
   widen what a tool can reach without a switch for it.
 - **The vault is private:** prompts and generated images are the user's content. Never transmit them anywhere
   except the API they are explicitly bound for (NovelAI for generation, Anthropic for prompt authoring). Never
-  commit vault data or generated images to the repo — they live outside version control.
+  commit vault data or generated images to the repo — they live outside version control. The vault's index
+  (prompt text included) is a copy in the OS cache dir: it goes when its vault leaves the list or moves.
 - **Be a good API citizen:** NovelAI's image endpoint is **unofficial and undocumented**. Respect rate limits
   (back off on 429), mind **Anlas** cost (402 = out of Anlas), and never generate in tight loops or bulk-hammer.
 - **Transparency to the user:** anything sent to an external service (a prompt to Claude, an image for img2img)

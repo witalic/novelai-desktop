@@ -1,6 +1,6 @@
 """Persisted app settings in the OS config dir: the vault list + active vault, UI prefs (theme,
 accent), autosave interval, download folder, agent access (MCP). Secrets (the NovelAI and agent
-tokens) live in the OS keychain, never here.
+tokens) live in the OS keychain, never here. Rebuildable data (the vault indexes) goes to the OS cache dir.
 
 Resilient by design: a corrupt ``settings.json`` or a missing/wrong-typed key never breaks the app —
 every field falls back to a sane default (see ``_coerce``). The config dir is OS-conventional
@@ -37,6 +37,20 @@ def config_dir(settings: Settings) -> Path:
         base = str(Path.home() / "Library" / "Application Support")
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "novelai-desktop"
+
+
+def cache_dir(settings: Settings) -> Path:
+    """Where this machine keeps what it can rebuild (the vault indexes): local, never roamed with the profile or kept
+    in a vault — a vault may sit on a network share, where SQLite has no business."""
+    if settings.vault.state_dir:  # test / explicit override
+        return Path(settings.vault.state_dir)
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Caches")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "novelai-desktop"
 
 

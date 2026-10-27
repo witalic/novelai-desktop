@@ -9,6 +9,7 @@ import pytest
 from app.main import app
 from app.novelai._png import solid_png
 from app.settings import Settings, VaultSettings, get_settings
+from app.vault import index
 from app.vault.migrate import CURRENT, load_doc
 
 
@@ -209,8 +210,7 @@ async def test_v1_on_disk_loads_lazily_and_reindexes(client):
     assert json.loads(wj.read_text("utf-8"))["schema_version"] == 1
 
     # The rebuild path migrates through the same choke point: drop the index and list.
-    for f in vault.glob(".index.sqlite*"):
-        f.unlink()
+    index.discard(index.location(vault.parent / "state", vault))
     works = (await ac.get("/api/vault/works")).json()
     assert works["total"] == 1 and works["items"][0]["image_count"] == 1
 
