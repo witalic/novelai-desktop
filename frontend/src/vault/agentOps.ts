@@ -1,4 +1,4 @@
-/* Replaying an agent's edits of a work (backend app/agent/changes) over the app's open copy of it — which may hold
+/* Replaying an agent's edits of a work (backend app/vault/worklog) over the app's open copy of it — which may hold
  * unsaved edits of its own. Each operation sets what the agent set (the title, a combination, an image's metadata,
  * a gallery block, the cover) or removes what it removed; everything else in the copy stays as the user left it.
  * Replaying an edit twice changes nothing, so overlapping catch-ups are harmless. Pure → tested. */
@@ -11,7 +11,7 @@ import { GALLERY } from './serialize'
 
 export interface ImageFields { tags?: string[]; description?: string; favorite?: boolean }
 
-// The gallery layout, as the backend applies it too (app/agent/gallery.py `apply`) — same operations, same rules.
+// The gallery layout, as the backend applies it too (app/vault/gallery_layout.py `apply`) — same operations, same rules.
 // `before` names the block a new one lands before (null, or one that is gone: the end). An `order` sets where the
 // listed blocks or images stand among each other, in the slots they hold — what the copy has besides keeps its place,
 // so a batch replayed again lands the same.

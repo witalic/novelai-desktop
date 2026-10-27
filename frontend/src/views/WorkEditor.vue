@@ -162,7 +162,7 @@ async function saveOnce() {
 }
 function onTitleInput(v: string) { if (doc.value) doc.value.title = v } // deep watch autosaves
 
-// An agent edited this work (backend app/agent/changes): replay its edits over our copy — a pending edit of ours
+// An agent edited this work (backend app/vault/worklog): replay its edits over our copy — a pending edit of ours
 // stays — and take the stored stamp as the new lock base. True when the base moved on; false when there was
 // nothing to replay or it was also saved some other way. One catch-up at a time (catchUpQueue).
 const catchUp = catchUpQueue(async () => {

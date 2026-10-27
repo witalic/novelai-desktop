@@ -88,7 +88,7 @@ export function useAutosave({
     if (saveState.value !== 'saving') saveState.value = 'dirty'
   }
 
-  // An agent edited the stored copy (backend app/agent/changes): replay its edits over the canvas — our unsaved
+  // An agent edited the stored copy (backend app/vault/worklog): replay its edits over the canvas — our unsaved
   // edits stay — and take the stored stamp as the new lock base, so the next save doesn't 409. True when the base
   // moved on; false when there was nothing to replay or the stored copy also got there some other way (only the
   // 409 reload catches up then). One catch-up at a time (catchUpQueue).

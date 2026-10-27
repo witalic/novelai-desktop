@@ -6,6 +6,7 @@ Images are written BEFORE the manifest so a saved ``work.json`` never references
 import base64
 import json
 import logging
+import shutil
 from pathlib import Path
 
 from app.vault import layout, migrate
@@ -20,9 +21,12 @@ def read_work(work_dir: Path) -> WorkDoc:
     return migrate.load_doc((work_dir / "work.json").read_text("utf-8"))
 
 
-def write_work(work_dir: Path, doc: WorkDoc) -> None:
+def write_work(work_dir: Path, doc: WorkDoc, adopt: dict[str, Path] | None = None) -> None:
+    """``adopt`` — image files to copy in, by the id they get here (another work's images, moved or copied over). The
+    paths are the vault's own, resolved on the server: never from a request."""
     images_dir = work_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
+    _copy_in(images_dir, doc, adopt or {})
     for im in doc.images:
         if im.image_b64:
             (images_dir / f"{im.id}.png").write_bytes(base64.b64decode(im.image_b64, validate=True))
@@ -41,6 +45,22 @@ def write_work(work_dir: Path, doc: WorkDoc) -> None:
             st.image_b64 = None
     _gc_orphans(work_dir, {im.id for im in doc.images} | {st.id for st in doc.stack})
     layout.atomic_write_text(work_dir / "work.json", doc.model_dump_json())
+
+
+def _copy_in(images_dir: Path, doc: WorkDoc, adopt: dict[str, Path]) -> None:
+    """The adopted files, first: one that can't be copied (gone from its work meanwhile) fails the save before it
+    wrote anything, and takes the copies made so far back out."""
+    copied: list[Path] = []
+    try:
+        for im in doc.images:
+            if im.id in adopt and not im.image_b64:
+                shutil.copyfile(adopt[im.id], dst := images_dir / f"{im.id}.png")
+                copied.append(dst)
+                im.file = f"images/{im.id}.png"
+    except OSError:
+        for f in copied:
+            _unlink_quietly(f)
+        raise
 
 
 def _gc_orphans(work_dir: Path, keep: set[str]) -> None:

@@ -1,10 +1,11 @@
-"""A work's gallery layout, as agents arrange it. The layout is the gallery zone on the work's canvas — frontend-owned
-and stored opaquely (``frontend/src/types.ts`` ``GalleryBlock``): a stack of typed blocks, where a section holds the
-blocks under it up to the next section, and a grid is an album owning an ordered ``imageIds`` list. Each gallery image
-sits in one grid at most; the ones in no grid show in Quick access.
+"""A work's gallery layout, as the backend reads and arranges it (agents, edits from the app's other views). The layout
+is the gallery zone on the work's canvas — frontend-owned and stored opaquely (``frontend/src/types.ts``
+``GalleryBlock``): a stack of typed blocks, where a section holds the blocks under it up to the next section, and a grid
+is an album owning an ordered ``imageIds`` list. Each gallery image sits in one grid at most; the ones in no grid show in
+Quick access.
 
 ``apply`` replays one gallery operation — the very ones the open app replays over its copy of the work
-(``frontend/src/vault/agentOps.ts``), with the same rules, so what an agent reads back is what the app shows. A batch
+(``frontend/src/vault/agentOps.ts``), with the same rules, so what the backend reads back is what the app shows. A batch
 replayed again changes nothing, and an operation about a block or an image that is gone is skipped.
 """
 import copy

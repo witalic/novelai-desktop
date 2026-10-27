@@ -29,7 +29,7 @@ export function anchorNodes(): CanvasNode[] {
   ]
 }
 
-// A work laid out outside the canvas — an agent's holds just its gallery zone, unplaced (backend app/agent/gallery),
+// A work laid out outside the canvas — an agent's holds just its gallery zone, unplaced (backend app/vault/gallery_layout),
 // or nothing at all. The widgets it lacks join in the default layout, an unplaced one takes its default place, and
 // what each holds stays. A missing gallery comes empty, as the backend makes one, so the agent and the app see the
 // same layout. True when it did either: the layout is new, so the host frames it.

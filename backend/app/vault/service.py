@@ -23,7 +23,7 @@ from app.vault.models import (
 log = logging.getLogger(__name__)
 
 # One work write at a time: the optimistic-lock check, the files, the thumbnail and the index row land together.
-# Two writers exist — the app's saves and agents' edits (app.agent) — and both run in worker threads, so without
+# Two writers exist — the app's saves and backend edits (workedit) — and both run in worker threads, so without
 # it both could pass the check and the later write would drop the other's images (gc'd as orphans) or edits.
 _works_lock = threading.Lock()
 
@@ -57,20 +57,21 @@ def _guard_no_move() -> None:
         raise HTTPException(status_code=409, detail="A vault move is in progress — try again in a moment.")
 
 
-def save_work(settings: Settings, doc: WorkDoc) -> dict:
+def save_work(settings: Settings, doc: WorkDoc, adopt: dict[str, Path] | None = None) -> dict:
     """Write a work. One that comes with a base (``updated_at``: the stored copy it was loaded from) is an edit: if
     that work is gone meanwhile — deleted by the user or an agent, or the vault changed under it — it's a 404, never a
     resurrection whose image files are gone; the app keeps its unsaved changes as a new work then. (A copy that opted
-    out of the base — the browser fallback's close beacon — saves as a new one would.)"""
+    out of the base — the browser fallback's close beacon — saves as a new one would.) ``adopt``: image files copied in
+    from other works (``store.write_work``) — a backend edit's, never a request's."""
     if not layout.valid_id(doc.id):
         raise HTTPException(status_code=400, detail="Invalid work id.")
     _guard_no_move()
     vault = _vault(settings)
     with _works_lock:
-        return _save_work_locked(vault, doc)
+        return _save_work_locked(vault, doc, adopt)
 
 
-def _save_work_locked(vault: Path, doc: WorkDoc) -> dict:
+def _save_work_locked(vault: Path, doc: WorkDoc, adopt: dict[str, Path] | None) -> dict:
     conn = index.open_index(vault)
     try:
         # Full id (not a prefix) in the directory name — a short prefix can collide for two same-title works
@@ -114,8 +115,11 @@ def _save_work_locked(vault: Path, doc: WorkDoc) -> dict:
                 combo.created_at = doc.updated_at
             if not combo.updated_at:
                 combo.updated_at = combo.created_at
+        works_root = (vault / "works").resolve()
+        if adopt and not all(p.resolve().is_relative_to(works_root) for p in adopt.values()):
+            raise ValueError("A save copies in the vault's own image files only.")  # a bug, never a request's doing
         try:
-            store.write_work(work_dir, doc)
+            store.write_work(work_dir, doc, adopt)
         except ValueError as exc:  # bad base64 image data → client error, not a 500 (binascii.Error ⊂ ValueError)
             raise HTTPException(status_code=400, detail="Invalid image data.") from exc
         store.write_thumbnail(work_dir, doc)

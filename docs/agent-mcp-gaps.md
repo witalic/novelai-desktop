@@ -30,7 +30,7 @@ Landing in blocks, one commit each:
    - `get_gallery` reads the layout; `edit_gallery` takes a batch of ops (add / update / move / remove a
      block, place / unplace images, cover). The batch is all-or-nothing, and a new block can be named by a
      `ref` later in the same call.
-   - Backend and app replay the same operations with the same rules (`agent/gallery.py`,
+   - Backend and app replay the same operations with the same rules (`vault/gallery_layout.py`,
      `vault/agentOps.ts` `applyGalleryOps`). Moves and placements carry the resulting order rather than a
      neighbour, so a batch replayed again lands the same, and the user's own unsaved blocks or images keep
      their slots.
@@ -74,8 +74,8 @@ Landing in blocks, one commit each:
 
 ## Architectural constraints to respect
 
-- **Every work write must replay in the open app.** `_edit_work` saves the doc and records its ops
-  (`changes.record_work_edit`); the frontend replays them over its open, possibly unsaved copy in
+- **Every work write must replay in the open app.** `workedit.edit_work` saves the doc and records its ops
+  (`worklog.record_work_edit`); the frontend replays them over its open, possibly unsaved copy in
   `frontend/src/vault/agentOps.ts` (`AgentOp`, `planAgentOps`, `applyAgentOpsToDoc`). A write without
   a matching op type on **both** sides gets overwritten by the app's next autosave. Each new write
   therefore means a new backend op, a new `AgentOp` variant, replay logic, and vitest coverage in
@@ -84,7 +84,7 @@ Landing in blocks, one commit each:
   opaquely: the node `type: "zone"` with `data.role: "gallery"` holds `data.blocks: GalleryBlock[]`
   (types in `frontend/src/types.ts`, around lines 211–227). A grid is an album that owns an ordered
   `imageIds`. Each gallery image is in at most one grid, and images in no grid show in Quick access.
-  The backend already walks this structure in `_purge_images`.
+  The backend already walks this structure in `workedit.purge_images`.
 - **A work created over MCP has no canvas yet.** `_create_work` notes that the app lays out the widgets
   when the work is first opened, so the gallery zone may not exist when an agent wants to arrange it.
 - **Generation rules stay as they are:** one at a time, free vs paid, the user's per-request cap and

@@ -21,7 +21,7 @@ from app.agent import activity, changes, store
 from app.agent.config import AgentConfig
 from app.agent.server import PORTS, listener
 from app.settings import Settings, get_settings
-from app.vault import service
+from app.vault import service, worklog
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 _LOOPBACK = {"127.0.0.1", "localhost"}
@@ -141,9 +141,9 @@ def work_changes(work_id: str, since: str = Query(..., min_length=1, max_length=
                  settings: Settings = Depends(get_settings)) -> WorkChanges:
     """What agents changed in a work since the app's copy of it was saved (``since``: its lock base). 409 when
     the stored copy got there some other way — then only a reload brings the app's copy up to date."""
-    with changes.edit_lock:  # an agent edit saved but not yet logged would look like someone else's save
+    with worklog.edit_lock:  # an edit saved but not yet logged would look like someone else's save
         stored = service.load_work(settings, work_id).updated_at
-        ops = changes.edits_since(work_id, since, stored)
+        ops = worklog.edits_since(work_id, since, stored)
     if ops is None:
         raise HTTPException(status_code=409, detail="This work was changed elsewhere, not only by an agent.")
     return WorkChanges(at=stored, ops=ops)

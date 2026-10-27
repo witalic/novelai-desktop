@@ -14,7 +14,6 @@ import re
 import secrets
 import threading
 import time
-import uuid
 import zipfile
 from collections import Counter
 from collections.abc import Callable
@@ -28,10 +27,10 @@ import httpx
 from fastapi import HTTPException
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont, ImageOps
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from app import appconfig
-from app.agent import changes, gallery, generation, store
+from app.agent import generation, store
 from app.agent.errors import GenerationFailed, Refused, ToolError
 from app.novelai import GenerateParams, get_client
 from app.novelai.augment import augment
@@ -41,7 +40,7 @@ from app.novelai.dedup import dedupe_prompt
 from app.novelai.errors import NovelAIError, NovelAIRateLimitError
 from app.novelai.tokenizer import count_tokens
 from app.settings import Settings
-from app.vault import import_blocks, presets, service
+from app.vault import gallery_layout, import_blocks, presets, service, workedit, worklog
 from app.vault.models import (
     BlockDoc, Combo, ComboBlock, Component, Image, PresetParams, SaveCategory, Snapshot, WorkDoc,
 )
@@ -156,10 +155,6 @@ def _flag(args: dict, key: str) -> bool:
 def _block(b: BlockDoc) -> dict:
     return {"id": b.id, "category": b.category, "name": b.name, "text": b.text, "polarity": b.polarity,
             "tags": b.tags, "version": b.version}
-
-
-def _new_id(prefix: str) -> str:
-    return f"{prefix}-{uuid.uuid4()}"  # the app's own id shape (frontend vault/ids.ts)
 
 
 def _stamp() -> str:
@@ -510,7 +505,7 @@ def _add_blocks(settings: Settings, items: list[dict],
         except ToolError as exc:
             errors.append({"index": i, "error": str(exc)})
             continue
-        block = BlockDoc(id=_new_id("block"), category=slug, name=name, text=text, polarity=polarity, tags=tags)
+        block = BlockDoc(id=workedit.new_id("block"), category=slug, name=name, text=text, polarity=polarity, tags=tags)
         service.save_block(settings, block)
         existing[key] = (block.id, block.name)
         created.append(block)
@@ -560,44 +555,13 @@ def _delete_blocks(settings: Settings, args: dict) -> Written | dict:
     return Written(result, f"Deleted {_plural(len(deleted), 'block')}", _names([names[i] for i in deleted]))
 
 
-# ---- work writes: load → change → save on the loaded copy as the lock base, logged for the open app ----
-def _dump(value: object) -> object:
-    return value.model_dump() if isinstance(value, BaseModel) else value
-
-
-def _edit_work(settings: Settings, work_id: str, change: Callable[[WorkDoc], list[dict]]) -> tuple[WorkDoc, list[dict]]:
-    """Apply ``change`` (it returns the operations it made — the open app replays them) and save. When the app
-    saves the work in between (409), load it again and redo the change on the fresh copy."""
-    with changes.edit_lock:
-        for _ in range(3):
-            doc = service.load_work(settings, work_id)
-            prev = doc.updated_at
-            ops = change(doc)
-            if not ops:
-                return doc, []
-            try:
-                saved = service.save_work(settings, doc)  # a 404 if it was deleted meanwhile (the loaded base)
-            except HTTPException as exc:
-                if exc.status_code != 409 or service.load_work(settings, work_id).updated_at == prev:
-                    raise  # not a concurrent edit (e.g. a vault move in progress)
-                continue
-            # Dumped after the save, which stamps what the change left empty (a new combination's times).
-            ops = json.loads(json.dumps(ops, default=_dump))
-            changes.record_work_edit(work_id, prev, saved["updated_at"], ops)
-            return doc, ops
-    raise ToolError("The work kept changing while this edit was being saved — try again.")
-
-
-def _title(doc: WorkDoc) -> str:
-    return f"“{doc.title or 'Untitled'}”"
-
-
+# ---- work writes: through app/vault/workedit — saved on the loaded copy as the lock base, logged for the open app ----
 def _create_work(settings: Settings, args: dict) -> Written:
     title = _str(args, "title", required=True, max_len=_MAX_NAME)
-    doc = WorkDoc(id=_new_id("work"), title=title)
-    gallery.blocks(doc)  # just the gallery zone, to arrange — the app lays the other widgets out around it on open
+    doc = WorkDoc(id=workedit.new_id("work"), title=title)
+    gallery_layout.blocks(doc)  # just the gallery zone, to arrange — the app lays the other widgets out on open
     service.save_work(settings, doc)
-    return Written({"id": doc.id, "title": doc.title}, "Created a work", _title(doc), work_id=doc.id)
+    return Written({"id": doc.id, "title": doc.title}, "Created a work", workedit.title_of(doc), work_id=doc.id)
 
 
 def _rename_work(settings: Settings, args: dict) -> Written:
@@ -609,8 +573,9 @@ def _rename_work(settings: Settings, args: dict) -> Written:
         doc.title = title
         return [{"op": "title", "title": title}]
 
-    doc, _ = _edit_work(settings, _str(args, "work_id", required=True), change)
-    return Written({"id": doc.id, "title": doc.title}, "Renamed a work", f"“{old[0]}” → {_title(doc)}", work_id=doc.id)
+    doc, _ = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
+    return Written({"id": doc.id, "title": doc.title}, "Renamed a work", f"“{old[0]}” → {workedit.title_of(doc)}",
+                   work_id=doc.id)
 
 
 def _update_images(settings: Settings, args: dict) -> Written | dict:
@@ -635,11 +600,11 @@ def _update_images(settings: Settings, args: dict) -> Written | dict:
                 ops.append({"op": "image", "id": image_id, "set": fields})
         return ops
 
-    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, ops = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
     result = {"updated": [op["id"] for op in ops]}
     if not ops:
         return result
-    return Written(result, f"Updated {_plural(len(ops), 'image')}", f"in {_title(doc)}", work_id=doc.id)
+    return Written(result, f"Updated {_plural(len(ops), 'image')}", f"in {workedit.title_of(doc)}", work_id=doc.id)
 
 
 def _star_blocks(settings: Settings, args: dict) -> Written | dict:
@@ -661,30 +626,13 @@ def _star_blocks(settings: Settings, args: dict) -> Written | dict:
             doc.favorites = [f for f in doc.favorites if f not in changed]
         return [{"op": "starred", "ids": list(changed), "starred": starred}] if changed else []
 
-    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, ops = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
     result = {"favorite_block_ids": doc.favorites}
     if not ops:
         return result
     action = f"{'Starred' if starred else 'Unstarred'} {_plural(len(changed), 'block')}"
-    return Written(result, action, f"{_names([names.get(i, i) for i in changed])} in {_title(doc)}", work_id=doc.id)
-
-
-def _purge_images(doc: WorkDoc, ids: set[str]) -> None:
-    """Delete images from every structure that names them — the images list, the canvas image nodes, every
-    gallery grid album — and move the preview on. Mirrors ``frontend/src/vault/workOps.ts`` ``purgeImages``."""
-    doc.images = [im for im in doc.images if im.id not in ids]
-    nodes = doc.canvas.get("nodes")
-    if isinstance(nodes, list):
-        doc.canvas["nodes"] = nodes = [n for n in nodes if not (isinstance(n, dict) and n.get("type") == "image"
-                                                                 and n.get("id") in ids)]
-        for n in nodes:
-            data = n.get("data") if isinstance(n, dict) else None
-            if isinstance(data, dict) and n.get("type") == "zone" and data.get("role") == "gallery":
-                for block in data.get("blocks") or []:
-                    if isinstance(block, dict) and isinstance(block.get("imageIds"), list):
-                        block["imageIds"] = [i for i in block["imageIds"] if i not in ids]
-    if doc.preview_image_id in ids:
-        doc.preview_image_id = next((im.id for im in doc.images if im.role == "gallery"), None)
+    return Written(result, action, f"{_names([names.get(i, i) for i in changed])} in {workedit.title_of(doc)}",
+                   work_id=doc.id)
 
 
 def _delete_images(settings: Settings, args: dict) -> Written | dict:
@@ -698,27 +646,27 @@ def _delete_images(settings: Settings, args: dict) -> Written | dict:
         gone[:] = [i for i in dict.fromkeys(ids) if i in in_gallery]
         if not gone:
             return []
-        _purge_images(doc, set(gone))
+        workedit.purge_images(doc, set(gone))
         return [{"op": "images_deleted", "ids": gone}]
 
-    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, ops = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
     result = {"deleted": gone, "missing": [i for i in ids if i not in gone]}
     if not ops:
         return result
-    return Written(result, f"Deleted {_plural(len(gone), 'image')}", f"from {_title(doc)}", work_id=doc.id)
+    return Written(result, f"Deleted {_plural(len(gone), 'image')}", f"from {workedit.title_of(doc)}", work_id=doc.id)
 
 
 def _delete_work(settings: Settings, args: dict) -> Written:
     work_id = _str(args, "work_id", required=True)
-    with changes.edit_lock:  # never in the middle of an agent's edit of it
+    with worklog.edit_lock:  # never in the middle of a backend edit of it
         doc = service.load_work(settings, work_id)
         service.delete_work(settings, work_id)
     count = sum(im.role == "gallery" for im in doc.images)
-    return Written({"deleted": work_id}, "Deleted a work", f"{_title(doc)} with {_plural(count, 'image')}",
+    return Written({"deleted": work_id}, "Deleted a work", f"{workedit.title_of(doc)} with {_plural(count, 'image')}",
                    work_id=work_id, deleted=True)
 
 
-_MAX_MOVE = 20  # images per move — their bytes travel through memory
+_MAX_MOVE = 20  # images per move
 
 
 def _move_images(settings: Settings, args: dict) -> Written:
@@ -728,49 +676,18 @@ def _move_images(settings: Settings, args: dict) -> Written:
     ids = list(dict.fromkeys(_strs(args, "image_ids", max_items=_MAX_MOVE)))
     if not ids:
         raise ToolError("'image_ids' must name at least one image.")
-    keep = _flag(args, "copy")
-    src = service.load_work(settings, src_id)
-    in_gallery = {im.id: im for im in src.images if im.role == "gallery"}
-    if missing := next((i for i in ids if i not in in_gallery), None):
-        raise ToolError(f"No gallery image “{missing}” in {_title(src)}.")
-    service.load_work(settings, dst_id)  # it exists — before any bytes are read
-    snaps = {s.id: s for s in src.snapshots}
-    data = {i: base64.b64encode(service.image_path(settings, src_id, i).read_bytes()).decode("ascii") for i in ids}
-    new_ids = {i: _new_id("img") for i in ids}  # ids are the vault's, one image one id
-    new_snaps = {s: _new_id("snap") for s in {in_gallery[i].snapshot_id for i in ids} if s in snaps}
-
-    def add(doc: WorkDoc) -> list[dict]:
-        """Each image with its recipe and metadata, as it was — into Quick access."""
-        made = [in_gallery[i].model_copy(update={
-            "id": new_ids[i], "snapshot_id": new_snaps.get(in_gallery[i].snapshot_id or ""), "file": "",
-            "image_b64": data[i]}) for i in ids]
-        recipes = [snaps[s].model_copy(update={"id": new}) for s, new in new_snaps.items()]
-        doc.snapshots += recipes
-        doc.images += made
-        doc.preview_image_id = doc.preview_image_id or made[0].id
-        return [{"op": "images_added", "images": made, "snapshots": recipes}]
-
-    dst, _ = _edit_work(settings, dst_id, add)
-    result = {"to_work_id": dst.id, "images": [{"from": i, "id": new_ids[i]} for i in ids], "copied": keep}
-    what = f"{_plural(len(ids), 'image')} from {_title(src)} to {_title(dst)}"
-    if keep:
-        return Written(result, "Copied images", what, work_id=dst.id)
-
-    def remove(doc: WorkDoc) -> list[dict]:
-        gone = [i for i in ids if any(im.id == i and im.role == "gallery" for im in doc.images)]
-        _purge_images(doc, set(gone))
-        return [{"op": "images_deleted", "ids": gone}] if gone else []
-
-    try:
-        _edit_work(settings, src_id, remove)
-    except (ToolError, HTTPException, OSError) as exc:  # the copy has landed: report it as one, never lose track of it
-        reason = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        result.update(copied=True, not_removed=f"Removing them from {_title(src)} failed: {reason}")
-        return Written(result, "Copied images", f"{what} — removing them there failed", work_id=dst.id)
-    return Written(result, "Moved images", what, work_id=dst.id, also=(src_id,))
+    moved = workedit.transfer_images(settings, src_id, dst_id, ids, copy=_flag(args, "copy"))
+    result = {"to_work_id": dst_id, "images": [{"from": i, "id": moved.ids[i]} for i in ids], "copied": moved.copied}
+    what = f"{_plural(len(ids), 'image')} from {workedit.title_of(moved.src)} to {workedit.title_of(moved.dst)}"
+    if moved.not_removed:
+        result["not_removed"] = moved.not_removed
+        return Written(result, "Copied images", f"{what} — removing them there failed", work_id=dst_id)
+    if moved.copied:
+        return Written(result, "Copied images", what, work_id=dst_id)
+    return Written(result, "Moved images", what, work_id=dst_id, also=(src_id,))
 
 
-# ---- the gallery layout (app/agent/gallery): sections, headings, albums, Quick access, the cover ----
+# ---- the gallery layout (app/vault/gallery_layout): sections, headings, albums, Quick access, the cover ----
 _GALLERY_TYPES = ("section", "heading", "text", "divider", "grid", "meta")
 _GALLERY_FIELDS: dict[str, set[str]] = {  # what each block type takes
     "section": {"title", "collapsed"}, "heading": {"text", "level"}, "text": {"text"}, "divider": set(),
@@ -788,8 +705,8 @@ def _gallery_view(doc: WorkDoc) -> dict:
     shown = sorted((im for im in doc.images if im.role == "gallery"), key=lambda im: (im.created_at, im.id),
                    reverse=True)
     live = {im.id for im in shown}
-    stack = gallery.stack(doc)
-    grid_ids = {b.get("id") for b in gallery.grids(stack)}
+    stack = gallery_layout.stack(doc)
+    grid_ids = {b.get("id") for b in gallery_layout.grids(stack)}
     placed: set[str] = set()
     out: list[dict] = []
     section = None
@@ -830,7 +747,7 @@ def _level(args: dict) -> int:
 
 class _Arrange:
     """One edit_gallery call on a loaded work. Each of the agent's ops is checked against the layout the ops before it
-    left, then applied as the operations the open app replays (``gallery.apply``) — collected in ``ops``."""
+    left, then applied as the operations the open app replays (``gallery_layout.apply``) — collected in ``ops``."""
 
     def __init__(self, doc: WorkDoc) -> None:
         self.doc = doc
@@ -841,7 +758,7 @@ class _Arrange:
         self.counts: Counter[str] = Counter()
 
     def _run(self, op: dict) -> None:
-        gallery.apply(self.doc, op)
+        gallery_layout.apply(self.doc, op)
         self.ops.append(op)
 
     @staticmethod
@@ -852,7 +769,7 @@ class _Arrange:
     def _block(self, raw: dict, key: str = "block") -> dict:
         name = _str(raw, key, required=True)
         bid = self.refs.get(name, name)
-        found = next((b for b in gallery.blocks(self.doc) if b.get("id") == bid), None)
+        found = next((b for b in gallery_layout.blocks(self.doc) if b.get("id") == bid), None)
         if found is None:
             raise ToolError(f"No gallery block “{name}” — get_gallery lists them.")
         return found
@@ -877,7 +794,7 @@ class _Arrange:
         if "before" in raw and "after" in raw:
             raise ToolError("Give 'before' or 'after', not both.")
         skip = {id(b) for b in moving}
-        rest = [b for b in gallery.blocks(self.doc) if id(b) not in skip]
+        rest = [b for b in gallery_layout.blocks(self.doc) if id(b) not in skip]
         key = "before" if "before" in raw else "after" if "after" in raw else None
         if key is None:
             return rest, len(rest)
@@ -887,14 +804,14 @@ class _Arrange:
         at = next(i for i, b in enumerate(rest) if b is target)
         if key == "before":
             return rest, at
-        return rest, gallery.span(rest, at) if section else at + 1
+        return rest, gallery_layout.span(rest, at) if section else at + 1
 
     def add(self, raw: dict) -> None:
         kind = raw.get("type")
         if kind not in _GALLERY_TYPES:
             raise ToolError(f"'type' must be one of: {', '.join(_GALLERY_TYPES)}.")
         self._only(raw, _GALLERY_FIELDS[kind] | {"type", "ref", "before", "after"}, f"a {kind}")
-        block: dict = {"id": _new_id("gb"), "type": kind}
+        block: dict = {"id": workedit.new_id("gb"), "type": kind}
         images: list[str] = []
         if kind == "section":
             block.update(title=_str(raw, "title", required=True, max_len=_MAX_NAME), collapsed=_flag(raw, "collapsed"))
@@ -913,7 +830,7 @@ class _Arrange:
             if raw.get("grid") is not None:
                 block["gridId"] = self._grid(raw)["id"]
         ref = _str(raw, "ref", max_len=100)
-        if ref and (ref in self.refs or any(b.get("id") == ref for b in gallery.blocks(self.doc))):
+        if ref and (ref in self.refs or any(b.get("id") == ref for b in gallery_layout.blocks(self.doc))):
             raise ToolError(f"The ref “{ref}” is taken already.")
         rest, at = self._landing(raw, [], kind == "section")
         before = next((b["id"] for b in rest[at:] if b.get("id")), None)
@@ -953,9 +870,9 @@ class _Arrange:
     def move(self, raw: dict) -> None:
         self._only(raw, {"block", "before", "after"}, "move")
         found = self._block(raw)
-        stack = gallery.blocks(self.doc)
+        stack = gallery_layout.blocks(self.doc)
         at = next(i for i, b in enumerate(stack) if b is found)
-        moving = stack[at:gallery.span(stack, at)]  # a section takes the blocks under it along
+        moving = stack[at:gallery_layout.span(stack, at)]  # a section takes the blocks under it along
         section = found.get("type") == "section"
         rest, at = self._landing(raw, moving, section)
         if section and at < len(rest) and rest[at].get("type") != "section" and any(
@@ -1018,8 +935,8 @@ def _edit_gallery(settings: Settings, args: dict) -> Written | dict:
     done: list[_Arrange] = []
 
     def change(doc: WorkDoc) -> list[dict]:
-        was = json.dumps([gallery.stack(doc), doc.preview_image_id])
-        had = len(gallery.stack(doc))
+        was = json.dumps([gallery_layout.stack(doc), doc.preview_image_id])
+        had = len(gallery_layout.stack(doc))
         edit = _Arrange(doc)
         done[:] = [edit]
         for n, raw in enumerate(raw_ops, 1):
@@ -1031,16 +948,16 @@ def _edit_gallery(settings: Settings, args: dict) -> Written | dict:
                 step(edit, raw)
             except ToolError as exc:
                 raise ToolError(f"Nothing changed — op {n} ({op}): {exc}") from None
-        if len(gallery.stack(doc)) > max(_MAX_GALLERY_BLOCKS, had):  # one the user grew bigger can still shrink
+        if len(gallery_layout.stack(doc)) > max(_MAX_GALLERY_BLOCKS, had):  # one the user grew bigger can still shrink
             raise ToolError(f"Nothing changed — a gallery holds at most {_MAX_GALLERY_BLOCKS} blocks.")
-        return edit.ops if json.dumps([gallery.stack(doc), doc.preview_image_id]) != was else []
+        return edit.ops if json.dumps([gallery_layout.stack(doc), doc.preview_image_id]) != was else []
 
-    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, ops = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
     edit = done[0]
     result = {"created": edit.created, "gallery": _gallery_view(doc)}
     if not ops:
         return result
-    return Written(result, "Arranged the gallery", f"of {_title(doc)} · {edit.summary()}", work_id=doc.id)
+    return Written(result, "Arranged the gallery", f"of {workedit.title_of(doc)} · {edit.summary()}", work_id=doc.id)
 
 
 # ---- combinations ----
@@ -1094,16 +1011,16 @@ def _create_combination(settings: Settings, args: dict) -> Written:
     made: list[Combo] = []
 
     def change(doc: WorkDoc) -> list[dict]:
-        combo = Combo(id=_new_id("combo"), name=_unique_name(name, {c.name for c in doc.combos}), blocks=blocks,
+        combo = Combo(id=workedit.new_id("combo"), name=_unique_name(name, {c.name for c in doc.combos}), blocks=blocks,
                       origin="agent")
         doc.combos.insert(0, combo)  # newest first, as the widget lists them
         made[:] = [combo]
         return [{"op": "combo", "combo": combo}]
 
-    doc, _ = _edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, _ = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
     combo = made[0]
     return Written({"id": combo.id, "name": combo.name, "blocks": len(combo.blocks)}, "Saved a combination",
-                   f"“{combo.name}” in {_title(doc)}", work_id=doc.id)
+                   f"“{combo.name}” in {workedit.title_of(doc)}", work_id=doc.id)
 
 
 def _update_combination(settings: Settings, args: dict) -> Written:
@@ -1125,10 +1042,10 @@ def _update_combination(settings: Settings, args: dict) -> Written:
         edited[:] = [combo]
         return [{"op": "combo", "combo": combo}]
 
-    doc, _ = _edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, _ = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
     combo = edited[0]
     return Written({"id": combo.id, "name": combo.name, "blocks": len(combo.blocks)}, "Edited a combination",
-                   f"“{combo.name}” in {_title(doc)}", work_id=doc.id)
+                   f"“{combo.name}” in {workedit.title_of(doc)}", work_id=doc.id)
 
 
 def _delete_combination(settings: Settings, args: dict) -> Written:
@@ -1140,8 +1057,9 @@ def _delete_combination(settings: Settings, args: dict) -> Written:
         doc.combos = [c for c in doc.combos if c.id != combo_id]
         return [{"op": "combo_deleted", "id": combo_id}]
 
-    doc, _ = _edit_work(settings, _str(args, "work_id", required=True), change)
-    return Written({"deleted": combo_id}, "Deleted a combination", f"“{gone[0]}” from {_title(doc)}", work_id=doc.id)
+    doc, _ = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
+    return Written({"deleted": combo_id}, "Deleted a combination", f"“{gone[0]}” from {workedit.title_of(doc)}",
+                   work_id=doc.id)
 
 
 # ---- generation (generation.py: the Anlas rules, one at a time) ----
@@ -1316,14 +1234,15 @@ def _update_work_params(settings: Settings, args: dict) -> Written | dict:
         # A preset lands whole in the open app, as its Apply does — over the user's unsaved station edits too.
         return [{"op": "params", "set": {k: checked[k] for k in new}, "preset_id": preset_id}]
 
-    doc, ops = _edit_work(settings, _str(args, "work_id", required=True), change)
+    doc, ops = workedit.edit_work(settings, _str(args, "work_id", required=True), change)
     result = {"work_id": doc.id, "params": _recipe_of(doc.params), "changed": list(changed)}
     if not ops:
         return result
     names = presets.list_presets(settings) if preset else []
     via = next((f" from “{p.name}”" for p in names if p.id == preset_id), "")
     shown = ", ".join(f"{k} {_shown(v)}" for k, v in changed.items())  # values: some raise what Generate costs
-    return Written(result, "Changed the generation settings", f"of {_title(doc)}{via} · {shown}", work_id=doc.id)
+    return Written(result, "Changed the generation settings", f"of {workedit.title_of(doc)}{via} · {shown}",
+                   work_id=doc.id)
 
 
 def _shown_params(params: GenerateParams) -> dict:
@@ -1385,11 +1304,11 @@ def _generate_images(settings: Settings, args: dict) -> Written:
     made: list[Image] = []
 
     def change(work: WorkDoc) -> list[dict]:
-        snaps = [Snapshot(id=_new_id("snap"), hash="|".join(f"{c.polarity}:{c.text}" for c in components),
+        snaps = [Snapshot(id=workedit.new_id("snap"), hash="|".join(f"{c.polarity}:{c.text}" for c in components),
                           components=components, assembled_positive=params.prompt,
                           assembled_negative=params.negative_prompt, params={**recipe, "seed": params.seed + k})
                  for k in range(len(pngs))]  # NovelAI makes sample k from seed + k
-        made[:] = [Image(id=_new_id("img"), snapshot_id=s.id, role="gallery", ar=params.width / params.height,
+        made[:] = [Image(id=workedit.new_id("img"), snapshot_id=s.id, role="gallery", ar=params.width / params.height,
                          image_b64=base64.b64encode(png).decode("ascii")) for s, png in zip(snaps, pngs)]
         work.snapshots += snaps
         work.images += made  # in no grid yet: they show in the gallery's Quick access
@@ -1397,13 +1316,13 @@ def _generate_images(settings: Settings, args: dict) -> Written:
         return [{"op": "images_added", "images": made, "snapshots": snaps}]
 
     try:
-        doc, _ = _edit_work(settings, work_id, change)
-    except (ToolError, HTTPException, OSError) as exc:  # deleted meanwhile, a vault move, a full disk, …
+        doc, _ = workedit.edit_work(settings, work_id, change)
+    except (HTTPException, OSError) as exc:  # deleted meanwhile, a vault move, a full disk, …
         where = _rescue(settings, pngs)
         reason = exc.detail if isinstance(exc, HTTPException) else str(exc)
         raise GenerationFailed(f"Generated, but saving into the work failed ({reason}) — the images were saved to "
                                f"{where} instead.", cost) from exc
-    detail = f"in {_title(doc)}" + (f" from “{combo_name}”" if combo_name else "")
+    detail = f"in {workedit.title_of(doc)}" + (f" from “{combo_name}”" if combo_name else "")
     if cost:
         detail += f" · {params.width}×{params.height}, {params.steps} steps"
     result = {"work_id": doc.id, "images": [{"id": im.id, "seed": params.seed + k} for k, im in enumerate(made)],

@@ -20,7 +20,7 @@ from PIL import Image as PILImage
 
 from app import appconfig, keychain
 from app import main as app_main
-from app.agent import activity, changes, gallery, generation, store
+from app.agent import activity, changes, generation, store
 from app.agent import server as agent_server
 from app.agent.config import AgentConfig, AgentPermissions, coerce
 from app.agent.server import _Config, build_app, listener
@@ -30,7 +30,7 @@ from app.novelai import MockNovelAIClient
 from app.novelai._png import solid_png
 from app.novelai.errors import NovelAIRateLimitError
 from app.settings import Settings, VaultSettings, get_settings
-from app.vault import service
+from app.vault import gallery_layout, service, worklog
 from app.vault import store as vault_store
 from app.vault import presets
 from app.vault.models import BlockDoc, Component, Image, PresetDoc, PresetParams, Snapshot, WorkDoc
@@ -51,7 +51,7 @@ def _fresh_state(monkeypatch):
     monkeypatch.setattr(activity, "_entries", deque(maxlen=activity.MAX_ENTRIES))
     monkeypatch.setattr(activity, "_sessions", {})
     monkeypatch.setattr(activity, "_seq", 0)
-    monkeypatch.setattr(changes, "_log", OrderedDict())
+    monkeypatch.setattr(worklog, "_log", OrderedDict())
     monkeypatch.setattr(changes, "_subscribers", set())
     monkeypatch.setattr(listener, "_lock", asyncio.Lock())  # each test runs on its own event loop
     listener.error = None
@@ -614,8 +614,8 @@ async def test_an_agent_arranges_the_gallery_and_the_app_replays_it(api, setting
     assert res["at"] == stored.updated_at
     replayed = base.model_copy(deep=True)
     for op in res["ops"] * 2:
-        gallery.apply(replayed, op)
-    assert (gallery.stack(replayed), replayed.preview_image_id) == (gallery.stack(stored), "img-c")
+        gallery_layout.apply(replayed, op)
+    assert (gallery_layout.stack(replayed), replayed.preview_image_id) == (gallery_layout.stack(stored), "img-c")
     assert stored.canvas["nodes"][0]["position"] == {"x": 1600, "y": 40}  # the layout around the gallery stays
 
 
@@ -631,12 +631,12 @@ async def test_a_gallery_batch_replays_to_the_same_layout_however_often(settings
     stored = service.load_work(settings, "work-g")
     assert next(b for b in out["gallery"]["blocks"] if b["id"] == "g-1")["image_ids"] == ["img-c", "img-b", "img-a"]
     assert [b["id"] for b in out["gallery"]["blocks"]] == ["s-2", "d-1", "h-1", "s-1", "g-1", "m-1"]
-    ops = changes.edits_since("work-g", base.updated_at, stored.updated_at)
+    ops = worklog.edits_since("work-g", base.updated_at, stored.updated_at)
     for times in (1, 2, 3):
         replayed = base.model_copy(deep=True)
         for op in ops * times:
-            gallery.apply(replayed, op)
-        assert gallery.stack(replayed) == gallery.stack(stored), times
+            gallery_layout.apply(replayed, op)
+        assert gallery_layout.stack(replayed) == gallery_layout.stack(stored), times
 
 
 async def test_a_bad_gallery_op_changes_nothing_and_says_which(settings):
@@ -669,7 +669,7 @@ async def test_a_bad_gallery_op_changes_nothing_and_says_which(settings):
     assert same["created"] == [] and same["gallery"]["quick_access"] == ["img-d", "img-c"]
     after = service.load_work(settings, "work-g")
     assert (after.updated_at, after.canvas) == (before.updated_at, before.canvas)
-    assert "work-g" not in changes._log
+    assert "work-g" not in worklog._log
     assert [(r["kind"], r["action"]) for r in activity.recent()] == [("read", "Arrange a work's gallery")]
 
 
@@ -789,9 +789,9 @@ def test_two_saves_on_one_base_never_both_land(settings, monkeypatch):
     base = service.load_work(settings, "work-1")
     real_write = vault_store.write_work
 
-    def slow_write(work_dir, doc):  # a save writing big new PNGs takes a while
+    def slow_write(work_dir, doc, adopt=None):  # a save writing big new PNGs takes a while
         time.sleep(0.2)
-        real_write(work_dir, doc)
+        real_write(work_dir, doc, adopt)
 
     monkeypatch.setattr(vault_store, "write_work", slow_write)
     png = base64.b64encode(solid_png(8, 8)).decode("ascii")
@@ -870,7 +870,7 @@ async def test_a_free_generation_lands_in_quick_access_with_its_recipe(mock_nove
     assert [c.text for c in snap.components] == ["raiden shogun", "blurry"]
     assert notice["message"] == "Agent generated 1 image — in “Halloween” from “Raiden” · free" and notice["cost"] == 0
     assert (activity.recent()[0]["cost"], activity.recent()[0]["kind"]) == (0, "generate")
-    ops = changes.edits_since("work-1", base, doc.updated_at)
+    ops = worklog.edits_since("work-1", base, doc.updated_at)
     assert ops[-1]["op"] == "images_added" and ops[-1]["images"][0]["id"] == im.id
 
 

@@ -166,7 +166,7 @@ describe('applyGalleryOps', () => {
     { id: 'd-1', type: 'divider' },
   ]
   const inGallery = (id: string) => ['a', 'b', 'c', 'd'].includes(id)
-  // An arrangement as the backend logs it (app/agent/gallery.py — same operations, same rules).
+  // An arrangement as the backend logs it (app/vault/gallery_layout.py — same operations, same rules).
   const ops: GalleryOp[] = [
     { op: 'gallery_add', block: { id: 'night', type: 'section', title: 'Night', collapsed: false }, before: 's-2' },
     { op: 'gallery_add', block: { id: 'album', type: 'grid', imageIds: [], cols: 3 }, before: 's-2' },
