@@ -10,6 +10,7 @@ replayed again changes nothing, and an operation about a block or an image that 
 """
 import copy
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from app.vault.models import WorkDoc
@@ -64,6 +65,57 @@ def blocks(doc: WorkDoc) -> list[dict]:
 
 def grids(stack: list[dict]) -> list[dict]:
     return [b for b in stack if b.get("type") == "grid" and isinstance(b.get("imageIds"), list)]
+
+
+def _text(value: object) -> str | None:
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where a gallery image sits: its album (``grid_id``; ``number`` — its place among the gallery's albums from 1,
+    as the app's Outline names it "Grid N"), the nearest heading above the album within its section, the section."""
+
+    grid_id: str
+    number: int
+    heading: str | None
+    section: str | None
+
+
+def placements(doc: WorkDoc) -> dict[str, Placement]:
+    """Each placed gallery image's album, as the app shows the gallery: an image in two albums (a malformed copy)
+    belongs to the first. Gallery images missing here are unsorted — in Quick access."""
+    gallery_ids = {im.id for im in doc.images if im.role == "gallery"}
+    out: dict[str, Placement] = {}
+    section = heading = None
+    number = 0
+    for b in stack(doc):
+        kind = b.get("type")
+        if kind == "section":
+            section, heading = _text(b.get("title")), None
+        elif kind == "heading":
+            heading = _text(b.get("text"))
+        elif kind == "grid":
+            number += 1
+            gid, ids = b.get("id"), b.get("imageIds")
+            for i in ids if isinstance(ids, list) else []:
+                if isinstance(i, str) and i in gallery_ids and i not in out:  # a hand-edited copy may hold anything
+                    out[i] = Placement(gid if isinstance(gid, str) and gid else f"grid-{number}", number, heading,
+                                       section)
+    return out
+
+
+_WORDS = {"section": ("section", "title"), "heading": ("heading", "text"), "text": ("note", "text")}
+
+
+def texts(doc: WorkDoc) -> list[tuple[str, str]]:
+    """What the gallery says in words, in order: ("section" | "heading" | "note", text)."""
+    out = []
+    for b in stack(doc):
+        kind = b.get("type")
+        if isinstance(kind, str) and (words := _WORDS.get(kind)) and (text := _text(b.get(words[1]))):
+            out.append((words[0], text))
+    return out
 
 
 def span(stack: list[dict], at: int) -> int:

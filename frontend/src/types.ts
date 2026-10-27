@@ -289,12 +289,20 @@ export interface WorkDoc {
   preview_image_id: string | null
 }
 
+// Where a work matched a search its title didn't: a section, heading or note of its gallery — or `count` of its images.
+export interface WorkMatch {
+  kind: 'section' | 'heading' | 'note' | 'images'
+  text: string | null
+  count: number
+}
+
 export interface WorkListItem {
   id: string
   title: string
   updated_at: string
   image_count: number
   preview_url: string | null
+  match: WorkMatch | null
 }
 
 export interface WorksPage {
@@ -302,6 +310,7 @@ export interface WorksPage {
   total: number
   page: number
   per_page: number
+  in_vault: number // every work, the filters aside
 }
 
 // ---- library ----

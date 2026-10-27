@@ -25,15 +25,27 @@ export class ApiError extends Error {
 }
 
 export type WorkSort = 'updated' | 'created' | 'name' | 'image_count'
+// `search` finds a work by its title or what it holds; `tags` — its gallery images carry them all between them.
 export async function listWorks(
-  opts: { page?: number; perPage?: number; search?: string; sort?: WorkSort; direction?: 'asc' | 'desc' } = {},
+  opts: { page?: number; perPage?: number; search?: string; tags?: string[]; sort?: WorkSort; direction?: 'asc' | 'desc' } = {},
 ): Promise<WorksPage> {
   const p = new URLSearchParams({ page: String(opts.page ?? 1), per_page: String(opts.perPage ?? 24) })
   if (opts.search) p.set('search', opts.search)
+  for (const t of opts.tags ?? []) p.append('tags', t)
   if (opts.sort) p.set('sort', opts.sort)
   if (opts.direction) p.set('direction', opts.direction)
   const resp = await fetch(`/api/vault/works?${p}`)
   if (!resp.ok) throw new ApiError(resp.status, `Failed to list works (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+// The tags of the works that filter lists, each with how many of them carry it.
+export async function listWorkTags(opts: { search?: string; tags?: string[] } = {}): Promise<TagCount[]> {
+  const p = new URLSearchParams()
+  if (opts.search) p.set('search', opts.search)
+  for (const t of opts.tags ?? []) p.append('tags', t)
+  const resp = await fetch(`/api/vault/works/tags?${p}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to list tags (HTTP ${resp.status})`)
   return resp.json()
 }
 

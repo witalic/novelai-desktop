@@ -5,17 +5,19 @@ Handlers are plain ``def`` (not ``async``): the service layer does blocking SQLi
 Starlette runs them in its threadpool instead of stalling the event loop (which serves ``/health`` and the
 generation SSE). Only genuinely-async endpoints (``routers/generate.py``, httpx) stay ``async def``."""
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
+from pydantic import AwareDatetime
 
 from app.settings import Settings, get_settings
-from app.vault import import_blocks, manager, presets as presets_svc, service
+from app.vault import import_blocks, index, manager, presets as presets_svc, service
 from app.vault.import_blocks import ImportParseRequest, ImportParseResult, ImportSaveRequest, ImportSaveResult
 from app.vault.models import (
-    BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage, MoveStatus, MoveVault,
-    Preset, PresetDoc, ReorderCategories, RestoreCategories, SaveCategory, SetDefault, SetFavorite, TagCount, VaultConfig,
-    VaultPath, WorkDoc, WorksPage,
+    BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryFacets, GalleryItem, GalleryPage, ImageDetail, MoveStatus,
+    MoveVault, Preset, PresetDoc, ReorderCategories, RestoreCategories, SaveCategory, SetDefault, SetFavorite, TagCount,
+    VaultConfig, VaultPath, WorkDoc, WorksPage,
 )
 
 log = logging.getLogger(__name__)
@@ -59,15 +61,28 @@ def save_work(doc: WorkDoc, settings: Settings = Depends(get_settings)) -> dict:
     return service.save_work(settings, doc)
 
 
+_MAX_FILTER_TAGS = 20
+
+
 @router.get("/works", response_model=WorksPage)
 def list_works(
     page: int = Query(1, ge=1), per_page: int = Query(24, ge=1, le=100),
     search: str = Query("", max_length=200),
     sort: str = Query("updated", pattern="^(updated|created|name|image_count)$"),
     direction: str = Query("desc", pattern="^(asc|desc)$"),
+    tags: list[str] = Query(default=[], max_length=_MAX_FILTER_TAGS),
     settings: Settings = Depends(get_settings),
 ) -> WorksPage:
-    return service.list_works(settings, page, per_page, search.strip() or None, sort, direction)
+    return service.list_works(settings, page, per_page, search.strip() or None, sort, direction,
+                              index.clean_tags(tags))
+
+
+@router.get("/works/tags", response_model=list[TagCount])  # before /works/{work_id}: "tags" is no work
+def work_tags(
+    search: str = Query("", max_length=200), tags: list[str] = Query(default=[], max_length=_MAX_FILTER_TAGS),
+    settings: Settings = Depends(get_settings),
+) -> list[TagCount]:
+    return service.work_tags(settings, search.strip() or None, index.clean_tags(tags))
 
 
 @router.get("/works/{work_id}", response_model=WorkDoc)
@@ -95,13 +110,43 @@ def get_preview(work_id: str, settings: Settings = Depends(get_settings)) -> Fil
     return FileResponse(service.preview_path(settings, work_id), media_type="image/png")
 
 
+def image_query(
+    q: str = Query("", max_length=200), tags: list[str] = Query(default=[], max_length=_MAX_FILTER_TAGS),
+    work: list[str] = Query(default=[], max_length=50), model: list[str] = Query(default=[], max_length=20),
+    favorite: bool = False, since: AwareDatetime | None = None, until: AwareDatetime | None = None,
+    unsorted: index.Unsorted = "include",
+) -> index.ImageQuery:
+    """The gallery's filters (``index.ImageQuery``): ``since``/``until`` are moments with their offset (a day starts at
+    the viewer's midnight, not UTC's), ``until`` exclusive."""
+    return index.ImageQuery(text=q.strip(), tags=index.clean_tags(tags), works=tuple(dict.fromkeys(work)),
+                            models=tuple(dict.fromkeys(model)), favorite=favorite,
+                            since=index.epoch_ms(since) if since else None,
+                            until=index.epoch_ms(until) if until else None, unsorted=unsorted)
+
+
 @router.get("/gallery", response_model=GalleryPage)
 def gallery(
-    tags: list[str] = Query(default=[]), favorite: bool = False,
-    page: int = Query(1, ge=1), per_page: int = Query(48, ge=1, le=200),
+    query: index.ImageQuery = Depends(image_query), order: Literal["newest", "oldest"] = "newest",
+    page: int = Query(1, ge=1), per_page: int = Query(100, ge=1, le=200),
+    after: str | None = Query(None, pattern=r"^-?\d{1,16}:[\w.-]{1,100}$", description="the previous page's `next`"),
     settings: Settings = Depends(get_settings),
 ) -> GalleryPage:
-    return service.gallery(settings, tags, favorite, page, per_page)
+    cursor = None
+    if after:
+        ts, image_id = after.split(":", 1)
+        cursor = (int(ts), image_id)
+    return service.gallery(settings, query, per_page, page=page, after=cursor, oldest_first=order == "oldest")
+
+
+@router.get("/gallery/facets", response_model=GalleryFacets)
+def gallery_facets(query: index.ImageQuery = Depends(image_query),
+                   settings: Settings = Depends(get_settings)) -> GalleryFacets:
+    return service.gallery_facets(settings, query)
+
+
+@router.get("/gallery/{work_id}/{image_id}", response_model=ImageDetail)
+def gallery_image(work_id: str, image_id: str, settings: Settings = Depends(get_settings)) -> ImageDetail:
+    return service.gallery_image(settings, work_id, image_id)
 
 
 @router.get("/library/blocks", response_model=BlocksPage)

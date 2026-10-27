@@ -16,11 +16,11 @@ from PIL import Image as PILImage
 
 from app import appconfig
 from app.settings import Settings
-from app.vault import categories, index, layout, manager, migrate, store
+from app.vault import categories, gallery_layout, index, layout, manager, migrate, store
 from app.vault import config as vaultcfg
 from app.vault.models import (
-    BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryItem, GalleryPage,
-    SaveCategory, TagCount, WorkDoc, WorkListItem, WorksPage,
+    BlockDoc, BlocksPage, CategoryCount, CategoryDoc, GalleryAlbum, GalleryFacets, GalleryImage, GalleryItem,
+    GalleryPage, ImageDetail, SaveCategory, TagCount, WorkCount, WorkDoc, WorkListItem, WorkMatch, WorksPage,
 )
 
 log = logging.getLogger(__name__)
@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 # Two writers exist — the app's saves and backend edits (workedit) — and both run in worker threads, so without
 # it both could pass the check and the later write would drop the other's images (gc'd as orphans) or edits.
 _works_lock = threading.Lock()
+# Thumbnails made at once: a gallery scrolled fast asks for dozens — four at a time leave the CPU to the rest.
+_thumbs = threading.BoundedSemaphore(4)
 
 
 def _now() -> str:
@@ -194,21 +196,42 @@ def delete_work(settings: Settings, work_id: str) -> dict:
     return {"deleted": work_id}
 
 
-def list_works(settings: Settings, page: int, per_page: int,
-               search: str | None = None, sort: str = "updated", direction: str = "desc") -> WorksPage:
+def list_works(settings: Settings, page: int, per_page: int, search: str | None = None, sort: str = "updated",
+               direction: str = "desc", tags: tuple[str, ...] = ()) -> WorksPage:
+    """Works whose title or contents match ``search`` (their gallery's words, their gallery images' prompts,
+    descriptions and tags) and whose gallery images carry all ``tags``. A work the title didn't match says where it
+    matched."""
     vault = _vault(settings)
     with _index(settings, vault) as conn:
-        total, rows = index.list_works(conn, page, per_page, search, sort, direction)
+        total, rows = index.list_works(conn, page, per_page, search, sort, direction, tags)
+        in_vault = index.work_count(conn) if search or tags else total
+        needle = search.casefold() if search else ""
+        found = {r["id"]: _matched_words(r["texts"], needle) for r in rows
+                 if needle and needle not in (r["title"] or "").casefold()}
+        counts = index.matching_images(conn, [i for i, m in found.items() if m is None], search) if search else {}
     items = [
         WorkListItem(
             id=r["id"], title=r["title"] or "Untitled", updated_at=r["updated_at"] or "",
             image_count=r["image_count"] or 0,
             # Versioned by the cover: cached while it stays, fetched anew once it changes.
             preview_url=f"/api/vault/works/{r['id']}/preview?v={r['preview_image_id']}" if r["preview_image_id"] else None,
+            match=found.get(r["id"]) or (WorkMatch(kind="images", count=counts[r["id"]]) if r["id"] in counts else None),
         )
         for r in rows
     ]
-    return WorksPage(items=items, total=total, page=page, per_page=per_page)
+    return WorksPage(items=items, total=total, page=page, per_page=per_page, in_vault=in_vault)
+
+
+def _matched_words(texts: str, needle: str) -> WorkMatch | None:
+    for kind, text in json.loads(texts or "[]"):
+        if needle in text.casefold():
+            return WorkMatch(kind=kind, text=text)
+    return None
+
+
+def work_tags(settings: Settings, search: str | None, tags: tuple[str, ...]) -> list[TagCount]:
+    with _index(settings, _vault(settings)) as conn:
+        return [TagCount(name=n, count=c) for n, c in index.work_tag_counts(conn, search, tags)]
 
 
 def image_path(settings: Settings, work_id: str, image_id: str) -> Path:
@@ -233,8 +256,18 @@ def image_thumb_path(settings: Settings, work_id: str, image_id: str, width: int
     src = image_path(settings, work_id, image_id)  # validates ids + existence
     width = max(16, min(width, 4096))
     dst = src.parent.parent / ".thumbs" / f"{image_id}@{width}.png"
-    if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
+    def cached() -> bool:
+        return dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime
+
+    if cached():
         return dst
+    with _thumbs:
+        if cached():  # made by another request while this one waited
+            return dst
+        return _make_thumb(src, dst, width)
+
+
+def _make_thumb(src: Path, dst: Path, width: int) -> Path:
     with PILImage.open(src) as im:
         if im.width <= width:
             return src  # never upscale — the source is already at or below the requested width
@@ -262,24 +295,62 @@ def preview_path(settings: Settings, work_id: str) -> Path:
     return path
 
 
-def gallery(settings: Settings, tags: list[str], favorite: bool, page: int, per_page: int) -> GalleryPage:
+def _image_url(work_id: str, image_id: str) -> str:
+    return f"/api/vault/works/{work_id}/images/{image_id}"
+
+
+def gallery(settings: Settings, q: index.ImageQuery, per_page: int, *, page: int = 1,
+            after: tuple[int, str] | None = None, oldest_first: bool = False) -> GalleryPage:
+    """Gallery images across the vault — newest first unless ``oldest_first`` — as ``q`` filters them: the
+    ``page``-th page, or the one after the ``after`` cursor (``index.gallery``)."""
     vault = _vault(settings)
     with _index(settings, vault) as conn:
-        total, rows = index.gallery(conn, tags, favorite, page, per_page)
+        total, rows, more = index.gallery(conn, q, per_page, page=page, after=after, oldest_first=oldest_first)
     items = [
-        GalleryItem(
-            image_id=r["id"], work_id=r["work_id"],
-            url=f"/api/vault/works/{r['work_id']}/images/{r['id']}",
-            favorite=bool(r["favorite"]), group=r["group_name"], created_at=r["created_at"] or "",
+        GalleryImage(
+            image_id=r["id"], work_id=r["work_id"], work_title=r["work_title"] or "Untitled",
+            url=_image_url(r["work_id"], r["id"]), favorite=bool(r["favorite"]), created_at=r["created_at"] or "",
+            ar=r["ar"], model=r["model"],
+            album=GalleryAlbum(grid_id=r["grid_id"], number=r["grid_no"], heading=r["heading"], section=r["section"])
+            if r["grid_id"] else None,
         )
         for r in rows
     ]
-    return GalleryPage(items=items, total=total, page=page, per_page=per_page)
+    return GalleryPage(items=items, total=total, page=page, per_page=per_page,
+                       next=f"{more[0]}:{more[1]}" if more else None)
 
 
-def work_titles(settings: Settings, ids: set[str]) -> dict[str, str]:
+def gallery_facets(settings: Settings, q: index.ImageQuery) -> GalleryFacets:
     with _index(settings, _vault(settings)) as conn:
-        return index.work_titles(conn, sorted(ids))
+        f = index.gallery_facets(conn, q)
+    return GalleryFacets(
+        total=f["total"], unsorted=f["unsorted"],
+        tags=[TagCount(name=n, count=c) for n, c in f["tags"]],
+        models=[TagCount(name=n, count=c) for n, c in f["models"]],
+        works=[WorkCount(id=i, title=t or "Untitled", count=c) for i, t, c in f["works"]],
+    )
+
+
+def gallery_image(settings: Settings, work_id: str, image_id: str) -> ImageDetail:
+    """One gallery image with its recipe, from its work as stored."""
+    doc = load_work(settings, work_id)
+    im = next((im for im in doc.images if im.id == image_id and im.role == "gallery"), None)
+    if im is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    snap = next((s for s in doc.snapshots if s.id == im.snapshot_id), None) if im.snapshot_id else None
+    where = gallery_layout.placements(doc).get(im.id)
+    params = snap.params if snap else {}
+    return ImageDetail(
+        image_id=im.id, work_id=doc.id, work_title=doc.title or "Untitled", url=_image_url(doc.id, im.id),
+        favorite=im.favorite, created_at=im.created_at, ar=im.ar or index.ratio(params), model=params.get("model"),
+        album=GalleryAlbum(grid_id=where.grid_id, number=where.number, heading=where.heading, section=where.section)
+        if where else None,
+        description=im.description, tags=im.tags,
+        block_tags=list(dict.fromkeys(t for c in snap.components if c.polarity != "negative" for t in c.tags
+                                      if t not in im.tags)) if snap else [],
+        positive=snap.assembled_positive if snap else "", negative=snap.assembled_negative if snap else "",
+        components=snap.components if snap else [], params=params,
+    )
 
 
 def _blocks_root(vault: Path) -> Path:

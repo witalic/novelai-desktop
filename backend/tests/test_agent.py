@@ -215,6 +215,9 @@ async def test_get_work_is_an_overview_and_list_images_pages_the_gallery(setting
     async with mcp_client(settings) as c:
         works = await call_json(c, "list_works")
         assert works["items"][0]["title"] == "Halloween"
+        found = (await call_json(c, "list_works", {"query": "VAMPIRE"}))["items"]  # what it holds says where
+        assert [(w["id"], w["match"]) for w in found] == [("work-1", {"kind": "images", "count": 1})]
+        assert "match" not in (await call_json(c, "list_works", {"query": "hallow"}))["items"][0]
         work = await call_json(c, "get_work", {"work_id": "work-1"})
         assert work["image_count"] == 2 and "images" not in work and "canvas" not in work  # the scratch one isn't counted
         page = await call_json(c, "list_images", {"work_id": "work-1", "per_page": 1})
