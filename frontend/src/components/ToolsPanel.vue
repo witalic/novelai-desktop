@@ -76,7 +76,8 @@ watch(tab, (t) => sessionStorage.setItem('nai-tools-tab', t))
 
 // ---- cost estimate: tier-aware (Opus gets the first sample free — see cost.ts), reflects the live params ----
 const { subscription } = useAccount()
-const genCost = computed(() => anlasCost(props.params, subscription.value?.tier ?? 0, !!subscription.value?.active))
+const genCost = computed(() => anlasCost(props.params, subscription.value?.tier ?? 0, !!subscription.value?.active,
+  !!subscription.value?.v5_limit_reached))
 
 // ---- preset strip ----
 const activePreset = computed(() => props.presets.find((p) => p.id === props.activePresetId) ?? null)

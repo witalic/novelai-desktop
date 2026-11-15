@@ -115,7 +115,8 @@ const catRank = (slug: string) => { const i = vaultCatOrder.value.indexOf(slug);
 
 // Estimated Anlas cost of the current params (Opus tier gets the first sample free — see cost.ts).
 const { subscription } = useAccount()
-const genCost = computed(() => anlasCost(props.params, subscription.value?.tier ?? 0, !!subscription.value?.active))
+const genCost = computed(() => anlasCost(props.params, subscription.value?.tier ?? 0, !!subscription.value?.active,
+  !!subscription.value?.v5_limit_reached))
 
 // Composition = the station's child block nodes, ordered by position.y (the list order key, like the
 // old palette). They never free-render on the canvas — the station node draws them as an HTML list.

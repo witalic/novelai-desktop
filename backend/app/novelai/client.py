@@ -26,7 +26,8 @@ _TIER_NAMES = {0: "Paper", 1: "Tablet", 2: "Scroll", 3: "Opus"}
 
 def parse_subscription(data: dict) -> dict:
     """NovelAI calls Anlas 'training steps' for legacy reasons — remaining = fixed (monthly) +
-    purchased (permanent). Opus (tier 3, active) generates the first sample free under limits."""
+    purchased (permanent). Opus (tier 3, active) generates the first sample free under limits — on V5 only
+    while its usage bar isn't negative (``usage.isNegative``, which NovelAI's own client checks)."""
     tsl = data.get("trainingStepsLeft") or {}
     tier = int(data.get("tier") or 0)
     return {
@@ -34,6 +35,7 @@ def parse_subscription(data: dict) -> dict:
         "tier_name": _TIER_NAMES.get(tier, "Unknown"),
         "active": bool(data.get("active")),
         "anlas": int(tsl.get("fixedTrainingStepsLeft") or 0) + int(tsl.get("purchasedTrainingSteps") or 0),
+        "v5_limit_reached": bool((data.get("usage") or {}).get("isNegative")),
     }
 
 

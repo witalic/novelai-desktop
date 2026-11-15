@@ -11,9 +11,17 @@ There is **no official REST spec** — `docs.novelai.net/.../scripting/api-refer
 - **Endpoint:** `POST https://image.novelai.net/ai/generate-image`, `Authorization: Bearer <token>`,
   JSON body; **response is a binary ZIP** containing `image_0.png` (…`_N.png`).
 - **Subscription / Anlas:** `GET https://image.novelai.net/user/subscription` (Anlas = remaining
-  `trainingStepsLeft.fixedTrainingStepsLeft + purchasedTrainingSteps`; `tier` 0–3, `active`). It is on
+  `trainingStepsLeft.fixedTrainingStepsLeft + purchasedTrainingSteps`; `tier` 0–3, `active`;
+  `usage.isNegative` = Opus's V5 usage limit is used up). It is on
   the **image host**, NOT `api.novelai.net` — the account host rejects it with 400 *"Please refresh
   NovelAI.net… update to the image URL"*. No `User-Agent` needed; the default httpx UA works.
+  Subscription Anlas reset to zero when a subscription ends; purchased Anlas stay.
+- **Cost** (the web client's own function, read 2026-11-15; copies in `novelai/cost.py` + `presets/cost.ts`):
+  base = `ceil(2.9518e-6·area + 5.7533e-7·area·steps)`; **any V5 model ×1.5** after that ceil, then ceil;
+  ≥ 2 Anlas an image; **over 140 an image NovelAI refuses it**. Opus never discounts a paid image — it only
+  makes one sample free (≤ 1024×1024, ≤ 28 steps, no character reference), and on V5 only while
+  `usage.isNegative` is false. Verify a cost change against the balance, not the estimate: the community
+  formula (novelai-api / novelai-python) lacks the V5 factor and under-counted every V5 image by a third.
 - **Request shape:** `{ input, model, action, parameters:{…} }`. `action` ∈ `generate` / `img2img` / `infill`.
   Models: `nai-diffusion-5-full` (default) / `nai-diffusion-5-curated`, legacy `nai-diffusion-4-5-full` /
   `-curated`; `params_version: 4`. **v4+ differ from v3** — v4.5 and v5 share the structured shape with

@@ -19,6 +19,7 @@ class Subscription(BaseModel):
     tier_name: str
     active: bool
     anlas: int
+    v5_limit_reached: bool = False  # Opus's V5 usage limit is used up: no free V5 sample until it refills
 
 
 @router.get("/subscription", response_model=Subscription)

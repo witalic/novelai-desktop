@@ -23,12 +23,14 @@ export type PanelParams = Omit<GenerateParams, 'prompt' | 'negative_prompt'> & {
 // Keep in sync with backend/app/vault/models.py::PresetParams.
 export type PresetParams = Omit<PanelParams, 'seed'>
 
-// NovelAI account: subscription tier + remaining Anlas. tier 3 = Opus (free first sample under limits).
+// NovelAI account: subscription tier + remaining Anlas. tier 3 = Opus (free first sample under limits — on V5 only
+// until its usage limit is used up: v5_limit_reached).
 export interface Subscription {
   tier: number
   tier_name: string
   active: boolean
   anlas: number
+  v5_limit_reached: boolean
 }
 
 // ---- model catalog (backend/app/novelai/catalog.py — the single source of model/sampler facts) ----

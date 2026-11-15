@@ -35,7 +35,7 @@ from app.agent.errors import GenerationFailed, Refused, ToolError
 from app.novelai import GenerateParams, get_client
 from app.novelai.augment import augment
 from app.novelai.catalog import get_catalog
-from app.novelai.cost import anlas_cost
+from app.novelai.cost import MAX_PER_IMAGE, anlas_cost
 from app.novelai.dedup import dedupe_prompt
 from app.novelai.errors import NovelAIError, NovelAIRateLimitError
 from app.novelai.tokenizer import count_tokens
@@ -394,8 +394,11 @@ def _get_account(settings: Settings, _args: dict) -> dict:
     except (NovelAIError, httpx.HTTPError) as exc:
         raise ToolError(f"Could not read the NovelAI subscription: {exc}") from exc
     cfg = store.load_config(settings)
+    free = None
+    if generation.opus_of(sub):
+        free = generation.FREE_TEXT + (" — not on V5 until its usage limit refills" if sub.get("v5_limit_reached") else "")
     return {"tier": sub.get("tier"), "tier_name": sub.get("tier_name"), "active": sub.get("active"),
-            "anlas": sub.get("anlas"), "free_generations": generation.FREE_TEXT if generation.opus_of(sub) else None,
+            "anlas": sub.get("anlas"), "free_generations": free,
             "agent_paid_generations": cfg.spending.paid, "agent_spent_today": store.spent_today(cfg),
             "agent_daily_budget": cfg.spending.daily_budget}
 
@@ -1138,25 +1141,34 @@ def _client(settings: Settings) -> generation.Client:
     return client
 
 
-def _has_opus(client: generation.Client, *, for_estimate: bool = False) -> bool:
+def _account(client: generation.Client, *, for_estimate: bool = False) -> dict:
     try:
-        return generation.has_opus(client, for_estimate=for_estimate)
+        return generation.account(client, for_estimate=for_estimate)
     except (NovelAIError, httpx.HTTPError) as exc:
         raise ToolError(f"Could not read the NovelAI subscription: {exc}") from exc
 
 
-def _cost_of(params: GenerateParams, opus: bool) -> int:
-    return anlas_cost(params.width, params.height, params.steps, params.n_samples, opus=opus)
+def _cost_of(params: GenerateParams, sub: dict) -> int | None:
+    """What NovelAI charges for ``params`` on this account, or None when it won't generate them (``MAX_PER_IMAGE``)."""
+    return anlas_cost(params.model, params.width, params.height, params.steps, params.n_samples,
+                      opus=generation.opus_of(sub), v5_limit_reached=bool(sub.get("v5_limit_reached")))
+
+
+_OVER_CAP = (f"NovelAI won't generate an image costing over {MAX_PER_IMAGE} Anlas — lower the size or the steps.",
+             f"over NovelAI's ◆ {MAX_PER_IMAGE} per image")
 
 
 def _estimate_cost(settings: Settings, args: dict) -> dict:
     work_id = _str(args, "work_id")
     doc = service.load_work(settings, work_id) if work_id else WorkDoc(id="-")
     params = _gen_params(doc, args, prompt="-", preset=_preset(settings, args))  # the cost doesn't depend on the prompt
-    opus = _has_opus(_client(settings), for_estimate=True)
-    cost = _cost_of(params, opus)
+    sub = _account(_client(settings), for_estimate=True)
+    cost = _cost_of(params, sub)
     cfg = store.load_config(settings)
-    refused = generation.refusal(cost, True, cfg, opus) if cost else None
+    if cost is None:
+        refused = _OVER_CAP
+    else:
+        refused = generation.refusal(cost, True, cfg, generation.free_sentence(sub, params.model)) if cost else None
     return {"anlas": cost, "free": cost == 0, "params": _shown_params(params), "paid_generations": cfg.spending.paid,
             "max_per_request": cfg.spending.max_per_request, "daily_budget": cfg.spending.daily_budget,
             "spent_today": store.spent_today(cfg), "refused_even_with_paid": refused[0] if refused else None}
@@ -1284,9 +1296,11 @@ def _generate_images(settings: Settings, args: dict) -> Written:
         cfg = store.load_config(settings)
         if not (cfg.enabled and cfg.permissions.generate):  # switched off since this call was let in
             raise Refused("“Generate images” is turned off in Settings → Agents.", "switched off meanwhile")
-        opus = _has_opus(client)  # read now: the account may have changed since the last generation
-        cost = _cost_of(params, opus)
-        if cost and (why := generation.refusal(cost, asked_to_pay, cfg, opus)):
+        sub = _account(client)  # read now: the account may have changed since the last generation
+        cost = _cost_of(params, sub)
+        if cost is None:
+            raise Refused(*_OVER_CAP)
+        if cost and (why := generation.refusal(cost, asked_to_pay, cfg, generation.free_sentence(sub, params.model))):
             raise Refused(*why)
         pngs = _send(settings, client, params, cost)
 
@@ -1608,15 +1622,17 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          "works_delete", _delete_combination),
     # generation
     Tool("estimate_cost", "Estimate a generation's cost",
-         "The Anlas a generation would cost with these settings (default: the work's, or a preset's), whether it is "
-         "free, and the user's limits for paid agent generations.",
+         "The Anlas a generation would cost with these settings (default: the work's, or a preset's) — null when "
+         "NovelAI won't generate it (over 140 Anlas an image) — whether it is free, and the user's limits for paid "
+         "agent generations.",
          {"type": "object", "properties": {"work_id": {"type": "string"}, **_GEN_FIELDS}}, "read", _estimate_cost),
     Tool("generate_images", "Generate images",
          "Generate with NovelAI from a combination of the work (combination_id) or from blocks, with the work's "
          "generation settings — or a preset's (preset_id) — unless overridden; one image unless n_samples says "
          "more. The prompt is built as the station builds it, “unique tags” included. The images land in the work's gallery (Quick access) with their recipe. Free "
-         "generations (Opus: up to 1024×1024 px, 28 steps, one image) always run; a paid one runs only when the user "
-         "agreed to spend Anlas on it — then pass paid: true — and allows paid ones in Settings, within their limits. "
+         "generations (Opus: up to 1024×1024 px, 28 steps, one image — on V5 only while Opus's usage limit lasts) "
+         "always run; a paid one runs only when the user agreed to spend Anlas on it — then pass paid: true — and "
+         "allows paid ones in Settings, within their limits. NovelAI won't generate an image costing over 140 Anlas. "
          "One generation at a time, a few seconds apart: for a series, call again for each.",
          {"type": "object", "properties": {
              "work_id": {"type": "string"}, "combination_id": {"type": "string"}, "blocks": _COMBO_BLOCKS,

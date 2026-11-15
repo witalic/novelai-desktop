@@ -16,7 +16,7 @@ class MockNovelAIClient:
 
     async def get_subscription(self) -> dict:
         # Offline stand-in: an active Opus tier with plenty of Anlas so the UI has real numbers.
-        return {"tier": 3, "tier_name": "Opus", "active": True, "anlas": 6821}
+        return {"tier": 3, "tier_name": "Opus", "active": True, "anlas": 6821, "v5_limit_reached": False}
 
     async def generate(self, params: GenerateParams) -> list[bytes]:
         log.info("MOCK generate %dx%d n=%d (no network, no Anlas)", params.width, params.height, params.n_samples)

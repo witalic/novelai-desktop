@@ -11,12 +11,14 @@ def test_parse_subscription_sums_anlas_and_maps_tier():
     parsed = parse_subscription({
         "tier": 3, "active": True,
         "trainingStepsLeft": {"fixedTrainingStepsLeft": 1000, "purchasedTrainingSteps": 5821},
+        "usage": {"percent": 0, "purchasedPercent": 0, "isNegative": True, "timeUntilNextPercent": 6048},
     })
-    assert parsed == {"tier": 3, "tier_name": "Opus", "active": True, "anlas": 6821}
+    assert parsed == {"tier": 3, "tier_name": "Opus", "active": True, "anlas": 6821, "v5_limit_reached": True}
 
 
 def test_parse_subscription_tolerates_missing_fields():
-    assert parse_subscription({}) == {"tier": 0, "tier_name": "Paper", "active": False, "anlas": 0}
+    assert parse_subscription({}) == {"tier": 0, "tier_name": "Paper", "active": False, "anlas": 0,
+                                      "v5_limit_reached": False}
 
 
 @pytest.fixture

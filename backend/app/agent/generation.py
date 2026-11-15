@@ -20,6 +20,7 @@ from app.agent import store
 from app.agent.config import AgentConfig
 from app.agent.errors import Refused
 from app.novelai import MockNovelAIClient, NovelAIClient
+from app.novelai.cost import is_v5
 
 _GAP_S = 3.0  # pause between two agent generations
 _BACKOFF_START_S = 30.0  # after a 429 — doubled on each one in a row
@@ -87,17 +88,26 @@ def opus_of(sub: dict) -> bool:
     return bool(sub.get("active")) and int(sub.get("tier") or 0) >= 3
 
 
-def has_opus(client: Client, *, for_estimate: bool = False) -> bool:
-    """Read from NovelAI right before a generation; an estimate may reuse a read from the last few minutes."""
-    return opus_of(subscription(client, max_age=ESTIMATE_TTL_S if for_estimate else 0.0))
+def account(client: Client, *, for_estimate: bool = False) -> dict:
+    """The subscription, read from NovelAI right before a generation; an estimate may reuse a read from the last
+    few minutes."""
+    return subscription(client, max_age=ESTIMATE_TTL_S if for_estimate else 0.0)
 
 
-def refusal(cost: int, asked_to_pay: bool, cfg: AgentConfig, opus: bool) -> tuple[str, str] | None:
+def free_sentence(sub: dict, model: str) -> str:
+    """What the account generates for free with ``model`` — said when a generation isn't free."""
+    if not opus_of(sub):
+        return "This account has no free generations"
+    if sub.get("v5_limit_reached") and is_v5(model):
+        return "Opus's free V5 generations are used up until its usage limit refills"
+    return f"Free ones are Opus generations {FREE_TEXT}"
+
+
+def refusal(cost: int, asked_to_pay: bool, cfg: AgentConfig, free: str) -> tuple[str, str] | None:
     """Why a generation costing ``cost`` Anlas (> 0) may not run — (what the agent reads, what the user's feed
-    shows) — or None when it may."""
+    shows) — or None when it may. ``free``: what the account gets for free (``free_sentence``)."""
     s = cfg.spending
     if not asked_to_pay:
-        free = f"Free ones are Opus generations {FREE_TEXT}" if opus else "This account has no free generations"
         return (f"This generation costs about {cost} Anlas. {free}. Ask the user first — only if they agree to spend "
                 "Anlas on it, call again with paid: true.", f"◆ {cost} — paid not requested")
     if not s.paid:

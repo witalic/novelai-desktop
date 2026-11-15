@@ -962,7 +962,7 @@ async def test_a_paid_generation_needs_the_users_go_ahead_and_fits_their_limits(
     settings = mock_novelai
     seed(settings)
     two = {"work_id": "work-1", "blocks": [{"text": "raiden shogun"}], "width": 1024, "height": 1024, "steps": 28,
-           "n_samples": 2}  # Opus: the first image free, the second ◆ 20
+           "n_samples": 2}  # V5 on Opus: the first image free, the second ◆ 30
     async with mcp_client(settings) as c:
         async def refused(args: dict) -> str:
             res = await call(c, "generate_images", args)
@@ -975,10 +975,10 @@ async def test_a_paid_generation_needs_the_users_go_ahead_and_fits_their_limits(
         assert "per-generation limit" in await refused({**two, "paid": True})
         store.update_config(settings, {"spending": {"max_per_request": 50, "daily_budget": 30}})
         out = await call_json(c, "generate_images", {**two, "paid": True})
-        assert (out["anlas"], out["spent_today"], len(out["images"])) == (20, 20, 2)
-        assert "today's budget" in await refused({**two, "paid": True})  # 20 more would pass 30
+        assert (out["anlas"], out["spent_today"], len(out["images"])) == (30, 30, 2)
+        assert "today's budget" in await refused({**two, "paid": True})  # 30 more would pass 30
         estimate = await call_json(c, "estimate_cost", {"width": 1024, "height": 1024, "steps": 28, "n_samples": 2})
-    assert estimate["anlas"] == 20 and estimate["spent_today"] == 20 and "today's budget" in estimate["refused_even_with_paid"]
+    assert estimate["anlas"] == 30 and estimate["spent_today"] == 30 and "today's budget" in estimate["refused_even_with_paid"]
     assert [(r["action"], r["outcome"]) for r in activity.recent()[1:3]] == [("Generate images", "denied"),
                                                                              ("Generated 2 images", "ok")]
     seeds = [s.params["seed"] for s in service.load_work(settings, "work-1").snapshots]
@@ -995,6 +995,34 @@ async def test_whether_a_generation_is_free_is_read_fresh_every_time(mock_novela
         monkeypatch.setattr(MockNovelAIClient, "get_subscription", lambda self: _resolved(tablet))
         res = await gen(c)
     assert res["isError"] and "no free generations" in res["content"][0]["text"]
+    assert store.spent_today(store.load_config(settings)) == 0
+
+
+async def test_a_used_up_v5_usage_limit_ends_opus_free_v5_generations(mock_novelai, monkeypatch):
+    settings = mock_novelai
+    seed(settings)
+    used_up = {"tier": 3, "tier_name": "Opus", "active": True, "anlas": 100, "v5_limit_reached": True}
+    monkeypatch.setattr(MockNovelAIClient, "get_subscription", lambda self: _resolved(used_up))
+    async with mcp_client(settings) as c:
+        v5 = await gen(c)  # the work's model: V5 Full, 832×1216 — ◆ 30 now
+        v45 = await call_json(c, "generate_images", {"work_id": "work-1", "blocks": [{"text": "a"}],
+                                                     "model": "nai-diffusion-4-5-full"})
+        acct = await call_json(c, "get_account")
+    assert v5["isError"] and "about 30 Anlas" in v5["content"][0]["text"] and "used up" in v5["content"][0]["text"]
+    assert v45["anlas"] == 0  # V4.5 has no usage limit
+    assert "not on V5" in acct["free_generations"]
+
+
+async def test_novelai_refuses_an_image_over_140_anlas_and_so_does_the_agent(mock_novelai):
+    settings = mock_novelai
+    seed(settings)
+    paid_allowed(settings, max_per_request=200)
+    big = {"width": 2048, "height": 1536, "steps": 50, "paid": True}  # V5: ◆ 150 a piece
+    async with mcp_client(settings) as c:
+        res = await gen(c, **big)
+        est = await call_json(c, "estimate_cost", {"width": 2048, "height": 1536, "steps": 50})
+    assert res["isError"] and "over 140 Anlas" in res["content"][0]["text"]
+    assert est["anlas"] is None and "over 140 Anlas" in est["refused_even_with_paid"]
     assert store.spent_today(store.load_config(settings)) == 0
 
 
@@ -1022,7 +1050,7 @@ async def test_a_failed_generation_is_logged_and_counted_unless_novelai_refused_
     settings = mock_novelai
     seed(settings)
     paid_allowed(settings)
-    two = {"width": 1024, "height": 1024, "steps": 28, "n_samples": 2, "paid": True}  # ◆ 20
+    two = {"width": 1024, "height": 1024, "steps": 28, "n_samples": 2, "paid": True}  # V5: ◆ 30
 
     async def timeout(self, params):
         raise httpx.ReadTimeout("no answer")
@@ -1034,15 +1062,15 @@ async def test_a_failed_generation_is_logged_and_counted_unless_novelai_refused_
         monkeypatch.setattr(MockNovelAIClient, "generate", timeout)
         lost = await gen(c, **two)
         assert lost["isError"] and "may still have been charged" in lost["content"][0]["text"]
-        assert store.spent_today(store.load_config(settings)) == 20  # it may have been: it counts
+        assert store.spent_today(store.load_config(settings)) == 30  # it may have been: it counts
         monkeypatch.setattr(MockNovelAIClient, "generate", too_many)
         assert (await gen(c, **two))["isError"]
-        assert store.spent_today(store.load_config(settings)) == 20  # a clear refusal is given back
+        assert store.spent_today(store.load_config(settings)) == 30  # a clear refusal is given back
         backing_off = await gen(c, **two)
     assert "slow down" in backing_off["content"][0]["text"]  # after a 429 the next one waits its turn
     rows = activity.recent()
     assert [r["outcome"] for r in rows[:3]] == ["denied", "error", "error"]
-    assert rows[2]["cost"] == 20 and rows[1]["cost"] is None
+    assert rows[2]["cost"] == 30 and rows[1]["cost"] is None
 
 
 async def test_images_a_save_could_not_keep_go_to_downloads(mock_novelai, monkeypatch, tmp_path):

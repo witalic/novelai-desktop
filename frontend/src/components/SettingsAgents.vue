@@ -145,7 +145,7 @@ async function regenerate() {
       <div class="txt"><div class="desc">Free generations always run while “Generate images” is on. A paid one runs only when you ask
         the agent for it and only within these limits — over a limit it is refused, never queued.</div></div>
       <div v-if="opus" class="freebox"><span class="ok">✓</span><div><b>Free with Opus:</b> up to 1024×1024 px (e.g. 832×1216),
-        ≤ 28 steps, 1 image.</div></div>
+        ≤ 28 steps, 1 image — on V5 only while the Opus usage limit lasts{{ subscription?.v5_limit_reached ? ' (used up now)' : '' }}.</div></div>
       <div v-else class="freebox none">This account has no free generations — every agent generation is paid.</div>
       <div class="lset">
         <div class="txt"><div class="name">Allow paid generations</div><div class="desc">bigger sizes, more steps, several images at once</div></div>
