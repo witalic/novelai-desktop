@@ -34,6 +34,9 @@ const version = __APP_VERSION__ // from frontend/package.json via Vite define
     <div class="navitem" :class="{ active: current === 'works' }" @click="emit('navigate', 'works')">
       <i>❐</i> Works
     </div>
+    <div class="navitem" :class="{ active: current === 'gallery' }" @click="emit('navigate', 'gallery')">
+      <i>▦</i> Gallery
+    </div>
     <div class="navitem" :class="{ active: current === 'library' }" @click="emit('navigate', 'library')">
       <i>❏</i> Library
     </div>

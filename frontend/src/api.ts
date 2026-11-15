@@ -1,6 +1,6 @@
 import type { AgentOp } from './vault/agentOps'
 import type {
-  BlocksPage, Catalog, CategoryCount, GenerateParams, ImportParseResult,
+  BlocksPage, Catalog, CategoryCount, GalleryFacets, GalleryPage, GenerateParams, ImageDetail, ImportParseResult,
   ImportSaveResult, LibraryBlock, Preset, PresetParams, StreamEvent, Subscription, TagCount,
   TokenizeRequest, TokenizeResponse, WorkDoc, WorksPage,
 } from './types'
@@ -37,6 +37,45 @@ export async function listWorks(
   const resp = await fetch(`/api/vault/works?${p}`)
   if (!resp.ok) throw new ApiError(resp.status, `Failed to list works (HTTP ${resp.status})`)
   return resp.json()
+}
+
+// ---- the global gallery: `query` is gallery/query.ts galleryParams ----
+// A page of images: the first, or the one after `after` (the previous page's `next`).
+export async function listGallery(query: URLSearchParams, opts: { after?: string | null; perPage?: number; order?: 'newest' | 'oldest' } = {}): Promise<GalleryPage> {
+  const p = new URLSearchParams(query)
+  p.set('per_page', String(opts.perPage ?? 120))
+  if (opts.order) p.set('order', opts.order)
+  if (opts.after) p.set('after', opts.after)
+  const resp = await fetch(`/api/vault/gallery?${p}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to list images (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+export async function galleryFacets(query: URLSearchParams): Promise<GalleryFacets> {
+  const resp = await fetch(`/api/vault/gallery/facets?${query}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to read the filters (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+// One image with its recipe.
+export async function galleryImage(workId: string, imageId: string): Promise<ImageDetail> {
+  const resp = await fetch(`/api/vault/gallery/${encodeURIComponent(workId)}/${encodeURIComponent(imageId)}`)
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to read the image (HTTP ${resp.status})`)
+  return resp.json()
+}
+
+// Star a gallery image (or not) from outside its open copy — the backend logs it so that copy catches up.
+export async function setImageFavorite(workId: string, imageId: string, favorite: boolean): Promise<{ changed: boolean }> {
+  return jsonOrThrow(await fetch(`/api/vault/works/${encodeURIComponent(workId)}/images/${encodeURIComponent(imageId)}/favorite`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ favorite }),
+  }), 'Failed to update the image')
+}
+
+// Gallery images' files into the Downloads folder — the backend copies them, each under a free name.
+export async function downloadImages(images: { work_id: string; image_id: string }[]): Promise<SavedDownloads> {
+  return jsonOrThrow(await fetch('/api/vault/images/download', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images }),
+  }), 'Download failed')
 }
 
 // The tags of the works that filter lists, each with how many of them carry it.

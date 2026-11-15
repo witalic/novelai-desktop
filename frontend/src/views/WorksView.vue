@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
+import { onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { ApiError, deleteWork, listWorks, listWorkTags, type WorkSort } from '../api'
 import { announceWorkDeleted, onAgentNotice } from '../composables/useAgentNotices'
 import { useToast } from '../composables/useToast'
@@ -11,13 +11,18 @@ import TagToggle from '../components/TagToggle.vue'
 import { matchParts } from '../vault/workMatch'
 import type { TagCount, WorkListItem } from '../types'
 
+// `show`: open a work with one of its images shown (the Gallery's "Go to work").
+const props = defineProps<{ show?: { workId: string; imageId: string; nonce: number } | null }>()
 const emit = defineEmits<{ open: [string] }>()
 const { unreachable: vaultAway, onBack: onVaultBack } = useVault()
 onUnmounted(onVaultBack(() => { if (!openWork.value) fetchPage() })) // back: the list fills again
 
 // The Works tab shows either the list or a single work's view/editor (full-bleed).
-const openWork = ref<{ id: string; mode: 'view' | 'edit' } | null>(null)
+const openWork = ref<{ id: string; mode: 'view' | 'edit'; image?: { id: string; nonce: number } } | null>(null)
 function openEditor(id: string, mode: 'view' | 'edit') { openWork.value = { id, mode } }
+watch(() => props.show?.nonce, () => {
+  if (props.show) openWork.value = { id: props.show.workId, mode: 'view', image: { id: props.show.imageId, nonce: props.show.nonce } }
+}, { immediate: true })
 function closeEditor() { openWork.value = null; fetchPage() } // returning may have changed titles/counts
 const { push } = useToast()
 const { confirm } = useConfirm()
@@ -146,7 +151,7 @@ onAgentNotice((n) => {
 </script>
 
 <template>
-  <WorkEditor v-if="openWork" :work-id="openWork.id" :initial-mode="openWork.mode"
+  <WorkEditor v-if="openWork" :work-id="openWork.id" :initial-mode="openWork.mode" :show-image="openWork.image"
     @back="closeEditor" @open-in-generate="(id) => emit('open', id)" />
 
   <div v-else class="works" @click="sortOpen = false">

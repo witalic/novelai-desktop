@@ -12,12 +12,13 @@ import { useToast } from '../composables/useToast'
 import { imageMeta } from '../canvas/imageMeta'
 import { newId } from '../vault/ids'
 import { workToDrafts } from '../vault/serialize'
-import type { PanelParams, PresetParams, Preset, GenResult, WorkDoc, SnapshotData } from '../types'
+import type { PanelParams, PersistedComponent, PresetParams, Preset, GenResult, WorkDoc, SnapshotData } from '../types'
 import type { NavTarget } from '../App.vue'
 
 const props = defineProps<{
   openWorkId?: string | null
   applyPreset?: { id: string; params: PresetParams; nonce: number } | null
+  recipe?: { components: PersistedComponent[]; params: Record<string, unknown>; nonce: number } | null // the Gallery's
 }>()
 const emit = defineEmits<{ navigate: [NavTarget]; 'open-library': [{ category: string; tags: string[] }] }>()
 const { push } = useToast()
@@ -78,6 +79,14 @@ function onAgentParams(p: { workId: string; set: Partial<PanelParams>; presetId?
   if (paramsOf && paramsOf !== p.workId) return
   Object.assign(params, p.set)
   if (p.presetId) activePresetId.value = p.presetId
+}
+// An image's settings put on the station with its recipe (the Gallery) — everything that shapes the image but the seed;
+// how many to make stays the user's.
+const RECIPE_KEYS = ['model', 'width', 'height', 'steps', 'scale', 'sampler', 'noise_schedule', 'cfg_rescale', 'quality_toggle',
+  'uc_preset'] as const
+function onRecipeParams(p: Record<string, unknown>) {
+  Object.assign(params, Object.fromEntries(RECIPE_KEYS.filter((k) => p[k] !== undefined && p[k] !== null).map((k) => [k, p[k]])))
+  activePresetId.value = null // the station no longer holds a preset's settings
 }
 // Update the active (user) preset with the live params.
 async function onUpdatePreset() {
@@ -220,7 +229,7 @@ function onReloadWork() { if (loadedWork.value) loadWorkIntoView(loadedWork.valu
 <template>
   <div class="content" :class="{ collapsed: !panelOpen }">
     <CanvasBoard :drafts="drafts" :busy="busy" :error="error" :preview="preview" :params="params" :open-work="loadedWork"
-      :keep-drafts="keepSignal" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate" @view-stack="viewStack"
+      :keep-drafts="keepSignal" :recipe="recipe" @recipe-params="onRecipeParams" @generate="onGenerate" @take="onTake" @cancel="cancelGenerate" @view-stack="viewStack"
       @saved="onWorkSaved" @navigate="emit('navigate', $event)" @open-library="emit('open-library', $event)"
       @new-work="onNewWork" @reload-work="onReloadWork" @agent-params="onAgentParams" @work-gone="onWorkGone" />
     <ToolsPanel :params="params" :open="panelOpen" :drafts="drafts" :busy="busy" :presets="presets" :active-preset-id="activePresetId"

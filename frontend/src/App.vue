@@ -8,6 +8,7 @@ import ImagePreview from './components/ImagePreview.vue'
 import VaultStrip from './components/VaultStrip.vue'
 import GenerateView from './views/GenerateView.vue'
 import WorksView from './views/WorksView.vue'
+import GalleryView from './views/GalleryView.vue'
 import LibraryView from './views/LibraryView.vue'
 import PresetsView from './views/PresetsView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -18,14 +19,15 @@ import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
 import { useVault } from './composables/useVault'
 import type { SettingsSection } from './settingsSections'
-import type { Preset, PresetParams } from './types'
+import type { PersistedComponent, Preset, PresetParams } from './types'
 
 useTheme()
-export type ViewId = 'generate' | 'works' | 'library' | 'presets' | 'settings'
+export type ViewId = 'generate' | 'works' | 'gallery' | 'library' | 'presets' | 'settings'
 // Where a view can send the user: another view, or straight to one section of Settings ('settings/vaults').
 export type NavTarget = ViewId | `settings/${SettingsSection}`
 const view = ref<ViewId>('generate')
-const views = { generate: GenerateView, works: WorksView, library: LibraryView, presets: PresetsView, settings: SettingsView }
+const views = { generate: GenerateView, works: WorksView, gallery: GalleryView, library: LibraryView, presets: PresetsView,
+  settings: SettingsView }
 const { toasts, push } = useToast()
 const account = useAccount()
 const agent = useAgentStatus()
@@ -74,6 +76,21 @@ function onApplyPreset(preset: Preset) {
   view.value = 'generate'
 }
 
+// "Go to work" from the Gallery: Works opens that work, showing the image.
+const worksShow = ref<{ workId: string; imageId: string; nonce: number } | null>(null)
+function openWorkImage(p: { workId: string; imageId: string }) {
+  worksShow.value = { ...p, nonce: Date.now() }
+  view.value = 'works'
+}
+
+// "Recipe to Generate" from the Gallery: the image's blocks (and, if the user wants, its settings) go onto the station
+// of the work open in Generate.
+const recipeSignal = ref<{ components: PersistedComponent[]; params: Record<string, unknown>; nonce: number } | null>(null)
+function sendRecipe(r: { components: PersistedComponent[]; params: Record<string, unknown> }) {
+  recipeSignal.value = { ...r, nonce: Date.now() }
+  view.value = 'generate'
+}
+
 // "Open in Library ↗" from the prompt widget: switch to Library pre-filtered by the widget's
 // category + tags (favorites are work-local and don't exist there, so they're dropped).
 const libraryFilter = ref<{ category: string; tags: string[]; nonce: number } | null>(null)
@@ -86,15 +103,17 @@ function openLibraryWithFilter(f: { category: string; tags: string[] }) {
 const viewBindings = computed(() =>
   view.value === 'generate'
     ? { openWorkId: activeWorkId.value,
-        applyPreset: applyPreset.value, onNavigate: navigate,
+        applyPreset: applyPreset.value, recipe: recipeSignal.value, onNavigate: navigate,
         onOpenLibrary: openLibraryWithFilter }
     : view.value === 'works'
-      ? { onOpen: openWork }
-      : view.value === 'library'
-        ? { filter: libraryFilter.value }
-        : view.value === 'presets'
-          ? { onApply: onApplyPreset, onNavigate: navigate }
-          : { section: settingsSection.value, onSection: openSection },
+      ? { onOpen: openWork, show: worksShow.value }
+      : view.value === 'gallery'
+        ? { onOpenImage: openWorkImage, onRecipe: sendRecipe }
+        : view.value === 'library'
+          ? { filter: libraryFilter.value }
+          : view.value === 'presets'
+            ? { onApply: onApplyPreset, onNavigate: navigate }
+            : { section: settingsSection.value, onSection: openSection },
 )
 </script>
 

@@ -7,10 +7,10 @@
  * underneath (Delete there would remove selected nodes; arrows would nudge them). Keys typed into a field
  * (a dialog's input), app shortcuts (Ctrl/⌘ …) and keys while an action's dialog is up pass through. */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { useImagePreview, type ViewerAction, type ViewerItem } from '../composables/useImagePreview'
+import { useImagePreview, type Recipe, type ViewerAction, type ViewerItem } from '../composables/useImagePreview'
 import { downscaleDataUrl } from '../canvas/thumb'
 
-const { set, currentId, close } = useImagePreview()
+const { set, currentId, recipeOpen, close } = useImagePreview()
 
 const items = computed<ViewerItem[]>(() => set.value?.items() ?? [])
 const index = computed(() => items.value.findIndex((it) => it.id === currentId.value))
@@ -32,6 +32,22 @@ function go(step: number) {
   const next = items.value[index.value + step]
   if (next) currentId.value = next.id
 }
+// A paged set (the Gallery) brings its next page in as the viewer nears its end.
+watch(index, (i) => { if (set.value?.more && i >= 0 && i >= items.value.length - 4) set.value.more() })
+
+// The Recipe panel (design/global-gallery.html §4): what made the shown image, as its set says — fetched once per image.
+const recipes = ref<Record<string, Recipe | null | 'loading'>>({})
+watch(set, () => { recipes.value = {} })
+const recipe = computed(() => (item.value ? recipes.value[item.value.id] : undefined))
+watch([item, recipeOpen], async () => {
+  const it = item.value
+  const get = set.value?.recipe
+  if (!it || !get || !recipeOpen.value || it.id in recipes.value) return
+  recipes.value[it.id] = 'loading'
+  let got: Recipe | null = null
+  try { got = await get(it) } catch { /* shown as no recipe */ }
+  if (set.value?.recipe === get) recipes.value[it.id] = got // into the cache as it is now — opening a set starts a fresh one
+}, { immediate: true })
 const labelOf = (a: ViewerAction) => (typeof a.label === 'function' && item.value ? a.label(item.value) : String(a.label))
 async function run(a: ViewerAction) {
   const it = item.value
@@ -112,13 +128,44 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
         <span v-if="item.cover" class="vcover" title="The work's cover — its picture in the Works list">Cover</span>
         <span v-if="item.meta" class="vmeta">{{ item.meta }}</span>
         <span class="sp"></span>
+        <button v-if="set.recipe" class="vrbtn" :class="{ on: recipeOpen }" title="What made this image"
+          @click="recipeOpen = !recipeOpen">☰ Recipe</button>
         <button class="vx" title="Close (Esc)" @click="close">✕</button>
       </div>
 
-      <div class="vstage">
-        <button v-if="items.length > 1" class="varr" :disabled="index <= 0" title="Previous (←)" @click.stop="go(-1)">‹</button>
-        <img class="vimg" :src="item.url" alt="preview" draggable="false" @click.stop />
-        <button v-if="items.length > 1" class="varr" :disabled="index >= items.length - 1" title="Next (→)" @click.stop="go(1)">›</button>
+      <div class="vbody">
+        <div class="vstage">
+          <button v-if="items.length > 1" class="varr" :disabled="index <= 0" title="Previous (←)" @click.stop="go(-1)">‹</button>
+          <img class="vimg" :src="item.url" alt="preview" draggable="false" @click.stop />
+          <button v-if="items.length > 1" class="varr" :disabled="index >= items.length - 1" title="Next (→)" @click.stop="go(1)">›</button>
+        </div>
+        <aside v-if="set.recipe && recipeOpen" class="vrec" @click.stop>
+          <div v-if="recipe === 'loading' || recipe === undefined" class="rnone">Reading the recipe…</div>
+          <div v-else-if="!recipe" class="rnone">No recipe kept for this image.</div>
+          <template v-else>
+            <div v-if="recipe.work" class="rwork">{{ recipe.work }}</div>
+            <div v-if="recipe.where" class="rwhere">{{ recipe.where }}</div>
+            <h4>Prompt</h4>
+            <div class="rprompt">{{ recipe.positive || '—' }}</div>
+            <template v-if="recipe.negative"><h4>Negative</h4><div class="rprompt neg">{{ recipe.negative }}</div></template>
+            <template v-if="recipe.blocks.length">
+              <h4>Blocks</h4>
+              <div class="rblks">
+                <span v-for="(b, i) in recipe.blocks" :key="i" class="rblk" :class="{ neg: b.negative }">
+                  <i :style="b.color ? { background: b.color } : {}"></i>{{ b.name }}
+                </span>
+              </div>
+            </template>
+            <template v-if="recipe.settings.length">
+              <h4>Settings</h4>
+              <div class="rkv"><template v-for="[k, v] in recipe.settings" :key="k"><span>{{ k }}</span><span>{{ v }}</span></template></div>
+            </template>
+            <template v-if="recipe.tags.length">
+              <h4>Tags</h4>
+              <div class="rtags"><span v-for="t in recipe.tags" :key="t">{{ t }}</span></div>
+            </template>
+          </template>
+        </aside>
       </div>
 
       <div v-if="actions.length" class="vacts" @click.stop>
@@ -152,7 +199,31 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
 .vx{width:34px;height:34px;border-radius:50%;border:1px solid #454f59;background:#1d2125;color:#9fadbc;font-size:14px;cursor:pointer;
   display:flex;align-items:center;justify-content:center}
 .vx:hover{color:#fff}
-.vstage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;gap:26px;padding:0 20px}
+.vbody{flex:1;min-height:0;display:flex}
+.vstage{flex:1;min-width:0;min-height:0;display:flex;align-items:center;justify-content:center;gap:26px;padding:0 20px}
+.vrbtn{height:30px;border:1px solid #454f59;background:#1d2125;color:#9fadbc;border-radius:7px;padding:0 11px;font-size:12px;
+  font-weight:600;cursor:pointer}
+.vrbtn:hover{color:#fff}
+.vrbtn.on{background:rgba(12,102,228,.3);border-color:#4c8cf0;color:#dfe5ec}
+/* the Recipe panel — part of the always-dark lightbox, so fixed greys like the rest of it */
+.vrec{width:340px;flex-shrink:0;overflow-y:auto;background:#15181b;border-left:1px solid #2a3036;padding:14px 16px;
+  font-size:12px;color:#c5ced7;cursor:default}
+.vrec h4{margin:12px 0 5px;font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#7d8996}
+.rnone{color:#7d8996;font-size:12px}
+.rwork{font-size:13.5px;font-weight:650;color:#e3e9ef}
+.rwhere{color:#8794a1;margin-top:2px}
+.rprompt{font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;background:#0f1214;border:1px solid #262c32;
+  border-radius:6px;padding:7px 9px;color:#cdd6df;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow-y:auto;
+  user-select:text}
+.rprompt.neg{color:#d9a8a3;max-height:90px}
+.rblks{display:flex;flex-wrap:wrap;gap:4px}
+.rblk{font-size:11px;border:1px solid #333b43;border-radius:5px;padding:1px 7px;display:inline-flex;gap:5px;align-items:center}
+.rblk i{width:7px;height:7px;border-radius:50%;background:#738496}
+.rblk.neg{color:#d9a8a3}
+.rkv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px}
+.rkv span:nth-child(odd){color:#7d8996}
+.rtags{display:flex;flex-wrap:wrap;gap:4px}
+.rtags span{font-size:10.5px;border-radius:20px;padding:0 8px;background:#1f2a38;color:#8fb6ee}
 .vimg{max-width:calc(100% - 140px);max-height:100%;object-fit:contain;border-radius:6px;box-shadow:0 18px 60px rgba(0,0,0,.6);cursor:default}
 .varr{flex-shrink:0;width:42px;height:42px;border-radius:50%;border:1px solid #454f59;background:rgba(29,33,37,.85);color:#c7d1db;
   font-size:20px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}

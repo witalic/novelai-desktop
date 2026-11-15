@@ -16,5 +16,5 @@ function ago(t: number, now: number): string {
   if (min < 1) return 'just now'
   if (min < 60) return `${min} min ago`
   if (min < 24 * 60) return `${Math.floor(min / 60)} h ago`
-  return new Date(t).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
+  return new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) // the app's language
 }

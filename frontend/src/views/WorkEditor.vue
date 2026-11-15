@@ -15,9 +15,12 @@ import GalleryStack from '../components/GalleryStack.vue'
 import { imageMeta } from '../canvas/imageMeta'
 import { gridsOf, purgeImages, removeIdFromGrids } from '../vault/workOps'
 import { applyAgentOpsToDoc, catchUpQueue } from '../vault/agentOps'
+import { imageRecipe } from '../vault/recipe'
 import type { ImageNodeData, WorkDoc, ZoneNode } from '../types'
 
-const props = defineProps<{ workId: string; initialMode?: 'view' | 'edit' }>()
+// `showImage`: one of its images to show in the viewer once the work is read (the Gallery's "Go to work") — a new
+// nonce shows it again.
+const props = defineProps<{ workId: string; initialMode?: 'view' | 'edit'; showImage?: { id: string; nonce: number } | null }>()
 const emit = defineEmits<{ back: []; openInGenerate: [string] }>()
 const { push } = useToast()
 const { confirm } = useConfirm()
@@ -39,6 +42,7 @@ async function load() {
     doc.value = d
     await nextTick()
     ready.value = true
+    if (props.showImage) viewImage(props.showImage.id)
   } catch (e) {
     push(e instanceof Error ? e.message : 'Could not load work', 'err')
     emit('back')
@@ -46,7 +50,12 @@ async function load() {
     loading.value = false
   }
 }
-watch(() => props.workId, load, { immediate: true })
+watch(() => props.workId, async (_id, before) => {
+  // Another work (the Gallery's "Go to work"): the one shown first saves what it still had pending.
+  if (before && saveTimer && doc.value) { clearTimeout(saveTimer); saveTimer = null; await flush() }
+  await load()
+}, { immediate: true })
+watch(() => props.showImage?.nonce, () => { if (props.showImage && ready.value) viewImage(props.showImage.id) })
 
 // ---- gallery model over the WorkDoc (mutated in place; the deep watch below autosaves) ----
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -215,6 +224,8 @@ function viewImage(startId: string) {
   const download = { label: 'Download', icon: '⤓', run: (it: { url: string }) => downloadUrls([it.url]) }
   openViewer({
     source: grid ? `Grid ${at + 1}` : 'Quick access',
+    recipe: (it) => imageRecipe(galleryImages.value.find((im) => im.id === it.id)?.data,
+      { work: doc.value?.title || 'Untitled', where: grid ? `album ${at + 1}` : 'Quick access (unsorted)' }),
     items: () => ids().map((id) => galleryImages.value.find((im) => im.id === id)).filter((im) => !!im).map((im) => ({
       id: im!.id, url: im!.data.url || '', favorite: !!im!.data.favorite, cover: im!.id === doc.value?.preview_image_id,
       meta: imageMeta(im!.data.snapshot?.params as { width?: number; height?: number; seed?: number } | undefined, im!.data.created_at),

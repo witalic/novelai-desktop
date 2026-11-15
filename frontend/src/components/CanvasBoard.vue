@@ -39,20 +39,24 @@ import GalleryStack from './GalleryStack.vue'
 import CombosWidget from './CombosWidget.vue'
 import ComboDialog from './ComboDialog.vue'
 import { removeIdFromGrids } from '../vault/workOps'
+import { imageRecipe } from '../vault/recipe'
 import BlockEditorModal from './BlockEditorModal.vue'
 import { newId } from '../vault/ids'
 import { onBeforeQuit } from '../electron'
 import type { NavTarget } from '../App.vue'
 import type {
-  GenResult, LibraryBlock, PanelParams, PersistedCombo, PersistedComboBlock, PersistedComponent, SnapshotData, WorkDoc,
+  GenResult, ImageNodeData, LibraryBlock, PanelParams, PersistedCombo, PersistedComboBlock, PersistedComponent, SnapshotData,
+  WorkDoc,
 } from '../types'
 
 const toast = useToast()
-const { confirm } = useConfirm()
+const { ask, confirm } = useConfirm()
 const props = defineProps<{
   drafts: GenResult[]; busy: boolean; error: string; preview: string; params: PanelParams
   openWork: WorkDoc | null
   keepDrafts?: { ids: string[]; nonce: number } | null
+  // The Gallery's "Recipe to Generate": an image's blocks for this station (and its settings, if the user wants)
+  recipe?: { components: PersistedComponent[]; params: Record<string, unknown>; nonce: number } | null
 }>()
 const emit = defineEmits<{
   generate: [{ positive: string; negative: string; snapshot: SnapshotData }]
@@ -66,6 +70,7 @@ const emit = defineEmits<{
   'view-stack': [string] // open the image viewer over the stack at this draft (the view owns the stack)
   'agent-params': [{ workId: string; set: Partial<PanelParams>; presetId?: string }] // an agent set the station's settings (the view owns them)
   'work-gone': [string] // the open work left the vault; the canvas keeps its unsaved changes as a new work (keepAsNew)
+  'recipe-params': [Record<string, unknown>] // an image's settings, for the station (the view owns them)
 }>()
 
 const {
@@ -355,6 +360,28 @@ function keepDraftsBatch(ids: string[], pos?: { x: number; y: number }) {
   })
 }
 watch(() => props.keepDrafts?.nonce, () => { if (props.keepDrafts?.ids.length) keepDraftsBatch(props.keepDrafts.ids) })
+
+// An image's recipe from the Gallery (design/global-gallery.html §5): its blocks replace the station's — its settings
+// too, if the user leaves that on, never its seed (new images, not the same one).
+watch(() => props.recipe?.nonce, async () => {
+  const r = props.recipe
+  if (!r) return
+  const blocks = comboBlocksFromComponents(r.components)
+  if (!blocks.length) { toast.push('This image has no recipe to put on the station', 'err'); return }
+  const had = compBlocks.value.length
+  const n = (k: number, word: string) => `${k} ${word}${k === 1 ? '' : 's'}`
+  const { ok, checked } = await ask({
+    title: 'Put this image’s recipe on the station?',
+    message: `${title.value ? `“${title.value}”` : 'A new work'} is open in Generate. ${had
+      ? `Its ${n(had, 'composition block')} ${had === 1 ? 'is' : 'are'} replaced with the image’s ${n(blocks.length, 'block')}`
+      : `The image’s ${n(blocks.length, 'block')} go onto its station`}; the Library keeps everything.`,
+    confirmLabel: 'Put on the station',
+    check: { label: 'Also its settings', hint: 'Model, size, steps, guidance, sampler — not the seed: you get new images, not the same one.', checked: true },
+  })
+  if (!ok) return
+  replaceComposition(blocks, undefined)
+  if (checked) emit('recipe-params', r.params)
+})
 
 // Shift an image right until it no longer overlaps a sibling image (same parent), using real sizes.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1282,6 +1309,8 @@ function viewGallery(startId: string) {
   const { source, ids } = gallerySetOf(startId)
   openViewer({
     source,
+    recipe: (it) => imageRecipe(findNode(it.id)?.data as ImageNodeData | undefined,
+      { work: title.value || 'Untitled', where: source === 'Quick access' ? 'Quick access (unsorted)' : source.toLowerCase().replace('grid', 'album') }),
     items: () => ids().map((id) => findNode(id)).filter((n) => n?.type === 'image' && n.data.url).map((n) => {
       const params = (n!.data.snapshot as SnapshotData | undefined)?.params as { width?: number; height?: number; seed?: number } | undefined
       return { id: n!.id, url: n!.data.url as string, favorite: !!n!.data.favorite, cover: n!.id === shownCover.value,

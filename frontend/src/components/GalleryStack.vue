@@ -7,6 +7,7 @@
 import { computed, nextTick, onMounted, onBeforeUnmount, ref } from 'vue'
 import { hiddenBlockIds } from './galleryBlocks'
 import { newId } from '../vault/ids'
+import { thumbSrc } from '../vault/thumbs'
 import type { GalleryBlock, GalleryMetaField, ImageNodeData, ZoneNode } from '../types'
 
 // Minimal shape the stack reads off a gallery image node (avoids coupling to Vue Flow's node type).
@@ -94,30 +95,14 @@ function gridHidden(b: GalleryBlock): number {
   return b.type === 'grid' && b.collapsed ? Math.max(0, gridImages(b).length - b.cols) : 0
 }
 
-const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
-
-// Thumbnails are sized CLOSE to the tile they render into — deliberately NOT oversized. When many tiles
-// decode at once, Chromium downsamples decoded bitmaps under its memory budget → pixelation (ui-design.md:
-// one image in the previewer stays sharp, a full grid crushes). The escape is a small source: a thumbnail
-// near the display size leaves Chromium nothing to sub-sample. So we target ~1.5× the physical tile width
-// (enough to stay crisp, small enough that 30+ tiles fit the budget) and snap to a bucket for cache reuse.
-// Going bigger (a fat oversample) reads sharper for ONE tile but reintroduces the crush across a grid. A
-// `data:` URL can't be server-resized, so it's used as-is.
+// Thumbnails sized near the tile (vault/thumbs.ts — why bigger isn't sharper across a grid).
 const GIMG_GAP = 7 // .gimgs grid gap (px) — subtracted so the tile width is exact
 const QUICK_TILE_PX = 95 // .quickpanel is a fixed 212px rail, .qpgrid is 2 cols → ~95px tiles
-const _OVERSAMPLE = 1.5 // physical-tile → thumbnail-width factor: crisp but memory-light (see note above)
-const _BUCKETS = [128, 192, 256, 320, 384, 512, 640, 768] // past the top the original wins (few big tiles = no crush)
 
 const bodyW = ref(0) // measured content width of .gnbody (ResizeObserver); tile width = (bodyW - gaps) / cols
 function gridTilePx(cols: number): number {
   const w = bodyW.value || (props.embedded ? 1400 : 700) // fallback before the first measure
   return Math.max(48, (w - (cols - 1) * GIMG_GAP) / cols)
-}
-function thumbSrc(url: string | undefined, tilePx: number): string {
-  if (!url || url.startsWith('data:')) return url || ''
-  const target = Math.ceil(tilePx * dpr * _OVERSAMPLE)
-  for (const b of _BUCKETS) if (b >= target) return `${url}?w=${b}`
-  return url // tile larger than any bucket → the full-resolution original is the sharpest option
 }
 
 let _ro: ResizeObserver | null = null

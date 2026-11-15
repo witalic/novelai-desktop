@@ -315,6 +315,48 @@ export interface WorksPage {
   in_vault: number // every work, the filters aside
 }
 
+// ---- the global gallery (backend /api/vault/gallery) ----
+export interface GalleryAlbum { grid_id: string; number: number; heading: string | null; section: string | null }
+
+export interface GalleryImage {
+  image_id: string
+  work_id: string
+  work_title: string
+  url: string
+  favorite: boolean
+  created_at: string
+  ar: number | null
+  model: string | null
+  album: GalleryAlbum | null // null: unsorted — in its work's Quick access
+}
+
+export interface GalleryPage {
+  items: GalleryImage[]
+  total: number
+  page: number
+  per_page: number
+  next: string | null // the cursor of the page after this one; null: the last
+}
+
+export interface GalleryFacets {
+  total: number
+  unsorted: number // images in no album that match the rest of the filters
+  tags: TagCount[]
+  models: TagCount[] // each model's count leaves the model filter out — what picking it would list
+  works: { id: string; title: string; count: number }[]
+}
+
+// One gallery image with its recipe: the prompt as sent, the blocks it was made of, its settings.
+export interface ImageDetail extends GalleryImage {
+  description: string
+  tags: string[]
+  block_tags: string[]
+  positive: string
+  negative: string
+  components: PersistedComponent[]
+  params: Record<string, unknown>
+}
+
 // ---- library ----
 export interface LibraryBlock {
   id: string
