@@ -60,6 +60,7 @@ class ModelSpec(BaseModel):
     uc_presets: list[int]  # ucPreset values offered for this model (v4.5 Curated has no Furry Focus)
     steps: Range
     scale: Range
+    cfg_rescale: bool = True  # False: the model takes none (V5 Full Medium)
 
 
 class Catalog(BaseModel):
@@ -122,6 +123,12 @@ _MODELS = [
     ModelSpec(id="nai-diffusion-5-full", label="NAI Diffusion 5 — Full",
               family="v5", tokenizer="qwen", token_limit=1471, negative_token_limit=1471,
               samplers=_V4_SAMPLERS, uc_presets=_UC_ALL, steps=_STEPS, scale=_SCALE_V5),
+    # V5 Full at medium effort: cheaper (novelai.cost), with the settings NovelAI's client fixes for it — 14 steps,
+    # Euler Ancestral, the Heavy UC preset, no CFG rescale (its model capabilities, read 2026-11-15).
+    ModelSpec(id="nai-diffusion-5-full-medium", label="NAI Diffusion 5 — Full (medium effort)",
+              family="v5", tokenizer="qwen", token_limit=1471, negative_token_limit=1471,
+              samplers=["k_euler_ancestral"], uc_presets=[4], steps=Range(min=14, max=14, default=14),
+              scale=_SCALE_V5, cfg_rescale=False),
     ModelSpec(id="nai-diffusion-5-curated", label="NAI Diffusion 5 — Curated",
               family="v5", tokenizer="qwen", token_limit=703, negative_token_limit=703,
               samplers=_V4_SAMPLERS, uc_presets=_UC_ALL, steps=_STEPS, scale=_SCALE_V5),

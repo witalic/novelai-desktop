@@ -2,7 +2,7 @@
 /* The generation-param form (model/size/quality/uc + advanced). Extracted from ParamsPanel so the
  * Tools panel and the preset editor share one set of controls. Mutates `params` in place.
  * `hideSeed` drops the seed field — a preset has no seed. */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Dropdown from './Dropdown.vue'
 import { useCatalog } from '../composables/useCatalog'
 import type { PanelParams } from '../types'
@@ -21,6 +21,17 @@ function parseSeed(v: string): number | null {
 
 // The selected model (may be absent from the catalog for an old preset/work — see the synthetic option).
 const currentModel = computed(() => catalog.value?.models.find((m) => m.id === props.params.model) ?? null)
+
+// What a model fixes (V5 Full Medium: 14 steps, Euler Ancestral, Heavy, no CFG rescale) is set as it is picked — as
+// NovelAI's own client does; the server applies it to the request anyway, this keeps the panel and the recipe true.
+watch(() => currentModel.value?.id, () => {
+  const m = currentModel.value
+  if (!m) return
+  if (m.steps.min === m.steps.max) props.params.steps = m.steps.min
+  if (m.samplers.length === 1) props.params.sampler = m.samplers[0]
+  if (m.uc_presets.length === 1) props.params.uc_preset = m.uc_presets[0]
+  if (!m.cfg_rescale) props.params.cfg_rescale = 0
+}, { immediate: true })
 
 // A stored value not in the catalog gets a synthetic "(unavailable)" option so it stays selected and
 // visible — never silently reset (design-prefs). Model dropdown:
@@ -156,7 +167,7 @@ const clampDim = (n: number) => {
             <button class="mini" title="Clear" @click="params.seed = null">✕</button>
           </div>
         </div>
-        <div class="field">
+        <div v-if="currentModel?.cfg_rescale !== false" class="field">
           <span class="label">Prompt guidance rescale <span class="v">{{ params.cfg_rescale.toFixed(2) }}</span></span>
           <input type="range" min="0" max="1" step="0.02" v-model.number="params.cfg_rescale" />
         </div>

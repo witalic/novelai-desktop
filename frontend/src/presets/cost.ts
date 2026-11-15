@@ -2,13 +2,16 @@
  *
  * NovelAI's own rule as its web client computes it (novelai.net/image, read 2026-11-15); the server keeps a copy in
  * backend/app/novelai/cost.py — keep the two in step. NovelAI can re-tune it, so the balance stays the final word.
- * A V5 image costs 1.5× the area-and-steps base. NovelAI also refuses an image over 140 Anlas — the server's copy
- * checks that; the UI doesn't flag it yet. SMEA doesn't exist on v4+, so its factor is 1. */
+ * A V5 image costs 1.5× the area-and-steps base and V5 Full Medium is billed as 23 steps and 1.75× cheaper. NovelAI
+ * also refuses an image over 140 Anlas — the server's copy checks that; the UI doesn't flag it yet. SMEA doesn't
+ * exist on v4+, so its factor is 1. */
 import type { PanelParams, PresetParams } from '../types'
 
 const A = 2951823174884865e-21 // linear-in-area term
 const B = 5.753298233447344e-7 // area × steps term
 const V5_FACTOR = 1.5
+const MEDIUM_STEPS = 23
+const MEDIUM_DIVISOR = 1.75
 
 export type CostInputs = Pick<PanelParams | PresetParams, 'model' | 'width' | 'height' | 'steps' | 'n_samples'>
 
@@ -16,7 +19,9 @@ const isV5 = (model: string) => model.startsWith('nai-diffusion-5')
 
 function perImageCost(p: CostInputs): number {
   const area = p.width * p.height
-  const base = Math.ceil(A * area + B * area * p.steps)
+  const base = p.model === 'nai-diffusion-5-full-medium'
+    ? (A * area + B * area * MEDIUM_STEPS) / MEDIUM_DIVISOR // not rounded before the V5 factor
+    : Math.ceil(A * area + B * area * p.steps)
   return Math.max(isV5(p.model) ? Math.ceil(base * V5_FACTOR) : base, 2) // ≥ 2 Anlas per image
 }
 

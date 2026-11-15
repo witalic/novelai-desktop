@@ -2,7 +2,7 @@
 charged: the V5 and V4.5 figures were read off the account's balance around real generations (2026-11-15)."""
 from app.novelai.cost import anlas_cost
 
-V5, V45 = "nai-diffusion-5-full", "nai-diffusion-4-5-full"
+V5, V45, MEDIUM = "nai-diffusion-5-full", "nai-diffusion-4-5-full", "nai-diffusion-5-full-medium"
 
 
 def test_v5_costs_half_again_the_base_that_v4_5_pays():
@@ -10,6 +10,11 @@ def test_v5_costs_half_again_the_base_that_v4_5_pays():
     assert anlas_cost(V5, 832, 1216, 28, 1, opus=False) == 30
     assert anlas_cost(V5, 1088, 1920, 28, 1, opus=False) == 60
     assert anlas_cost("nai-diffusion-5-curated", 832, 1216, 28, 1, opus=False) == 30
+
+
+def test_v5_full_medium_is_billed_as_23_steps_and_cheaper():
+    assert anlas_cost(MEDIUM, 832, 1216, 14, 1, opus=False) == 15
+    assert anlas_cost(MEDIUM, 1088, 1920, 14, 1, opus=False) == 29
 
 
 def test_opus_gets_one_sample_free_within_its_limits():

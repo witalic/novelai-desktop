@@ -27,6 +27,13 @@ def test_model_samplers_reference_known_ids_and_exclude_smea():
         assert not any("smea" in s for s in m.samplers), "v4 models must not offer SMEA"
 
 
+def test_medium_effort_offers_only_what_novelai_fixes_for_it():
+    medium = next(m for m in get_catalog().models if m.id == "nai-diffusion-5-full-medium")
+    assert (medium.family, medium.tokenizer, medium.token_limit) == ("v5", "qwen", 1471)  # as V5 Full
+    assert (medium.steps.min, medium.steps.max, medium.samplers, medium.uc_presets, medium.cfg_rescale) == (
+        14, 14, ["k_euler_ancestral"], [4], False)
+
+
 def test_default_model_is_listed():
     cat = get_catalog()
     assert cat.default_model in {m.id for m in cat.models}

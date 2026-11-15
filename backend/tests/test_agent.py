@@ -1013,6 +1013,24 @@ async def test_a_used_up_v5_usage_limit_ends_opus_free_v5_generations(mock_novel
     assert "not on V5" in acct["free_generations"]
 
 
+async def test_medium_effort_generates_with_its_fixed_settings_and_costs_less(mock_novelai):
+    settings = mock_novelai
+    seed(settings)
+    paid_allowed(settings)
+    fav = {"preset_id": "preset-fav", "model": "nai-diffusion-5-full-medium", "width": 1088, "height": 1920}
+    presets.save_preset(settings, PresetDoc(id="preset-fav", name="Fav", params=PresetParams(
+        model="nai-diffusion-5-full", width=1088, height=1920, steps=28, scale=5.0, sampler="k_dpmpp_2s_ancestral",
+        cfg_rescale=0.2, uc_preset=3, dedupe=True)))
+    async with mcp_client(settings) as c:
+        est = await call_json(c, "estimate_cost", {"work_id": "work-1", **fav})
+        out = await call_json(c, "generate_images", {"work_id": "work-1", "blocks": [{"text": "a"}], "paid": True, **fav})
+    assert (est["anlas"], est["params"]["steps"], out["anlas"]) == (29, 14, 29)  # Full would be 60
+    snap = service.load_work(settings, "work-1").snapshots[-1]
+    assert {k: snap.params[k] for k in ("model", "steps", "sampler", "cfg_rescale", "uc_preset", "scale")} == {
+        "model": "nai-diffusion-5-full-medium", "steps": 14, "sampler": "k_euler_ancestral", "cfg_rescale": 0.0,
+        "uc_preset": 4, "scale": 5.0}  # the recipe is what was generated; the rest is the preset's
+
+
 async def test_novelai_refuses_an_image_over_140_anlas_and_so_does_the_agent(mock_novelai):
     settings = mock_novelai
     seed(settings)

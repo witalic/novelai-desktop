@@ -2,6 +2,8 @@
 (v4-shaped, v4.5/v5) request body from it. Defaults match a no-Anlas Opus generation (832x1216, 28 steps)."""
 from pydantic import BaseModel, Field
 
+from app.novelai.catalog import get_catalog
+
 
 class GenerateParams(BaseModel):
     prompt: str = Field(min_length=1)
@@ -18,3 +20,20 @@ class GenerateParams(BaseModel):
     cfg_rescale: float = Field(default=0.0, ge=0, le=1)
     quality_toggle: bool = True
     uc_preset: int = Field(default=4, ge=0, le=7)  # Heavy=4, Light=5, None=3, Human=6, Furry=7
+
+    def for_model(self) -> "GenerateParams":
+        """These params as the model takes them: what it fixes (V5 Full Medium — 14 steps, Euler Ancestral, the Heavy
+        UC preset, no CFG rescale) set as NovelAI's own client sends it, so a recipe records what was generated."""
+        spec = next((m for m in get_catalog().models if m.id == self.model), None)
+        if spec is None:
+            return self
+        fixed: dict = {}
+        if spec.steps.min == spec.steps.max:
+            fixed["steps"] = int(spec.steps.min)
+        if len(spec.samplers) == 1:
+            fixed["sampler"] = spec.samplers[0]
+        if len(spec.uc_presets) == 1:
+            fixed["uc_preset"] = spec.uc_presets[0]
+        if not spec.cfg_rescale:
+            fixed["cfg_rescale"] = 0.0
+        return self.model_copy(update=fixed) if fixed else self

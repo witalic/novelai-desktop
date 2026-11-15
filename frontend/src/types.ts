@@ -47,6 +47,7 @@ export interface CatalogModel {
   uc_presets: number[] // ucPreset values offered for this model (v4.5 Curated has no Furry Focus)
   steps: CatalogRange
   scale: CatalogRange
+  cfg_rescale: boolean // false: the model takes none (V5 Full Medium)
 }
 export interface Catalog {
   models: CatalogModel[]

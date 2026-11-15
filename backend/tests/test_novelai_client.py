@@ -39,6 +39,18 @@ def test_presets_are_baked_into_the_sent_text():
     assert (p["tag_hint_qt"], p["tag_hint_uc_preset"]) == (1, 2)  # standard quality, heavy UC
 
 
+def test_medium_effort_is_sent_with_the_settings_novelai_fixes_for_it():
+    asked = GenerateParams(prompt="1girl", model="nai-diffusion-5-full-medium", steps=28,
+                           sampler="k_dpmpp_2s_ancestral", cfg_rescale=0.2, uc_preset=3)  # a Fav-like preset
+    p = build_body(asked)["parameters"]
+    assert (p["steps"], p["sampler"], p["cfg_rescale"], p["tag_hint_uc_preset"]) == (14, "k_euler_ancestral", 0.0, 2)
+    assert p["uc"].startswith("nsfw, lowres, artistic error")  # Heavy, as for V5 Full
+    assert asked.for_model().model_dump(include={"steps", "sampler", "cfg_rescale", "uc_preset"}) == {
+        "steps": 14, "sampler": "k_euler_ancestral", "cfg_rescale": 0.0, "uc_preset": 4}
+    full = GenerateParams(prompt="x", steps=28, sampler="k_dpmpp_2s_ancestral", cfg_rescale=0.2)
+    assert full.for_model() == full  # a model that fixes nothing keeps what was asked
+
+
 def test_uc_preset_clamped_to_model_offering():
     # V4.5 Curated has no Furry Focus (7) → build_body must not apply it (undefined on that model, M3).
     curated = build_body(GenerateParams(prompt="x", negative_prompt="bad", model="nai-diffusion-4-5-curated", uc_preset=7))

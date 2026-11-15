@@ -13,6 +13,11 @@ describe('anlasCost', () => {
     expect(anlasCost({ ...v5, width: 1088, height: 1920 })).toBe(60)
     expect(anlasCost({ ...v5, model: 'nai-diffusion-5-curated', width: 832, height: 1216 })).toBe(30)
   })
+  it('V5 Full Medium is billed as 23 steps and cheaper', () => {
+    const medium = { ...v5, model: 'nai-diffusion-5-full-medium', steps: 14 }
+    expect(anlasCost({ ...medium, width: 832, height: 1216 })).toBe(15)
+    expect(anlasCost({ ...medium, width: 1088, height: 1920 })).toBe(29)
+  })
   it('V4.5 pays the plain base, even for a big image', () => {
     expect(anlasCost({ ...v45, width: 2048, height: 1536, steps: 50 })).toBe(100)
   })

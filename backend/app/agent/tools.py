@@ -1100,7 +1100,7 @@ def _gen_params(doc: WorkDoc, args: dict, prompt: str, negative: str = "",
                 preset: PresetParams | None = None) -> GenerateParams:
     """The work's generation settings (the station's), a preset's over them, the call's own on top — except the
     image count: one image unless the call asks for more (a station's or preset's count would quietly multiply
-    the cost)."""
+    the cost). Then what the model fixes (V5 Full Medium), so the cost and the recipe are what is generated."""
     values = {k: doc.params[k] for k in _GEN_PARAMS if k in doc.params and k != "n_samples"}
     if preset is not None:
         values.update(preset.model_dump(include=set(_GEN_PARAMS) - {"n_samples"}))
@@ -1112,7 +1112,7 @@ def _gen_params(doc: WorkDoc, args: dict, prompt: str, negative: str = "",
         raise ToolError(f"Bad generation setting '{err['loc'][0]}': {err['msg']}.") from exc
     if params.model not in {m.id for m in get_catalog().models}:
         raise ToolError(f"Unknown model “{params.model}” — get_catalog lists them.")
-    return params
+    return params.for_model()
 
 
 _MAX_SEED = 4_294_967_295

@@ -2,14 +2,17 @@
 2026-11-15) and the server's copy of ``frontend/src/presets/cost.ts`` (keep the two in step), for deciding what an
 agent may spend before anything is sent. NovelAI can re-tune it: the balance stays the final word.
 
-A V5 image costs 1.5× the area-and-steps base, and NovelAI refuses an image over 140 Anlas. Opus (tier 3, active) gets
-one sample free at ≤ 1024×1024 and ≤ 28 steps — on V5 only while its usage limit isn't used up.
+A V5 image costs 1.5× the area-and-steps base, V5 Full Medium is billed as 23 steps and 1.75× cheaper, and NovelAI
+refuses an image over 140 Anlas. Opus (tier 3, active) gets one sample free at ≤ 1024×1024 and ≤ 28 steps — on V5
+only while its usage limit isn't used up.
 """
 import math
 
 _A = 2951823174884865e-21  # linear-in-area term
 _B = 5.753298233447344e-7  # area × steps term
 _V5_FACTOR = 1.5
+_MEDIUM_STEPS = 23
+_MEDIUM_DIVISOR = 1.75
 MAX_PER_IMAGE = 140
 FREE_AREA = 1024 * 1024
 FREE_STEPS = 28
@@ -21,7 +24,10 @@ def is_v5(model: str) -> bool:
 
 def per_image(model: str, width: int, height: int, steps: int) -> int:
     area = width * height
-    base = math.ceil(_A * area + _B * area * steps)
+    if model == "nai-diffusion-5-full-medium":
+        base = (_A * area + _B * area * _MEDIUM_STEPS) / _MEDIUM_DIVISOR  # not rounded before the V5 factor
+    else:
+        base = math.ceil(_A * area + _B * area * steps)
     return max(math.ceil(base * _V5_FACTOR) if is_v5(model) else base, 2)  # ≥ 2 Anlas per image
 
 

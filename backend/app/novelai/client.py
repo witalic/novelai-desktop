@@ -45,7 +45,9 @@ def parse_subscription(data: dict) -> dict:
 def build_body(params: GenerateParams) -> dict:
     """Assemble the NovelAI generate-image body (the v4 structured shape, shared by v4.5 and v5) from flat
     params. Quality tags and the UC preset are baked into the prompt text (``augment``) — the API ignores
-    the toggles themselves; ``tag_hint_*`` only record which presets were applied."""
+    the toggles themselves; ``tag_hint_*`` only record which presets were applied. What the model fixes is applied
+    first (``GenerateParams.for_model``)."""
+    params = params.for_model()
     seed = params.seed if params.seed is not None else secrets.randbelow(2**32)
     text = augment(params.model, params.prompt, params.negative_prompt,
                    quality=params.quality_toggle, uc_preset=params.uc_preset)

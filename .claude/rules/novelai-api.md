@@ -18,7 +18,10 @@ There is **no official REST spec** — `docs.novelai.net/.../scripting/api-refer
   Subscription Anlas reset to zero when a subscription ends; purchased Anlas stay.
 - **Cost** (the web client's own function, read 2026-11-15; copies in `novelai/cost.py` + `presets/cost.ts`):
   base = `ceil(2.9518e-6·area + 5.7533e-7·area·steps)`; **any V5 model ×1.5** after that ceil, then ceil;
-  ≥ 2 Anlas an image; **over 140 an image NovelAI refuses it**. Opus never discounts a paid image — it only
+  ≥ 2 Anlas an image; **over 140 an image NovelAI refuses it**. **V5 Full Medium** (`nai-diffusion-5-full-medium`,
+  the web's "Medium effort"): billed as 23 steps, ÷ 1.75, not rounded before the ×1.5 — and NovelAI fixes its
+  settings: 14 steps, `k_euler_ancestral`, the Heavy UC preset, no CFG rescale (`GenerateParams.for_model`). Its PNGs
+  say `NovelAI Diffusion V5 70AB5786`. Opus never discounts a paid image — it only
   makes one sample free (≤ 1024×1024, ≤ 28 steps, no character reference), and on V5 only while
   `usage.isNegative` is false. Verify a cost change against the balance, not the estimate: the community
   formula (novelai-api / novelai-python) lacks the V5 factor and under-counted every V5 image by a third.
