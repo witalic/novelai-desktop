@@ -33,8 +33,10 @@ def main() -> None:
     # the object form is equivalent.
     from app.main import app
     # The open app holds an endless event stream (/api/agent/events): a bounded graceful shutdown ends it instead
-    # of waiting on it forever.
-    uvicorn.run(app, host=host, port=port, log_level=settings.log.level.lower(), timeout_graceful_shutdown=3)
+    # of waiting on it forever. No log_config: uvicorn's own loggers (startup failures, a request's traceback) then
+    # reach ours — the console and the log file; no access log, one line per thumbnail would flood the file.
+    uvicorn.run(app, host=host, port=port, log_level=settings.log.level.lower(), timeout_graceful_shutdown=3,
+                log_config=None, access_log=False)
 
 
 if __name__ == "__main__":
