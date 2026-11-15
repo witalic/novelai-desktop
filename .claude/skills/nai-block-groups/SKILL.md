@@ -51,8 +51,15 @@ The single-block rule — one `1.3::` anchor per block — is for standalone blo
 
 ## Verify
 
-Generate a few free drafts **from the combination itself** (not from hand-typed text) and compare them
-with the recipe's results. The group is done only when they match.
+1. **Match the tested images (free):** `list_images` with the new `combination_id` lists the images whose
+   prompt is exactly that combination's blocks. The recipe's own image must show up there. If it doesn't,
+   some block's text differs from what was generated — fix the block, not the check. A combination that
+   deliberately adds a later tested change (a negative tag found afterwards) won't match its older image;
+   say so.
+2. **Drafts from the combination itself** (not from hand-typed text) — only when they are free (Opus), or
+   with the owner's go-ahead for paid ones. Compare them with the recipe's results.
+
+The group is done when its combinations reproduce the tested prompts.
 
 ## Checklist
 
@@ -60,4 +67,4 @@ with the recipe's results. The group is done only when they match.
 - [ ] Members follow nai-block-authoring; the style is one subject-free block; tags, not sentences.
 - [ ] Weights are the tested ones, 1–3 across the whole group; no anchor added just for the rule.
 - [ ] Combination saved in prompt order (core + examples for a style kit); re-saved after any member edit.
-- [ ] Free drafts from the combination match the recipe.
+- [ ] `list_images` by the combination finds the recipe's image (or the difference is a known later change).
