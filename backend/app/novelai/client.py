@@ -3,16 +3,19 @@
 We build the request body ourselves rather than depend on a third-party SDK; community SDKs
 (``aedial/novelai-api``, ``LlmKira/novelai-python``) are consulted only as field documentation.
 """
+import asyncio
+import contextlib
 import json
 import logging
 import secrets
+import weakref
 from collections.abc import AsyncIterator
 
 import httpx
 
 from app.novelai._png import unzip_pngs
 from app.novelai.augment import augment
-from app.novelai.errors import map_response_error
+from app.novelai.errors import describe, map_response_error
 from app.novelai.models import GenerateParams
 
 log = logging.getLogger(__name__)
@@ -81,6 +84,38 @@ def build_body(params: GenerateParams) -> dict:
     return {"input": text.positive, "model": params.model, "action": "generate", "parameters": parameters}
 
 
+_RETRY_PAUSE_S = 1.0  # before the one retry of a connection that couldn't be made
+# One connection pool per event loop (the app's and its agent listener share one): a request right after another —
+# the subscription read before a generation — reuses the open connection instead of a fresh TLS handshake, which
+# NovelAI's host now and then drops ("[SSL: UNEXPECTED_EOF_WHILE_READING]", seen 2026-11-15).
+_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[tuple[str, float], httpx.AsyncClient]]" = (
+    weakref.WeakKeyDictionary())
+
+
+def _pooled(base_url: str, timeout: float) -> httpx.AsyncClient:
+    per_loop = _pools.setdefault(asyncio.get_running_loop(), {})
+    http = per_loop.get((base_url, timeout))
+    if http is None or http.is_closed:
+        http = per_loop[(base_url, timeout)] = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+    return http
+
+
+async def close_pools() -> None:
+    """Close this event loop's pooled connections (the app's shutdown)."""
+    for http in _pools.pop(asyncio.get_running_loop(), {}).values():
+        await http.aclose()
+
+
+async def _send(http: httpx.AsyncClient, request: httpx.Request, *, stream: bool = False) -> httpx.Response:
+    """Send, retrying once when no connection could be made: the request never left, so nothing was charged."""
+    try:
+        return await http.send(request, stream=stream)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        log.warning("Connecting to NovelAI failed (%s) — retrying once", describe(exc))
+        await asyncio.sleep(_RETRY_PAUSE_S)
+        return await http.send(request, stream=stream)
+
+
 class NovelAIClient:
     is_mock = False
 
@@ -97,14 +132,20 @@ class NovelAIClient:
         self._timeout = timeout_s
         self._transport = transport  # injected in tests (httpx.MockTransport)
 
+    @contextlib.asynccontextmanager
+    async def _http(self) -> AsyncIterator[httpx.AsyncClient]:
+        if self._transport is None:
+            yield _pooled(self._base_url, self._timeout)
+            return
+        async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout, transport=self._transport) as http:
+            yield http  # a test's own transport gets a client of its own
+
     async def get_subscription(self) -> dict:
         """Subscription tier + remaining Anlas. Drives the cost estimate's Opus free tier and the
         balance display. Note: served from the image host, not api.novelai.net."""
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with httpx.AsyncClient(
-            base_url=self._base_url, timeout=self._timeout, transport=self._transport
-        ) as http:
-            resp = await http.get(_SUBSCRIPTION_ENDPOINT, headers=headers)
+        async with self._http() as http:
+            resp = await _send(http, http.build_request("GET", _SUBSCRIPTION_ENDPOINT, headers=headers))
         if resp.status_code != 200:
             raise map_response_error(resp.status_code, resp.text)
         return parse_subscription(resp.json())
@@ -112,10 +153,8 @@ class NovelAIClient:
     async def generate(self, params: GenerateParams) -> list[bytes]:
         body = build_body(params)
         headers = {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(
-            base_url=self._base_url, timeout=self._timeout, transport=self._transport
-        ) as http:
-            resp = await http.post(_ENDPOINT, json=body, headers=headers)
+        async with self._http() as http:
+            resp = await _send(http, http.build_request("POST", _ENDPOINT, json=body, headers=headers))
         if resp.status_code != 200:
             raise map_response_error(resp.status_code, resp.text)
         images = unzip_pngs(resp.content)
@@ -137,10 +176,10 @@ class NovelAIClient:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
-        async with httpx.AsyncClient(
-            base_url=self._base_url, timeout=self._timeout, transport=self._transport
-        ) as http:
-            async with http.stream("POST", _STREAM_ENDPOINT, json=body, headers=headers) as resp:
+        async with self._http() as http:
+            resp = await _send(http, http.build_request("POST", _STREAM_ENDPOINT, json=body, headers=headers),
+                               stream=True)
+            try:
                 if resp.status_code != 200:
                     raise map_response_error(resp.status_code, (await resp.aread()).decode("utf-8", "replace"))
                 async for line in resp.aiter_lines():
@@ -156,4 +195,6 @@ class NovelAIClient:
                     elif kind == "final":
                         # samp lets the caller stamp the per-sample seed (NovelAI derives sample k as seed+k).
                         yield {"type": "final", "samp": data.get("samp_ix", 0), "mime": "image/png", "image": data.get("image", "")}
+            finally:
+                await resp.aclose()  # hands a pooled connection back
         log.info("NovelAI stream complete [%dx%d, %d steps]", params.width, params.height, params.steps)

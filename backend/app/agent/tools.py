@@ -37,7 +37,7 @@ from app.novelai.augment import augment
 from app.novelai.catalog import get_catalog
 from app.novelai.cost import MAX_PER_IMAGE, anlas_cost
 from app.novelai.dedup import dedupe_prompt
-from app.novelai.errors import NovelAIError, NovelAIRateLimitError
+from app.novelai.errors import NovelAIError, NovelAIRateLimitError, describe
 from app.novelai.tokenizer import count_tokens
 from app.settings import Settings
 from app.vault import gallery_layout, import_blocks, index, presets, service, workedit, worklog
@@ -392,7 +392,7 @@ def _get_account(settings: Settings, _args: dict) -> dict:
     try:  # a read this young with no generation since is served again (generation.subscription)
         sub = generation.subscription(_client(settings), max_age=_ACCOUNT_TTL_S)
     except (NovelAIError, httpx.HTTPError) as exc:
-        raise ToolError(f"Could not read the NovelAI subscription: {exc}") from exc
+        raise ToolError(f"Could not read the NovelAI subscription: {describe(exc)}") from exc
     cfg = store.load_config(settings)
     free = None
     if generation.opus_of(sub):
@@ -1145,7 +1145,7 @@ def _account(client: generation.Client, *, for_estimate: bool = False) -> dict:
     try:
         return generation.account(client, for_estimate=for_estimate)
     except (NovelAIError, httpx.HTTPError) as exc:
-        raise ToolError(f"Could not read the NovelAI subscription: {exc}") from exc
+        raise ToolError(f"Could not read the NovelAI subscription: {describe(exc)}") from exc
 
 
 def _cost_of(params: GenerateParams, sub: dict) -> int | None:
@@ -1277,8 +1277,12 @@ def _send(settings: Settings, client: generation.Client, params: GenerateParams,
             store.add_spent(settings, -cost)
         busy = " (another generation may be running on the account — the app's own, too)" if rate_limited else ""
         raise GenerationFailed(f"{exc}{busy}", 0 if refused else cost) from exc
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:  # no connection, even on the client's retry: never sent
+        if cost:
+            store.add_spent(settings, -cost)
+        raise GenerationFailed(f"Could not reach NovelAI: {describe(exc)} — nothing was sent or charged.", 0) from exc
     except (httpx.HTTPError, ValueError, zipfile.BadZipFile) as exc:  # no answer, or no readable images in it
-        raise GenerationFailed(f"NovelAI request failed: {exc} — it may still have been charged.", cost) from exc
+        raise GenerationFailed(f"NovelAI request failed: {describe(exc)} — it may still have been charged.", cost) from exc
     finally:
         generation.finished(rate_limited=rate_limited)  # also: the balance moved, a cached subscription is stale
 

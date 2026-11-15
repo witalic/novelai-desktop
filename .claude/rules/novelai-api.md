@@ -22,6 +22,9 @@ There is **no official REST spec** — `docs.novelai.net/.../scripting/api-refer
   makes one sample free (≤ 1024×1024, ≤ 28 steps, no character reference), and on V5 only while
   `usage.isNegative` is false. Verify a cost change against the balance, not the estimate: the community
   formula (novelai-api / novelai-python) lacks the V5 factor and under-counted every V5 image by a third.
+- **Connections:** `image.novelai.net` now and then drops a TLS handshake (`ConnectError … UNEXPECTED_EOF`).
+  Such a request never left, so it may be retried; a timeout or a dropped connection *after* sending may have
+  been charged — never retry it.
 - **Request shape:** `{ input, model, action, parameters:{…} }`. `action` ∈ `generate` / `img2img` / `infill`.
   Models: `nai-diffusion-5-full` (default) / `nai-diffusion-5-curated`, legacy `nai-diffusion-4-5-full` /
   `-curated`; `params_version: 4`. **v4+ differ from v3** — v4.5 and v5 share the structured shape with

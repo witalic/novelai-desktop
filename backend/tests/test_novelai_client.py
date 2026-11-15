@@ -5,6 +5,7 @@ import zipfile
 import httpx
 import pytest
 
+from app.novelai import client as client_module
 from app.novelai import errors
 from app.novelai._png import solid_png
 from app.novelai.client import NovelAIClient, build_body
@@ -81,3 +82,83 @@ async def test_success_unzips_pngs():
     imgs = await _client(handler).generate(GenerateParams(prompt="p"))
     assert len(imgs) == 1
     assert imgs[0][:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def _failing_first(times: int, ok: httpx.Response):
+    """A transport whose first ``times`` connections can't be made — as NovelAI's host now and then drops a handshake."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) <= times:
+            raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+        return ok
+    return handler, calls
+
+
+async def test_a_connection_that_could_not_be_made_is_tried_once_more(monkeypatch):
+    monkeypatch.setattr(client_module, "_RETRY_PAUSE_S", 0.0)
+    handler, calls = _failing_first(1, httpx.Response(200, json={"tier": 3, "active": True}))
+    assert (await _client(handler).get_subscription())["tier"] == 3
+    assert calls == ["/user/subscription"] * 2
+
+
+async def test_a_second_failed_connection_is_the_callers_to_report(monkeypatch):
+    monkeypatch.setattr(client_module, "_RETRY_PAUSE_S", 0.0)
+    handler, calls = _failing_first(2, httpx.Response(200, content=b""))
+    with pytest.raises(httpx.ConnectError) as caught:
+        await _client(handler).generate(GenerateParams(prompt="p"))
+    assert len(calls) == 2  # never a third
+    assert errors.describe(caught.value).startswith("ConnectError: [SSL")
+
+
+async def test_a_request_that_may_have_left_is_never_sent_twice(monkeypatch):
+    monkeypatch.setattr(client_module, "_RETRY_PAUSE_S", 0.0)
+    for lost in (httpx.ReadTimeout("no answer"), httpx.ReadError(""), httpx.RemoteProtocolError("Server disconnected")):
+        calls: list[str] = []
+
+        def handler(request: httpx.Request, exc: Exception = lost) -> httpx.Response:
+            calls.append(request.url.path)
+            raise exc
+        with pytest.raises(type(lost)):
+            await _client(handler).generate(GenerateParams(prompt="p"))
+        assert len(calls) == 1, lost  # NovelAI may have charged it: a retry could charge again
+
+
+async def test_the_stream_retries_a_connection_and_hands_its_answer_back(monkeypatch):
+    monkeypatch.setattr(client_module, "_RETRY_PAUSE_S", 0.0)
+    events = (b'data: {"event_type": "intermediate", "samp_ix": 0, "step_ix": 3, "image": "aaa"}\n\n'
+              b'data: {"event_type": "final", "samp_ix": 0, "image": "bbb"}\n\n')
+    closed: list[bool] = []
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield events
+
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    handler, calls = _failing_first(1, httpx.Response(200, stream=Body()))
+    got = [e async for e in _client(handler).generate_stream(GenerateParams(prompt="p"))]
+    assert [(e["type"], e["image"]) for e in got] == [("intermediate", "aaa"), ("final", "bbb")]
+    assert len(calls) == 2 and closed  # tried once more, and the answer given back to the pool
+
+
+async def test_the_stream_reports_novelai_refusing_it():
+    stream = _client(lambda request: httpx.Response(402, text="not enough Anlas")).generate_stream(
+        GenerateParams(prompt="p"))
+    with pytest.raises(errors.NovelAINoAnlasError):
+        await anext(stream)
+
+
+def test_an_error_without_text_is_named_by_its_type():
+    assert errors.describe(httpx.ReadTimeout("")) == "ReadTimeout"
+    assert errors.describe(errors.NovelAINoAnlasError("NovelAI returned 402: x")) == "NovelAI returned 402: x"
+
+
+async def test_requests_share_one_pool_per_event_loop_until_it_closes():
+    first = client_module._pooled("https://x", 5)
+    assert client_module._pooled("https://x", 5) is first
+    await client_module.close_pools()
+    assert first.is_closed and client_module._pooled("https://x", 5) is not first
+    await client_module.close_pools()

@@ -34,3 +34,12 @@ _BY_STATUS: dict[int, type[NovelAIError]] = {
 def map_response_error(status: int, text: str) -> NovelAIError:
     cls = _BY_STATUS.get(status, NovelAIError)
     return cls(f"NovelAI returned {status}: {text[:300]}")
+
+
+def describe(exc: Exception) -> str:
+    """An error as the user reads it. A network failure (httpx) is named by its type — a timeout or a dropped
+    connection often carries no text at all, which left "Could not read the NovelAI subscription:" with nothing after."""
+    text = str(exc)
+    if isinstance(exc, NovelAIError):
+        return text
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__

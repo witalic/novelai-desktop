@@ -1062,6 +1062,7 @@ async def test_a_failed_generation_is_logged_and_counted_unless_novelai_refused_
         monkeypatch.setattr(MockNovelAIClient, "generate", timeout)
         lost = await gen(c, **two)
         assert lost["isError"] and "may still have been charged" in lost["content"][0]["text"]
+        assert "ReadTimeout: no answer" in lost["content"][0]["text"]  # the failure is named by its type
         assert store.spent_today(store.load_config(settings)) == 30  # it may have been: it counts
         monkeypatch.setattr(MockNovelAIClient, "generate", too_many)
         assert (await gen(c, **two))["isError"]
@@ -1071,6 +1072,23 @@ async def test_a_failed_generation_is_logged_and_counted_unless_novelai_refused_
     rows = activity.recent()
     assert [r["outcome"] for r in rows[:3]] == ["denied", "error", "error"]
     assert rows[2]["cost"] == 30 and rows[1]["cost"] is None
+
+
+async def test_a_generation_that_never_reached_novelai_costs_nothing(mock_novelai, monkeypatch):
+    settings = mock_novelai
+    seed(settings)
+    paid_allowed(settings)
+
+    async def unreachable(self, params):  # as the client raises it after its own retry
+        raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+
+    monkeypatch.setattr(MockNovelAIClient, "generate", unreachable)
+    async with mcp_client(settings) as c:
+        res = await gen(c, width=1024, height=1024, steps=28, n_samples=2, paid=True)  # V5: ◆ 30
+    text = res["content"][0]["text"]
+    assert res["isError"] and "nothing was sent or charged" in text and "ConnectError: [SSL" in text
+    assert store.spent_today(store.load_config(settings)) == 0
+    assert activity.recent()[0]["cost"] is None
 
 
 async def test_images_a_save_could_not_keep_go_to_downloads(mock_novelai, monkeypatch, tmp_path):

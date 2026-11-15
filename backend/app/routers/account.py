@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app.novelai import get_client
-from app.novelai.errors import NovelAIError
+from app.novelai.errors import NovelAIError, describe
 from app.settings import Settings, get_settings
 
 log = logging.getLogger(__name__)
@@ -30,4 +30,4 @@ async def subscription(settings: Settings = Depends(get_settings)) -> dict:
     except NovelAIError as exc:
         raise HTTPException(status_code=exc.http_status or 502, detail=str(exc)) from exc
     except httpx.HTTPError as exc:  # timeout / connect against an unofficial upstream → clean 502
-        raise HTTPException(status_code=502, detail=f"NovelAI request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"NovelAI request failed: {describe(exc)}") from exc

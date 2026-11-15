@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from app import __version__
 from app.agent import store as agent_store
 from app.agent.server import listener as agent_listener
+from app.novelai.client import close_pools
 from app.routers import account, agent, catalog, generate, settings, system, tokenize, vault
 from app.settings import Settings, get_settings
 from app.vault import manager as vault_manager
@@ -68,6 +69,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await starting
     await sweeping
     await agent_listener.stop()
+    await close_pools()
 
 
 def create_app() -> FastAPI:
