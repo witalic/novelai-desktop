@@ -6,8 +6,9 @@ structured, searchable store as you create.
 
 > **Status:** v1.x. Image generation, the vault (works · block/category library · multi-vault
 > manager · thumbnails), the Vue-Flow prompt-composition canvas, a structured **gallery** for each
-> work, saved **block combinations**, a full **Works** browser with view/edit, **agent access over
-> MCP**, and the Electron shell are implemented and covered by tests. Scope for now is **images only**.
+> work, a **Gallery** of every image across works, saved **block combinations**, a full **Works**
+> browser with view/edit, **agent access over MCP**, and the Electron shell are implemented and
+> covered by tests. Scope for now is **images only**.
 > The phased plan lives in [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -23,7 +24,8 @@ worked* is hard to manage. This app stitches generation and storage into one cyc
 
 ## Features
 
-- **Image generation** through NovelAI (V5 by default, V4.5 as legacy) with full parameter control
+- **Image generation** through NovelAI (V5 by default — Full, Curated, or Full at *medium effort* for
+  about half the Anlas — and V4.5 as legacy) with full parameter control
   (size, sampler, steps, scale/CFG, seed, negative prompt) and streamed progress. An offline
   **mock mode** lets you work without spending Anlas.
 - **Prompt-composition canvas** (Vue Flow): a generation station with category-coloured prompt
@@ -43,14 +45,19 @@ worked* is hard to manage. This app stitches generation and storage into one cyc
 - **Structured gallery** — each work's images organise into a composable stack of typed blocks
   (sections · headings · notes · image grids/albums · metadata) with an outline and a Quick-access
   bin, instead of a loose pile. *Set as cover* picks the image the work shows in the Works list.
-- **Works browser** — search, sort, and delete works; open any work in a full-page **view** or
-  **edit** mode that reuses the same gallery stack, with autosave.
+- **Works browser** — search works by title or by what they hold, filter by tag, sort, and delete;
+  open any work in a full-page **view** or **edit** mode that reuses the same gallery stack, with
+  autosave.
+- **Gallery** — every image across your works in one view, filtered by work, model, date, or
+  favourites; open an image's recipe, send it back to Generate, jump to its work, or download it.
 - **Server-side thumbnails** (`?w=`, disk-cached) with crisp rendering at any zoom, and off-viewport
   node culling for heavy works.
-- **Cost transparency** — NovelAI states (out of Anlas / rate-limited) surface directly in the UI.
+- **Cost transparency** — the Anlas estimate follows NovelAI's own pricing (V5 included, and Opus's
+  free sample only while its V5 usage limit lasts); NovelAI states (out of Anlas / rate-limited)
+  surface directly in the UI.
 
 **Planned** (see [`ROADMAP.md`](ROADMAP.md)): an importer for existing generation folders
-(PNG metadata → recipe), a global gallery over the index, a **Claude** prompt assistant, and an open
+(PNG metadata → recipe), a **Claude** prompt assistant, and an open
 recipe-exchange format. Out of scope for now: text/video generation, collaboration, cloud sync.
 
 ## Architecture
@@ -203,6 +210,9 @@ the work you have open merge with your unsaved ones instead of overwriting them.
   provider — which is why every read is logged in the app.
 - **Good API citizen.** The app respects NovelAI rate limits (backs off on 429) and Anlas cost
   (402 = out of Anlas); it never generates in tight loops.
+- **A local log.** The backend keeps a rotating log (`backend.log`, 3 × 1 MB) in
+  `%LOCALAPPDATA%\novelai-desktop\logs` (macOS: `~/Library/Caches/novelai-desktop/logs`) — the
+  place to look when a request to NovelAI fails. It stays on this machine.
 
 ## License
 

@@ -88,10 +88,14 @@ from the canvas, from Works, and from the global gallery without drift.
 > already in the composition. A full **Works** tab — a list (search/sort/delete) plus a full-page
 > view/edit over one `WorkDoc` through that same `GalleryStack`, with autosave (optimistic-locked
 > against concurrent edits). `useConfirm` and the list races are closed.
-> **Remaining:** the global gallery over the index + work filters by tag/content (need the gallery
-> indexed into `index.db`); virtualization of very large lists.
 > **Since (v1.2, 2026-10-25):** saved block **combinations** per work (the station's ready block sets) and
 > the canvas **widget grid** with a default layout for new works.
+> **Since (v1.4):** the gallery is indexed into `index.db` (which now lives in this machine's cache, not the
+> vault), and a **Gallery** view shows every image across works — filters by work, model, date and
+> favourites, the recipe beside each image, *Recipe to Generate*, *Go to work*, download. The Works list
+> filters by tag and by what a work holds.
+> **Remaining:** multi-select in the Gallery (download / move / copy / delete several at once);
+> virtualization of very large lists.
 
 ---
 
