@@ -211,7 +211,8 @@ the work you have open merge with your unsaved ones instead of overwriting them.
 - **Good API citizen.** The app respects NovelAI rate limits (backs off on 429) and Anlas cost
   (402 = out of Anlas); it never generates in tight loops.
 - **A local log.** The backend keeps a rotating log (`backend.log`, 3 × 1 MB) in
-  `%LOCALAPPDATA%\novelai-desktop\logs` (macOS: `~/Library/Caches/novelai-desktop/logs`) — the
+  `%LOCALAPPDATA%\novelai-desktop\logs` (macOS: `~/Library/Caches/novelai-desktop/logs`, Linux:
+  `~/.cache/novelai-desktop/logs`) — the
   place to look when a request to NovelAI fails. It stays on this machine.
 
 ## License
