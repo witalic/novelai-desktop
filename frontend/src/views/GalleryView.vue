@@ -166,7 +166,8 @@ function open(start: GalleryImage) {
         : null
     },
     actions: [
-      { label: (v) => (v.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', run: act(toggleFavorite) },
+      { label: (v) => (v.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', active: (v) => !!v.favorite,
+        run: act(toggleFavorite) },
       { label: 'Recipe to Generate', icon: '↺', primary: true, closes: true, run: act(sendRecipe) },
       { label: 'Go to work', icon: '↗', closes: true, run: act((it) => emit('open-image', { workId: it.work_id, imageId: it.image_id })) },
       { label: 'Download', icon: '⤓', run: act(download) },

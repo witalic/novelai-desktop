@@ -106,7 +106,7 @@ const viewBindings = computed(() =>
         applyPreset: applyPreset.value, recipe: recipeSignal.value, onNavigate: navigate,
         onOpenLibrary: openLibraryWithFilter }
     : view.value === 'works'
-      ? { onOpen: openWork, show: worksShow.value }
+      ? { onOpen: openWork, onRecipe: sendRecipe, show: worksShow.value }
       : view.value === 'gallery'
         ? { onOpenImage: openWorkImage, onRecipe: sendRecipe }
         : view.value === 'library'

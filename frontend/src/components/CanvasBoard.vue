@@ -1317,7 +1317,8 @@ function viewGallery(startId: string) {
         meta: imageMeta(params, n!.data.created_at) }
     }),
     actions: [
-      { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', run: (it) => toggleImageFavorite(it.id) },
+      { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', active: (it) => !!it.favorite,
+        run: (it) => toggleImageFavorite(it.id) },
       { label: 'Set as cover', icon: '▣', enabled: (it) => !it.cover, run: (it) => { cover.value = it.id } },
       { label: 'Restore recipe', icon: '↺', closes: true, enabled: (it) => imageComponents(it.id).length > 0, run: (it) => restoreRecipe(it.id) },
       { label: 'Save recipe as combination…', icon: '◈', closes: true, enabled: (it) => imageComponents(it.id).length > 0,

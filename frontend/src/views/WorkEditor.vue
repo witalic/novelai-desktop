@@ -9,19 +9,23 @@ import { editedWork, onAgentNotice } from '../composables/useAgentNotices'
 import { useVault, vaultMayBeAway } from '../composables/useVault'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
-import { useImagePreview } from '../composables/useImagePreview'
+import { useImagePreview, type ViewerAction } from '../composables/useImagePreview'
 import { useImageDownload } from '../composables/useImageDownload'
 import GalleryStack from '../components/GalleryStack.vue'
 import { imageMeta } from '../canvas/imageMeta'
 import { gridsOf, purgeImages, removeIdFromGrids } from '../vault/workOps'
 import { applyAgentOpsToDoc, catchUpQueue } from '../vault/agentOps'
 import { imageRecipe } from '../vault/recipe'
-import type { ImageNodeData, WorkDoc, ZoneNode } from '../types'
+import type { ImageNodeData, PersistedComponent, WorkDoc, ZoneNode } from '../types'
 
 // `showImage`: one of its images to show in the viewer once the work is read (the Gallery's "Go to work") — a new
 // nonce shows it again.
 const props = defineProps<{ workId: string; initialMode?: 'view' | 'edit'; showImage?: { id: string; nonce: number } | null }>()
-const emit = defineEmits<{ back: []; openInGenerate: [string] }>()
+const emit = defineEmits<{
+  back: []
+  openInGenerate: [string]
+  recipe: [{ components: PersistedComponent[]; params: Record<string, unknown> }] // an image's recipe for the station
+}>()
 const { push } = useToast()
 const { confirm } = useConfirm()
 const { openViewer } = useImagePreview()
@@ -210,8 +214,8 @@ function gone() {
 const { downloadUrls } = useImageDownload()
 function downloadAll() { downloadUrls(galleryImages.value.map((im) => im.data.url || '').filter(Boolean)) }
 
-// ---- the image viewer over the clicked image's set: its grid, or Quick access. View mode only pages and
-// downloads; Edit adds favourite, the cover and delete (no station here, so no recipe actions). ----
+// ---- the image viewer over the clicked image's set: its grid, or Quick access. Both modes star an image, send its
+// recipe to Generate's station and download it; Edit adds the cover and delete. ----
 function setCover(id: string) { if (doc.value) doc.value.preview_image_id = id } // deep watch autosaves
 function viewImage(startId: string) {
   const at = grids().findIndex((g) => g.imageIds.includes(startId))
@@ -221,7 +225,13 @@ function viewImage(startId: string) {
     const inGrids = new Set(grids().flatMap((g) => g.imageIds))
     return galleryImages.value.filter((im) => !inGrids.has(im.id)).map((im) => im.id)
   }
-  const download = { label: 'Download', icon: '⤓', run: (it: { url: string }) => downloadUrls([it.url]) }
+  const snapOf = (id: string) => galleryImages.value.find((im) => im.id === id)?.data.snapshot
+  const favorite: ViewerAction = { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f',
+    active: (it) => !!it.favorite, run: (it) => onFavorite(it.id) }
+  const toGenerate: ViewerAction = { label: 'Recipe to Generate', icon: '↺', primary: true, closes: true,
+    enabled: (it) => !!snapOf(it.id)?.components.length,
+    run: (it) => { const s = snapOf(it.id); if (s) emit('recipe', { components: s.components, params: s.params }) } }
+  const download: ViewerAction = { label: 'Download', icon: '⤓', run: (it) => downloadUrls([it.url]) }
   openViewer({
     source: grid ? `Grid ${at + 1}` : 'Quick access',
     recipe: (it) => imageRecipe(galleryImages.value.find((im) => im.id === it.id)?.data,
@@ -230,9 +240,11 @@ function viewImage(startId: string) {
       id: im!.id, url: im!.data.url || '', favorite: !!im!.data.favorite, cover: im!.id === doc.value?.preview_image_id,
       meta: imageMeta(im!.data.snapshot?.params as { width?: number; height?: number; seed?: number } | undefined, im!.data.created_at),
     })),
-    actions: mode.value === 'view' ? [download] : [
-      { label: (it) => (it.favorite ? 'Unfavorite' : 'Favorite'), icon: '★', key: 'f', run: (it) => onFavorite(it.id) },
+    // A star and the recipe from either mode; Edit adds the cover and delete.
+    actions: mode.value === 'view' ? [favorite, toGenerate, download] : [
+      favorite,
       { label: 'Set as cover', icon: '▣', enabled: (it) => !it.cover, run: (it) => setCover(it.id) },
+      toGenerate,
       download,
       { label: 'Delete', icon: '🗑', key: 'Delete', danger: true, run: (it) => onDeleteImg(it.id) },
     ],

@@ -97,13 +97,30 @@ watch(set, (s, before) => {
 })
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 
-// Filmstrip: a window around the current image. Small sources only — a vault image asks the server for a
-// thumbnail, a fresh data: URL is downscaled once (decoding dozens of full-size ones pixelates; ui-design.md).
-const STRIP = 15
+// Filmstrip: a window around the current image, as many as the image's column has room for (the Recipe panel takes
+// some) — clear of the key hint in its corner. Small sources only — a vault image asks the server for a thumbnail, a
+// fresh data: URL is downscaled once (decoding dozens of full-size ones pixelates; ui-design.md).
+const STRIP_MAX = 15
+const STRIP_TILE = 46 // a thumbnail with its gap
+const STRIP_CLEAR = 150 // kept free each side: the key hint sits in the bottom-right corner
 const STRIP_PX = 128 // the tiles' long side × 2 (HiDPI)
+const main = ref<HTMLElement | null>(null)
+const mainW = ref(0)
+let ro: ResizeObserver | null = null
+watch(main, (el) => {
+  ro?.disconnect()
+  ro = null
+  if (!el || typeof ResizeObserver === 'undefined') return
+  mainW.value = el.clientWidth
+  ro = new ResizeObserver(() => { mainW.value = el.clientWidth })
+  ro.observe(el)
+})
+onBeforeUnmount(() => ro?.disconnect())
+const stripCount = computed(() => Math.max(3, Math.min(STRIP_MAX, Math.floor((mainW.value - 2 * STRIP_CLEAR) / STRIP_TILE))))
 const strip = computed(() => {
-  const start = Math.max(0, Math.min(index.value - Math.floor(STRIP / 2), items.value.length - STRIP))
-  return items.value.slice(start, start + STRIP)
+  const n = stripCount.value
+  const start = Math.max(0, Math.min(index.value - Math.floor(n / 2), items.value.length - n))
+  return items.value.slice(start, start + n)
 })
 const thumbs = ref<Record<string, string>>({})
 watch(strip, (list) => {
@@ -121,72 +138,76 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
 <template>
   <Teleport to="body">
     <div v-if="set && item" ref="root" class="viewer" tabindex="-1" @click="close" @contextmenu.prevent @wheel.prevent="onWheel">
-      <div class="vtop" @click.stop>
-        <span class="vsrc">{{ set.source }}</span>
-        <span v-if="items.length > 1" class="vcnt">{{ index + 1 }} / {{ items.length }}</span>
-        <span v-if="item.favorite" class="vfav" title="Favourite">★</span>
-        <span v-if="item.cover" class="vcover" title="The work's cover — its picture in the Works list">Cover</span>
-        <span v-if="item.meta" class="vmeta">{{ item.meta }}</span>
-        <span class="sp"></span>
-        <button v-if="set.recipe" class="vrbtn" :class="{ on: recipeOpen }" title="What made this image"
-          @click="recipeOpen = !recipeOpen">☰ Recipe</button>
-        <button class="vx" title="Close (Esc)" @click="close">✕</button>
-      </div>
+      <!-- the image with everything about it, centred on one axis; the Recipe panel a full-height column beside it -->
+      <div ref="main" class="vmain">
+        <div class="vtop" @click.stop>
+          <span class="vsrc">{{ set.source }}</span>
+          <span v-if="items.length > 1" class="vcnt">{{ index + 1 }} / {{ items.length }}</span>
+          <span v-if="item.favorite" class="vfav" title="Favourite">★</span>
+          <span v-if="item.cover" class="vcover" title="The work's cover — its picture in the Works list">Cover</span>
+          <span v-if="item.meta" class="vmeta">{{ item.meta }}</span>
+          <span class="sp"></span>
+          <button v-if="set.recipe" class="vrbtn" :class="{ on: recipeOpen }" title="What made this image"
+            @click="recipeOpen = !recipeOpen">☰ Recipe</button>
+          <button class="vx" title="Close (Esc)" @click="close">✕</button>
+        </div>
 
-      <div class="vbody">
         <div class="vstage">
           <button v-if="items.length > 1" class="varr" :disabled="index <= 0" title="Previous (←)" @click.stop="go(-1)">‹</button>
           <img class="vimg" :src="item.url" alt="preview" draggable="false" @click.stop />
           <button v-if="items.length > 1" class="varr" :disabled="index >= items.length - 1" title="Next (→)" @click.stop="go(1)">›</button>
         </div>
-        <aside v-if="set.recipe && recipeOpen" class="vrec" @click.stop>
-          <div v-if="recipe === 'loading' || recipe === undefined" class="rnone">Reading the recipe…</div>
-          <div v-else-if="!recipe" class="rnone">No recipe kept for this image.</div>
-          <template v-else>
-            <div v-if="recipe.work" class="rwork">{{ recipe.work }}</div>
-            <div v-if="recipe.where" class="rwhere">{{ recipe.where }}</div>
-            <h4>Prompt</h4>
-            <div class="rprompt">{{ recipe.positive || '—' }}</div>
-            <template v-if="recipe.negative"><h4>Negative</h4><div class="rprompt neg">{{ recipe.negative }}</div></template>
-            <template v-if="recipe.blocks.length">
-              <h4>Blocks</h4>
-              <div class="rblks">
-                <span v-for="(b, i) in recipe.blocks" :key="i" class="rblk" :class="{ neg: b.negative }">
-                  <i :style="b.color ? { background: b.color } : {}"></i>{{ b.name }}
-                </span>
-              </div>
-            </template>
-            <template v-if="recipe.settings.length">
-              <h4>Settings</h4>
-              <div class="rkv"><template v-for="[k, v] in recipe.settings" :key="k"><span>{{ k }}</span><span>{{ v }}</span></template></div>
-            </template>
-            <template v-if="recipe.tags.length">
-              <h4>Tags</h4>
-              <div class="rtags"><span v-for="t in recipe.tags" :key="t">{{ t }}</span></div>
-            </template>
+
+        <div v-if="actions.length" class="vacts" @click.stop>
+          <button v-for="(a, i) in actions" :key="i" class="va" :class="{ pri: a.primary, del: a.danger, on: a.active?.(item) }"
+            :disabled="busy" @click="run(a)">
+            {{ a.icon }} {{ labelOf(a) }}<kbd v-if="a.key">{{ a.key === 'Delete' ? 'Del' : a.key.toUpperCase() }}</kbd>
+          </button>
+        </div>
+
+        <div v-if="items.length > 1" class="vstrip" @click.stop>
+          <button v-for="it in strip" :key="it.id" class="vth" :class="{ on: it.id === item.id }" @click="currentId = it.id">
+            <img v-if="thumbSrc(it)" :src="thumbSrc(it)" alt="" draggable="false" />
+          </button>
+        </div>
+        <div class="vhint"><kbd>←</kbd> <kbd>→</kbd> / wheel · <kbd>Esc</kbd> close</div>
+      </div>
+
+      <aside v-if="set.recipe && recipeOpen" class="vrec" @click.stop>
+        <div v-if="recipe === 'loading' || recipe === undefined" class="rnone">Reading the recipe…</div>
+        <div v-else-if="!recipe" class="rnone">No recipe kept for this image.</div>
+        <template v-else>
+          <div v-if="recipe.work" class="rwork">{{ recipe.work }}</div>
+          <div v-if="recipe.where" class="rwhere">{{ recipe.where }}</div>
+          <h4>Prompt</h4>
+          <div class="rprompt">{{ recipe.positive || '—' }}</div>
+          <template v-if="recipe.negative"><h4>Negative</h4><div class="rprompt neg">{{ recipe.negative }}</div></template>
+          <template v-if="recipe.blocks.length">
+            <h4>Blocks</h4>
+            <div class="rblks">
+              <span v-for="(b, i) in recipe.blocks" :key="i" class="rblk" :class="{ neg: b.negative }">
+                <i :style="b.color ? { background: b.color } : {}"></i>{{ b.name }}
+              </span>
+            </div>
           </template>
-        </aside>
-      </div>
-
-      <div v-if="actions.length" class="vacts" @click.stop>
-        <button v-for="(a, i) in actions" :key="i" class="va" :class="{ pri: a.primary, del: a.danger }" :disabled="busy" @click="run(a)">
-          {{ a.icon }} {{ labelOf(a) }}<kbd v-if="a.key">{{ a.key === 'Delete' ? 'Del' : a.key.toUpperCase() }}</kbd>
-        </button>
-      </div>
-
-      <div v-if="items.length > 1" class="vstrip" @click.stop>
-        <button v-for="it in strip" :key="it.id" class="vth" :class="{ on: it.id === item.id }" @click="currentId = it.id">
-          <img v-if="thumbSrc(it)" :src="thumbSrc(it)" alt="" draggable="false" />
-        </button>
-      </div>
-      <div class="vhint"><kbd>←</kbd> <kbd>→</kbd> / wheel · <kbd>Esc</kbd> close</div>
+          <template v-if="recipe.settings.length">
+            <h4>Settings</h4>
+            <div class="rkv"><template v-for="[k, v] in recipe.settings" :key="k"><span>{{ k }}</span><span>{{ v }}</span></template></div>
+          </template>
+          <template v-if="recipe.tags.length">
+            <h4>Tags</h4>
+            <div class="rtags"><span v-for="t in recipe.tags" :key="t">{{ t }}</span></div>
+          </template>
+        </template>
+      </aside>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
 /* The viewer is always dark (a lightbox), whatever the theme — fixed greys, not theme tokens. */
-.viewer{position:fixed;inset:0;z-index:1900;background:rgba(8,9,11,.94);display:flex;flex-direction:column;cursor:zoom-out;color:#c7d1db;outline:none}
+.viewer{position:fixed;inset:0;z-index:1900;background:rgba(8,9,11,.94);display:flex;cursor:zoom-out;color:#c7d1db;outline:none}
+.vmain{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
 .vtop{display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:12.5px;cursor:default}
 .vsrc{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#9fadbc;background:rgba(255,255,255,.07);
   border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:1px 8px}
@@ -199,14 +220,13 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
 .vx{width:34px;height:34px;border-radius:50%;border:1px solid #454f59;background:#1d2125;color:#9fadbc;font-size:14px;cursor:pointer;
   display:flex;align-items:center;justify-content:center}
 .vx:hover{color:#fff}
-.vbody{flex:1;min-height:0;display:flex}
-.vstage{flex:1;min-width:0;min-height:0;display:flex;align-items:center;justify-content:center;gap:26px;padding:0 20px}
+.vstage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;gap:26px;padding:0 20px}
 .vrbtn{height:30px;border:1px solid #454f59;background:#1d2125;color:#9fadbc;border-radius:7px;padding:0 11px;font-size:12px;
   font-weight:600;cursor:pointer}
 .vrbtn:hover{color:#fff}
 .vrbtn.on{background:rgba(12,102,228,.3);border-color:#4c8cf0;color:#dfe5ec}
 /* the Recipe panel — part of the always-dark lightbox, so fixed greys like the rest of it */
-.vrec{width:340px;flex-shrink:0;overflow-y:auto;background:#15181b;border-left:1px solid #2a3036;padding:14px 16px;
+.vrec{width:340px;flex-shrink:0;overflow-y:auto;background:#15181b;border-left:1px solid #2a3036;padding:18px 18px 24px;
   font-size:12px;color:#c5ced7;cursor:default}
 .vrec h4{margin:12px 0 5px;font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#7d8996}
 .rnone{color:#7d8996;font-size:12px}
@@ -236,6 +256,8 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
 .va.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .va.pri:hover:not(:disabled){background:var(--accent-strong)}
 .va.del{color:#f08a80}
+.va.on{color:var(--star);border-color:color-mix(in srgb,var(--star) 55%,#454f59);background:color-mix(in srgb,var(--star) 12%,#1d2125)}
+.va.on:hover:not(:disabled){color:var(--star);border-color:var(--star)}
 .va:disabled{opacity:.5;cursor:default}
 .va kbd{font:inherit;font-size:10px;color:#9fadbc;border:1px solid #454f59;border-radius:4px;padding:0 4px}
 .va.pri kbd{color:inherit;border-color:rgba(255,255,255,.4)}
@@ -244,6 +266,6 @@ const thumbSrc = (it: ViewerItem) => (it.url.startsWith('data:') ? thumbs.value[
 .vth img{width:100%;height:100%;object-fit:cover;display:block}
 .vth:hover{opacity:.85}
 .vth.on{opacity:1;border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 40%,transparent)}
-.vhint{position:fixed;bottom:12px;right:16px;font-size:10.5px;color:#738496;pointer-events:none}
+.vhint{position:absolute;bottom:12px;right:16px;font-size:10.5px;color:#738496;pointer-events:none}
 .vhint kbd{font:inherit;border:1px solid #454f59;border-radius:4px;padding:0 4px;color:#9fadbc}
 </style>

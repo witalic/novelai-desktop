@@ -46,6 +46,10 @@ them.** When building or changing any UI, check this list first.
   beside the sidebar, and not one long page with the navigation dropped. Took three mockups to land.
 - **Collapse with `v-show`, not `v-if`.** `v-if` destroys DOM state (scroll position, open panels,
   input focus) on collapse; `v-show` preserves it.
+- **A side panel beside a centred stage takes its own full-height column.** The viewer's Recipe panel
+  first sat between the top bar and the action row: the image centred in what was left while the
+  buttons and filmstrip centred on the whole width (misaligned), and the panel read as clipped. Put the
+  stage and everything centred under it in one column, the panel in the next.
 
 ## Images
 - **Never CSS-shrink a full-res image into a small box** (thumbnails, cards, nodes). A big source

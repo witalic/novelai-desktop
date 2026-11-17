@@ -22,6 +22,7 @@ export interface ViewerAction {
   // that must own the keyboard.
   closes?: boolean
   enabled?: (item: ViewerItem) => boolean // hidden for items it can't apply to (e.g. no recipe)
+  active?: (item: ViewerItem) => boolean // drawn as on — a favourite's star lit
   run: (item: ViewerItem) => void | Promise<void>
 }
 // What made an image, as the viewer's Recipe panel shows it (design/global-gallery.html §4) — vault/recipe.ts builds it.

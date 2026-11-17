@@ -9,11 +9,11 @@ import WorkEditor from './WorkEditor.vue'
 import TagPanel from '../components/TagPanel.vue'
 import TagToggle from '../components/TagToggle.vue'
 import { matchParts } from '../vault/workMatch'
-import type { TagCount, WorkListItem } from '../types'
+import type { PersistedComponent, TagCount, WorkListItem } from '../types'
 
 // `show`: open a work with one of its images shown (the Gallery's "Go to work").
 const props = defineProps<{ show?: { workId: string; imageId: string; nonce: number } | null }>()
-const emit = defineEmits<{ open: [string] }>()
+const emit = defineEmits<{ open: [string]; recipe: [{ components: PersistedComponent[]; params: Record<string, unknown> }] }>()
 const { unreachable: vaultAway, onBack: onVaultBack } = useVault()
 onUnmounted(onVaultBack(() => { if (!openWork.value) fetchPage() })) // back: the list fills again
 
@@ -152,7 +152,7 @@ onAgentNotice((n) => {
 
 <template>
   <WorkEditor v-if="openWork" :work-id="openWork.id" :initial-mode="openWork.mode" :show-image="openWork.image"
-    @back="closeEditor" @open-in-generate="(id) => emit('open', id)" />
+    @back="closeEditor" @open-in-generate="(id) => emit('open', id)" @recipe="(r) => emit('recipe', r)" />
 
   <div v-else class="works" @click="sortOpen = false">
     <div class="whead">
