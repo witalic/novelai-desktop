@@ -38,6 +38,14 @@ const noVault = ref(false)
 const facets = ref<GalleryFacets | null>(null)
 const tagsOpen = ref(false)
 const sortOpen = ref(false)
+// How big the tiles are — a row's height; the view lives on (KeepAlive), so it stays as left while the app runs.
+const SIZES = [
+  { key: 's', label: 'S', title: 'Small tiles', rowHeight: 120 },
+  { key: 'm', label: 'M', title: 'Medium tiles', rowHeight: 180 },
+  { key: 'l', label: 'L', title: 'Large tiles', rowHeight: 270 },
+] as const
+const size = ref<(typeof SIZES)[number]['key']>('m')
+const rowHeight = computed(() => SIZES.find((s) => s.key === size.value)!.rowHeight)
 const stale = ref(false) // the vault changed (an agent) since this list was read
 const listKey = ref(0) // a new list starts its grid at the top
 
@@ -191,14 +199,6 @@ watch(vaultAway, (away) => { if (away) { items.value = []; facets.value = null }
   <div class="gallery" @click="sortOpen = false">
     <div class="ghead">
       <h1>Gallery</h1><span class="count">· {{ countLabel }}</span>
-      <span class="hsp"></span>
-      <div class="sortwrap">
-        <button class="sortbtn" @click.stop="sortOpen = !sortOpen">Sort: {{ f.order === 'newest' ? 'Newest first' : 'Oldest first' }} <span class="car">▾</span></button>
-        <div v-if="sortOpen" class="sortmenu" @click.stop>
-          <button class="srow" :class="{ on: f.order === 'newest' }" @click="setOrder('newest')">Newest first</button>
-          <button class="srow" :class="{ on: f.order === 'oldest' }" @click="setOrder('oldest')">Oldest first</button>
-        </div>
-      </div>
     </div>
 
     <template v-if="vaultAway">
@@ -228,6 +228,20 @@ watch(vaultAway, (away) => { if (away) { items.value = []; facets.value = null }
           <span class="tr"></span>Include unsorted
         </button>
         <TagToggle :open="tagsOpen" :picked="f.tags.length" @toggle="tagsOpen = !tagsOpen" />
+        <div class="gview"><!-- how the list shows: at the right, on the toolbar's last line when it wraps -->
+          <div class="gsize" role="group" aria-label="Tile size">
+            <span class="lb">Size</span>
+            <button v-for="s in SIZES" :key="s.key" :class="{ on: size === s.key }" :title="s.title" :aria-pressed="size === s.key"
+              @click="size = s.key">{{ s.label }}</button>
+          </div>
+          <div class="sortwrap">
+            <button class="sortbtn" @click.stop="sortOpen = !sortOpen">Sort: {{ f.order === 'newest' ? 'Newest first' : 'Oldest first' }} <span class="car">▾</span></button>
+            <div v-if="sortOpen" class="sortmenu" @click.stop>
+              <button class="srow" :class="{ on: f.order === 'newest' }" @click="setOrder('newest')">Newest first</button>
+              <button class="srow" :class="{ on: f.order === 'oldest' }" @click="setOrder('oldest')">Oldest first</button>
+            </div>
+          </div>
+        </div>
       </div>
       <TagPanel class="gtags" :tags="facets?.tags ?? []" :selected="f.tags" :open="tagsOpen"
         @toggle="(t) => toggleIn(f.tags, t)" @clear="f.tags.splice(0); reload()" />
@@ -266,7 +280,7 @@ watch(vaultAway, (away) => { if (away) { items.value = []; facets.value = null }
           <p>No images yet. Generate some in <b>Generate</b> — they show here once they’re in a work.</p>
         </template>
       </div>
-      <GalleryGrid v-else :key="listKey" :items="items" :complete="complete" @more="more" @open="open"
+      <GalleryGrid v-else :key="listKey" :items="items" :complete="complete" :row-height="rowHeight" @more="more" @open="open"
         @favorite="toggleFavorite" />
     </template>
   </div>
@@ -277,7 +291,7 @@ watch(vaultAway, (away) => { if (away) { items.value = []; facets.value = null }
 .ghead { display: flex; align-items: center; gap: 8px; height: 55px; padding: 0 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .ghead h1 { font-size: 18px; font-weight: 700; margin: 0; }
 .ghead .count { font-size: 13px; color: var(--text-faint); }
-.hsp { flex: 1; }
+.gview { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .sortwrap { position: relative; }
 .sortbtn { height: 32px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-dim);
   border-radius: var(--radius); padding: 0 12px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
@@ -289,6 +303,14 @@ watch(vaultAway, (away) => { if (away) { items.value = []; facets.value = null }
   font: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 9px; border-radius: var(--radius); cursor: pointer; }
 .srow:hover { background: var(--surface-3); }
 .srow.on { color: var(--accent); }
+/* not .seg — tokens.css styles that class (stacked segments) for the whole app */
+.gsize { height: 32px; display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius); overflow: hidden; }
+.gsize .lb, .gsize button { display: flex; align-items: center; justify-content: center; padding: 0 10px; font: inherit;
+  font-size: 12px; font-weight: 600; }
+.gsize .lb { color: var(--text-faint); background: var(--surface-1); }
+.gsize button { border: 0; border-left: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim); cursor: pointer; }
+.gsize button:hover { color: var(--text); }
+.gsize button.on { background: var(--nav-active); color: var(--accent); }
 .gtools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px 16px 0; flex-shrink: 0; }
 .search { position: relative; }
 .search input { width: 240px; height: 32px; font: inherit; font-size: 12.5px; color: var(--text); background: var(--surface-2);

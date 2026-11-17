@@ -50,6 +50,9 @@ them.** When building or changing any UI, check this list first.
   first sat between the top bar and the action row: the image centred in what was left while the
   buttons and filmstrip centred on the whole width (misaligned), and the panel read as clipped. Put the
   stage and everything centred under it in one column, the panel in the next.
+- **Scoped styles don't stop global ones.** `tokens.css` styles some classes app-wide (`.seg` — stacked
+  segments); a component's own `.seg` inherits them (its labels sank to the top). Check `styles/*.css`
+  before naming a class, or name it after the component.
 
 ## Images
 - **Never CSS-shrink a full-res image into a small box** (thumbnails, cards, nodes). A big source

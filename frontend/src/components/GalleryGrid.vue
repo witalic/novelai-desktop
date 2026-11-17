@@ -7,10 +7,9 @@ import type { GalleryImage } from '../types'
 
 // The Gallery's grid (design/global-gallery.html §1): images in their true shape, in justified rows under a heading
 // per day. Only the rows on screen (and a margin) are drawn; nearing the end asks for the next page.
-const props = defineProps<{ items: GalleryImage[]; complete: boolean }>()
+const props = defineProps<{ items: GalleryImage[]; complete: boolean; rowHeight: number }>() // rowHeight: the tile size
 const emit = defineEmits<{ more: []; open: [GalleryImage]; favorite: [GalleryImage] }>()
 
-const ROW_H = 180
 const GAP = 5
 const DAY_H = 38
 const AHEAD = 700 // px drawn beyond the screen, each way
@@ -34,7 +33,7 @@ onBeforeUnmount(() => ro?.disconnect())
 const byId = computed(() => new Map(props.items.map((it) => [it.image_id, it])))
 const layout = computed(() => justify(
   props.items.map((it) => ({ id: it.image_id, ar: it.ar || 2 / 3, day: dayHeading(it.created_at) })),
-  Math.max(200, width.value), { rowHeight: ROW_H, gap: GAP, dayHeight: DAY_H, complete: props.complete }))
+  Math.max(200, width.value), { rowHeight: props.rowHeight, gap: GAP, dayHeight: DAY_H, complete: props.complete }))
 const rows = computed(() => visibleRows(layout.value.rows, top.value - AHEAD, top.value + viewH.value + AHEAD))
 
 function onScroll() { top.value = scroller.value?.scrollTop ?? 0 }
