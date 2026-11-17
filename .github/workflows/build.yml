@@ -1,8 +1,8 @@
 # Cross-platform desktop build: freeze the FastAPI sidecar with PyInstaller, build the Vue frontend, then
-# package the Electron shell with electron-builder. Windows + macOS run on their own native runners because
-# PyInstaller cannot cross-compile. Unsigned for now (signing is a deliberate later step — see the env seams
-# below). Artifacts (installers + portable/zip) are uploaded per-OS. A `v*` tag additionally publishes a
-# GitHub Release with the Windows installers attached (macOS is built but not released yet).
+# package the Electron shell with electron-builder. Windows, macOS and Linux run on their own native runners
+# because PyInstaller cannot cross-compile. Unsigned for now (signing is a deliberate later step — see the env
+# seams below). Artifacts are uploaded per-OS. A `v*` tag additionally publishes a GitHub Release with the
+# Windows installer + portable exe, the macOS dmg (Apple Silicon) and the Linux AppImage (x64) attached.
 name: build
 
 on:
@@ -21,6 +21,8 @@ jobs:
             builder_flag: "--win"
           - os: macos-latest       # Apple Silicon (arm64) only — the frozen sidecar is native-arch; an x64
             builder_flag: "--mac"   # dmg would ship an arm64 backend. Intel builds need a separate Rosetta step.
+          - os: ubuntu-latest      # x64 AppImage — one file that runs on most distributions
+            builder_flag: "--linux"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +76,8 @@ jobs:
             dist-app/*.exe
             dist-app/*.dmg
             dist-app/*.zip
-          if-no-files-found: warn
+            dist-app/*.AppImage
+          if-no-files-found: error
 
   # --- Release: tag push only ------------------------------------------------------------------
   release:
@@ -96,16 +99,26 @@ jobs:
             exit 1
           fi
 
-      - name: Download Windows artifacts
+      - name: Download every platform's artifacts
         uses: actions/download-artifact@v4
         with:
-          name: novelai-desktop-windows-latest
+          pattern: novelai-desktop-*
+          merge-multiple: true
           path: release
 
-      - name: Publish GitHub release (Windows only for now)
+      - name: Publish GitHub release (Windows, macOS, Linux)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "$GITHUB_REF_NAME" release/*.exe
-          --title "NovelAI Desktop $GITHUB_REF_NAME"
-          --generate-notes
+        # The builds are unsigned, so each OS asks once before the first start — the notes say how.
+        run: |
+          cat > notes.md <<'EOF'
+          **Downloads:** Windows — `Setup` (installer) or `portable` exe · macOS (Apple Silicon) — `arm64.dmg` · Linux (x64) — `x86_64.AppImage`.
+
+          The builds aren't signed yet, so on first start:
+          - **Windows:** SmartScreen → *More info* → *Run anyway*.
+          - **macOS:** after moving the app to Applications, run `xattr -cr "/Applications/NovelAI Desktop.app"` once (otherwise macOS reports it as damaged).
+          - **Linux:** `chmod +x` the AppImage. If it won't start (newer Ubuntu limits Electron's sandbox), run it with `--no-sandbox`. Saving the NovelAI token needs a keyring (GNOME Keyring or KWallet).
+          EOF
+          gh release create "$GITHUB_REF_NAME" release/*.exe release/*.dmg release/*.AppImage \
+            --title "NovelAI Desktop $GITHUB_REF_NAME" \
+            --notes-file notes.md --generate-notes

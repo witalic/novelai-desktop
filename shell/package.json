@@ -9,7 +9,8 @@
     "test": "node --test \"test/**/*.test.js\"",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac"
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
   },
   "devDependencies": {
     "electron": "^42.4.1",
@@ -62,6 +63,13 @@
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "category": "Graphics",
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] }
+      ],
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
